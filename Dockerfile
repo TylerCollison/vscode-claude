@@ -20,8 +20,6 @@ RUN apt-get install -y nodejs \
 RUN npm install -g @anthropic-ai/claude-code
 RUN npm install -g @musistudio/claude-code-router
 
-# Environment variable defaults are handled in configure-claude-permissions.sh
-
 # Create startup script for pre-start hook
 COPY configure-claude-permissions.sh /etc/cont-init.d/99-configure-claude-permissions
 RUN chmod +x /etc/cont-init.d/99-configure-claude-permissions

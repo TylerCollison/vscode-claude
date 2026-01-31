@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/with-contenv bash
 # Configure Claude Code permissions based on environment variables
 
 # Explicitly handle environment variables with fallbacks
