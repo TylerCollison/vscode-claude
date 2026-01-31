@@ -30,9 +30,13 @@ ENV DISABLE_TELEMETRY=1
 ENV BASH_DEFAULT_TIMEOUT_MS=120000
 ENV BASH_MAX_TIMEOUT_MS=300000
 
-# Create startup script
+# Create startup scripts
 COPY configure-claude-permissions.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/configure-claude-permissions.sh
 
-# Modify entrypoint to run configuration script
-ENTRYPOINT ["/init", "configure-claude-permissions.sh", "--"]
+COPY startup-wrapper.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/startup-wrapper.sh
+
+# Use the original linuxserver/code-server entrypoint but with our wrapper
+ENTRYPOINT ["/init"]
+CMD ["startup-wrapper.sh"]

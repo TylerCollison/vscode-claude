@@ -208,6 +208,9 @@ docker build \
   --no-cache \
   --pull \
   -t tylercollison2089/vscode-claude:latest .
+
+# Test the container starts properly
+./test-container.sh
 ```
 
 ## Credits
