@@ -81,6 +81,7 @@ services:
     ports:
       - "8443:8443"
     volumes:
+      - /var/run/docker.sock:/var/run/docker.sock # Optional host docker control
       - /path/to/code-server/config:/config
       - /path/to/your/code:/workspace # Mount your code directory
     restart: unless-stopped
@@ -141,6 +142,24 @@ docker run -d \
 - Default mode (`acceptEdits`) provides balanced security for most use cases
 - `bypassPermissions` mode should only be used in trusted environments
 - Sensitive file access is automatically restricted (`.env`, `secrets/**`)
+
+### Docker-in-Docker Support
+
+This image includes Docker CLI tools and supports Docker-in-Docker functionality, allowing you to run Docker commands inside the container that execute on the host machine.
+
+2. **Use Docker commands:** Inside the VS Code terminal:
+   ```bash
+   # List containers on the host
+   docker ps
+
+   # Run a new container on the host
+   docker run hello-world
+
+   # Build and manage containers
+   docker build -t my-app .
+   ```
+
+**Security Note:** Mounting the Docker socket gives the container full control over the host's Docker daemon. Only use this in trusted environments.
 
 ## Use Cases
 
