@@ -78,13 +78,6 @@ services:
       - PWA_APPNAME=code-server # optional
       # Claude Code permission settings
       - CLAUDE_CODE_PERMISSION_MODE=acceptEdits
-      - CLAUDE_CODE_FULL_PERMISSIONS=0
-      - CLAUDE_CODE_ENABLE_TELEMETRY=0
-      - CLAUDE_CODE_HIDE_ACCOUNT_INFO=1
-      - DISABLE_ERROR_REPORTING=1
-      - DISABLE_TELEMETRY=1
-      - BASH_DEFAULT_TIMEOUT_MS=120000
-      - BASH_MAX_TIMEOUT_MS=300000
     ports:
       - "8443:8443"
     volumes:
@@ -126,17 +119,6 @@ This image includes advanced permission control for Claude Code operations. You 
 
 **Core Permission Variables:**
 - `CLAUDE_CODE_PERMISSION_MODE` - Controls permission mode (`acceptEdits`, `bypassPermissions`, `default`, `plan`, `dontAsk`)
-- `CLAUDE_CODE_FULL_PERMISSIONS` - Set to `1` to enable full permissions (equivalent to `bypassPermissions` mode)
-
-**Security Variables:**
-- `CLAUDE_CODE_ENABLE_TELEMETRY` - Enable/disable telemetry
-- `CLAUDE_CODE_HIDE_ACCOUNT_INFO` - Hide personal info from UI
-- `DISABLE_ERROR_REPORTING` - Opt out of error reporting
-- `DISABLE_TELEMETRY` - Opt out of telemetry
-
-**Tool Behavior Variables:**
-- `BASH_DEFAULT_TIMEOUT_MS` - Default timeout for bash commands (default: 120000ms)
-- `BASH_MAX_TIMEOUT_MS` - Maximum timeout model can set (default: 300000ms)
 
 **Example Configuration:**
 ```bash
@@ -144,7 +126,6 @@ This image includes advanced permission control for Claude Code operations. You 
 docker run -d \
   --name=claude-dev \
   -e CLAUDE_CODE_PERMISSION_MODE=bypassPermissions \
-  -e CLAUDE_CODE_FULL_PERMISSIONS=1 \
   -p 8443:8443 \
   tylercollison2089/vscode-claude
 
@@ -152,7 +133,6 @@ docker run -d \
 docker run -d \
   --name=claude-prod \
   -e CLAUDE_CODE_PERMISSION_MODE=acceptEdits \
-  -e CLAUDE_CODE_FULL_PERMISSIONS=0 \
   -p 8443:8443 \
   tylercollison2089/vscode-claude
 ```
@@ -161,7 +141,6 @@ docker run -d \
 - Default mode (`acceptEdits`) provides balanced security for most use cases
 - `bypassPermissions` mode should only be used in trusted environments
 - Sensitive file access is automatically restricted (`.env`, `secrets/**`)
-- Git operations require explicit permissions for security 
 
 ## Use Cases
 
