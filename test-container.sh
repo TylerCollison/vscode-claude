@@ -10,6 +10,10 @@ docker run -d \
   -e PUID=1000 \
   -e PGID=1000 \
   -e TZ=Etc/UTC \
+  -e CLAUDE_CODE_PERMISSION_MODE=bypassPermissions \
+  -e CLAUDE_CODE_FULL_PERMISSIONS=1 \
+  -e CLAUDE_CODE_ENABLE_TELEMETRY=0 \
+  -e CLAUDE_CODE_HIDE_ACCOUNT_INFO=1 \
   -p 8443:8443 \
   -v /tmp/test-config:/config \
   vscode-claude-test
