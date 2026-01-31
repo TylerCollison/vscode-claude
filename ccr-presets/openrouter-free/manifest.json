@@ -1,0 +1,49 @@
+{
+  "name": "openrouter-free",
+  "version": "1.0.0",
+  "description": "Full collection of all free openrouter models",
+  "author": "Tyler Collison",
+  "keywords": [
+    "openrouter"
+  ],
+  "LOG": false,
+  "LOG_LEVEL": "debug",
+  "CLAUDE_PATH": "",
+  "HOST": "0.0.0.0",
+  "PORT": 3456,
+  "OPENROUTER_API_KEY": "${OPENROUTER_API_KEY}",
+  "API_TIMEOUT_MS": "600000",
+  "PROXY_URL": "",
+  "transformers": [],
+  "Providers": [
+    {
+      "name": "openrouter",
+      "api_base_url": "https://openrouter.ai/api/v1/chat/completions",
+      "api_key": "${OPENROUTER_API_KEY}",
+      "models": [
+        "google/gemma-3-27b-it:free",
+        "google/gemini-2.0-flash-exp:free"
+      ]
+    }
+  ],
+  "StatusLine": {
+    "enabled": false,
+    "currentStyle": "default",
+    "default": {
+      "modules": []
+    },
+    "powerline": {
+      "modules": []
+    }
+  },
+  "Router": {
+    "default": "openrouter,google/gemini-2.0-flash-exp:free",
+    "background": "openrouter,google/gemini-2.0-flash-exp:free",
+    "think": "openrouter,google/gemini-2.0-flash-exp:free",
+    "longContext": "openrouter,google/gemini-2.0-flash-exp:free",
+    "longContextThreshold": 60000,
+    "webSearch": "openrouter,google/gemini-2.0-flash-exp:free",
+    "image": "openrouter,google/gemini-2.0-flash-exp:free"
+  },
+  "CUSTOM_ROUTER_PATH": ""
+}

@@ -1,0 +1,54 @@
+{
+  "name": "google",
+  "version": "1.0.0",
+  "description": "Full collection of all Google models",
+  "author": "Tyler Collison",
+  "keywords": [
+    "google"
+  ],
+  "LOG": false,
+  "LOG_LEVEL": "debug",
+  "CLAUDE_PATH": "",
+  "HOST": "0.0.0.0",
+  "PORT": 3456,
+  "GOOGLE_API_KEY": "${GOOGLE_API_KEY}",
+  "API_TIMEOUT_MS": "600000",
+  "PROXY_URL": "",
+  "transformers": [],
+  "Providers": [
+    {
+      "name": "google",
+      "api_base_url": "https://generativelanguage.googleapis.com/v1beta/models/",
+      "api_key": "${GOOGLE_API_KEY}",
+      "models": [
+        "gemini-2.5-flash",
+        "gemma-3-27b-it"
+      ],
+      "transformer": {
+        "use": [
+          "gemini"
+        ]
+      }
+    }
+  ],
+  "StatusLine": {
+    "enabled": false,
+    "currentStyle": "default",
+    "default": {
+      "modules": []
+    },
+    "powerline": {
+      "modules": []
+    }
+  },
+  "Router": {
+    "default": "google,gemini-2.5-flash",
+    "background": "google,gemini-2.5-flash",
+    "think": "google,gemini-2.5-flash",
+    "longContext": "google,gemini-2.5-flash",
+    "longContextThreshold": 60000,
+    "webSearch": "google,gemini-2.5-flash",
+    "image": "google,gemini-2.5-flash"
+  },
+  "CUSTOM_ROUTER_PATH": ""
+}

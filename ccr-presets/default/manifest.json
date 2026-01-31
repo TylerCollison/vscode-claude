@@ -1,0 +1,64 @@
+{
+  "name": "default",
+  "version": "1.0.0",
+  "description": "Tyler Collison's default config",
+  "author": "Tyler Collison",
+  "keywords": [
+    "google",
+    "nim",
+    "default"
+  ],
+  "LOG": false,
+  "LOG_LEVEL": "debug",
+  "CLAUDE_PATH": "",
+  "HOST": "0.0.0.0",
+  "PORT": 3456,
+  "NIM_API_KEY": "${NIM_API_KEY}",
+  "GOOGLE_API_KEY": "${GOOGLE_API_KEY}",
+  "API_TIMEOUT_MS": "600000",
+  "PROXY_URL": "",
+  "transformers": [],
+  "Providers": [
+    {
+      "name": "nim",
+      "api_base_url": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "api_key": "${NIM_API_KEY}",
+      "models": [
+        "deepseek-ai/deepseek-v3.1-terminus"
+      ]
+    },
+    {
+      "name": "google",
+      "api_base_url": "https://generativelanguage.googleapis.com/v1beta/models/",
+      "api_key": "${GOOGLE_API_KEY}",
+      "models": [
+        "gemini-2.5-flash"
+      ],
+      "transformer": {
+        "use": [
+          "gemini"
+        ]
+      }
+    }
+  ],
+  "StatusLine": {
+    "enabled": false,
+    "currentStyle": "default",
+    "default": {
+      "modules": []
+    },
+    "powerline": {
+      "modules": []
+    }
+  },
+  "Router": {
+    "default": "nim,deepseek-ai/deepseek-v3.1-terminus",
+    "background": "nim,deepseek-ai/deepseek-v3.1-terminus",
+    "think": "nim,deepseek-ai/deepseek-v3.1-terminus",
+    "longContext": "nim,deepseek-ai/deepseek-v3.1-terminus",
+    "longContextThreshold": 60000,
+    "webSearch": "nim,deepseek-ai/deepseek-v3.1-terminus",
+    "image": "google,gemini-2.5-flash"
+  },
+  "CUSTOM_ROUTER_PATH": ""
+}
