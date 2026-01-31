@@ -11,6 +11,7 @@ docker run -d \
   -e PGID=1000 \
   -e TZ=Etc/UTC \
   -p 8443:8443 \
+  -v /tmp/test-config:/config \
   vscode-claude-test
 
 echo "Waiting for container to start..."

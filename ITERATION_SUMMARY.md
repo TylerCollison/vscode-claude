@@ -18,14 +18,13 @@ This caused:
 
 ### 1. Fixed Dockerfile Entrypoint
 - **Before**: `ENTRYPOINT ["/init", "configure-claude-permissions.sh", "--"]`
-- **After**: `ENTRYPOINT ["/init"]` and `CMD ["startup-wrapper.sh"]`
+- **After**: `ENTRYPOINT ["/init"]` with pre-start hooks
 - **Result**: Properly integrates with linuxserver initialization system
 
-### 2. Created Startup Wrapper Script (`startup-wrapper.sh`)
-- Runs Claude permissions configuration first
-- Then starts VS Code server with proper flags
-- Handles environment variables (PASSWORD, HASHED_PASSWORD)
-- Preserves original command execution for compatibility
+### 2. Proper Pre-Start Hook Configuration
+- Uses `/etc/cont-init.d/` for permissions setup
+- Lets linuxserver `/init` manage VS Code server directly
+- No wrapper script interference with process management
 
 ### 3. Added Comprehensive Testing
 - **`test-container.sh`**: Automated build and connectivity test
@@ -40,11 +39,12 @@ This caused:
 ## Files Created/Modified
 
 ### Modified Files:
-- **`Dockerfile`**: Fixed entrypoint and command configuration
+- **`Dockerfile`**: Fixed entrypoint and pre-start hook configuration
+- **`configure-claude-permissions.sh`**: Modified to work as pre-start hook
+- **`startup-wrapper.sh`**: Updated for backward compatibility
 - **`README.md`**: Added testing instructions
 
 ### New Files:
-- **`startup-wrapper.sh`**: Main wrapper script for proper startup
 - **`docker-compose.yml`**: Complete docker-compose configuration
 - **`test-container.sh`**: Automated testing script
 - **`verify-syntax.sh`**: Syntax validation script

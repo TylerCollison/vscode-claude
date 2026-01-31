@@ -16,15 +16,15 @@ This caused two issues:
 
 ## Solution Implemented
 
-### 1. New Wrapper Script (`startup-wrapper.sh`)
-- Runs permissions configuration first
-- Then starts the VS Code server properly
-- Preserves the original linuxserver/code-server behavior
+### 1. Proper linuxserver Integration
+- Uses `/etc/cont-init.d/` pre-start hooks for permissions configuration
+- Lets linuxserver `/init` system manage the VS Code server process directly
+- No wrapper script interference with process management
 
 ### 2. Updated Dockerfile
-- Uses the original `/init` entrypoint (linuxserver standard)
-- Uses wrapper script as the default command
-- Maintains all existing functionality
+- Uses the standard `/init` entrypoint (linuxserver standard)
+- Places permissions script in `/etc/cont-init.d/` for proper pre-start execution
+- Maintains all existing functionality without process conflicts
 
 ### 3. Testing Script (`test-container.sh`)
 - Automated build and test process
@@ -55,8 +55,9 @@ docker-compose logs -f
 - Web interface should be available at http://localhost:8443
 
 ## Files Changed
-- `Dockerfile` - Fixed entrypoint and command
-- `startup-wrapper.sh` - New wrapper script
+- `Dockerfile` - Fixed entrypoint and pre-start hook configuration
+- `configure-claude-permissions.sh` - Modified to work as pre-start hook
+- `startup-wrapper.sh` - Updated for backward compatibility
 - `docker-compose.yml` - Added compose configuration
 - `test-container.sh` - Added test script
 - `README.md` - Updated build instructions

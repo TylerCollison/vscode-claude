@@ -52,5 +52,4 @@ EOF
     chmod +x /usr/local/bin/claude-full
 fi
 
-# Execute the original command
-exec "$@"
+# This script runs as a pre-start hook, no need to exec commands

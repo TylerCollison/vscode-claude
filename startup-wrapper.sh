@@ -1,22 +1,14 @@
 #!/bin/bash
-# Wrapper script to configure Claude permissions and then start VS Code server
+# Legacy wrapper script - now handled by pre-start hooks
+# This is kept for backward compatibility but should not be used as main process
 
-# Configure Claude Code permissions
-/usr/local/bin/configure-claude-permissions.sh
+echo "Warning: startup-wrapper.sh should not be used as main process"
+echo "Claude permissions are now configured via /etc/cont-init.d/ hooks"
 
-# Check if the original command is provided
-if [ $# -eq 0 ]; then
-    # No command provided, use default code-server startup
-    echo "Starting VS Code server with default configuration..."
-
-    # Use password authentication if PASSWORD is set, otherwise use none
-    if [ -n "$PASSWORD" ] || [ -n "$HASHED_PASSWORD" ]; then
-        exec code-server --bind-addr 0.0.0.0:8443 --auth password
-    else
-        exec code-server --bind-addr 0.0.0.0:8443 --auth none
-    fi
-else
-    # Execute the original command (preserving the linuxserver/code-server behavior)
-    echo "Executing provided command: $@"
-    exec "$@"
+# For backward compatibility, run permissions setup if needed
+if [ -f "/etc/cont-init.d/99-configure-claude-permissions" ]; then
+    /etc/cont-init.d/99-configure-claude-permissions
 fi
+
+# If this script is executed, just exit - let /init handle the main process
+exit 0
