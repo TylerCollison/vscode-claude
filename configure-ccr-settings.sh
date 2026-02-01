@@ -58,4 +58,7 @@ if [ $processed_count -eq 0 ]; then
     echo "Warning: No files were successfully processed"
 fi
 
+# Grant open permissiosn for the config folder
+chmod -R 777 /config
+
 # This script runs as a pre-start hook, no need to exec commands
