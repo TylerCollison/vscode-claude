@@ -31,9 +31,9 @@ COPY ccr-presets /ccr-presets
 
 # Create startup script for pre-start hook
 COPY configure-claude-permissions.sh /etc/cont-init.d/99-configure-claude-permissions
-COPY configure-ccr-settings.sh /etc/cont-init.d/99-configure-ccr-settings
+COPY configure-ccr-settings.sh /etc/cont-init.d/98-configure-ccr-settings
 RUN chmod +x /etc/cont-init.d/99-configure-claude-permissions
-RUN chmod +x /etc/cont-init.d/99-configure-ccr-settings
+RUN chmod +x /etc/cont-init.d/98-configure-ccr-settings
 
 # Docker socket volume mount (to be used when running the container)
 # This allows Docker commands inside the container to communicate with host Docker daemon

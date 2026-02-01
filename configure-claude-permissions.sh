@@ -21,4 +21,7 @@ cat > /config/.claude/settings.json << EOF
 }
 EOF
 
+# Grant open permissions for the config folder
+chmod -R 777 /config
+
 # This script runs as a pre-start hook, no need to exec commands
