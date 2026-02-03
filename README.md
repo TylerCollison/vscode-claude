@@ -47,9 +47,12 @@ docker run -d \
   -e PROXY_DOMAIN=code-server.my.domain `#optional` \
   -e DEFAULT_WORKSPACE=/config/workspace `#optional` \
   -e PWA_APPNAME=code-server `#optional` \
+  -e NIM_API_KEY=your-nvidia-nim-api-key `#Only required if using NIM hosted models` \
+  -e GOOGLE_API_KEY=your-google-ai-studio-api-key `#Only required if using Google hosted models` \
   -p 8443:8443 \
-  -v /path/to/code-server/config:/config \
-  -v /path/to/your/code:/workspace \
+  -v /var/run/docker.sock:/var/run/docker.sock `#Optional host docker control` \
+  -v /path/to/code-server/config:/config `#Optional: Path to config folder (note that this overrides the default configuration and ccr presets)` \
+  -v /path/to/your/code:/workspace `#Optional: Mount your code directory` \
   --restart unless-stopped \
   tylercollison2089/vscode-claude
 
@@ -76,14 +79,15 @@ services:
       - PROXY_DOMAIN=code-server.my.domain # optional
       - DEFAULT_WORKSPACE=/workspace # optional
       - PWA_APPNAME=code-server # optional
-      # Claude Code permission settings
       - CLAUDE_CODE_PERMISSION_MODE=acceptEdits
+      - NIM_API_KEY=your-nvidia-nim-api-key #Only required if using NIM hosted models
+      - GOOGLE_API_KEY=your-google-ai-studio-api-key #Only required if using Google hosted models
     ports:
       - "8443:8443"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock # Optional host docker control
-      - /path/to/code-server/config:/config
-      - /path/to/your/code:/workspace # Mount your code directory
+      - /path/to/code-server/config:/config # Optional: Path to config folder (note that this overrides the default configuration and ccr presets)
+      - /path/to/your/code:/workspace # Optional: Mount your code directory
     restart: unless-stopped
 ```
 
@@ -112,7 +116,7 @@ For VS Code settings, themes, and extension management, please refer to the [lin
 ### Claude Code Setup
 After starting the container:
 1. Open the terminal in VS Code
-2. Run `claude` to start Claude Code directly or `ccr code` to use Claude Code Router
+2. Run `claude` to start Claude Code directly or `ccr default` to use Claude Code Router with the default configuration (more presets coming soon!). Note that the default Claude Code Router preset requires the NIM_API_KEY and GOOGLE_API_KEY environment variables be set. 
 3. If using Claude Code directly, follow the authentication prompts for your Claude account. If using Claude Code Router, see the [Claude Code Router GitHub Repository](https://github.com/musistudio/claude-code-router) for configuration instructions.
 
 ### Permission Control
