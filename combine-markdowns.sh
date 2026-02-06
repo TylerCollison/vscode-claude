@@ -99,20 +99,8 @@ for file_path in "${FILES_ARRAY[@]}"; do
 done
 
 # Create combined markdown file
-OUTPUT_FILE="$DEFAULT_WORKSPACE/claude.md"
+OUTPUT_FILE="$DEFAULT_WORKSPACE/CLAUDE.md"
 log "Creating combined markdown file: $OUTPUT_FILE"
-
-# Write metadata header
-cat > "$OUTPUT_FILE" << EOF
-# Combined Markdown Documentation
-
-**Source Repository:** $GIT_REPO_URL
-**Branch:** $GIT_BRANCH
-**Generated:** $(date '+%Y-%m-%d %H:%M:%S')
-
----
-
-EOF
 
 # Combine files in specified order
 for file_path in "${FILES_ARRAY[@]}"; do
