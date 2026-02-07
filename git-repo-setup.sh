@@ -114,6 +114,9 @@ cd "$TARGET_DIR"
 log "Processing branch '$GIT_BRANCH_NAME'..."
 
 if branch_exists "$TARGET_DIR" "$GIT_BRANCH_NAME"; then
+    # Reset branch first to ensure transition works
+    git reset --hard
+
     # Branch exists, check it out
     log "Branch '$GIT_BRANCH_NAME' exists, checking out..."
     if ! git checkout "$GIT_BRANCH_NAME"; then
