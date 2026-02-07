@@ -82,35 +82,7 @@ add_marketplace_config() {
 
     log "Configuring marketplace: $source (name: $marketplace_name)"
 
-    # Create marketplace directory
-    local marketplace_dir="/config/.claude/plugins/marketplaces/$marketplace_name"
-    mkdir -p "$marketplace_dir"
-
-    # Create marketplace configuration
-    cat > "$marketplace_dir/.mcp.json" << EOF
-{
-  "name": "$marketplace_name",
-  "version": "1.0.0",
-  "source": "$source"
-}
-EOF
-
-    # Update known_marketplaces.json
-    local known_file="/config/.claude/plugins/known_marketplaces.json"
-    if [ ! -f "$known_file" ]; then
-        echo '{}' > "$known_file"
-    fi
-
-    jq --arg name "$marketplace_name" --arg source "$source" '
-    .[$name] = {
-        "source": {
-            "source": "github",
-            "repo": "anthropics/claude-plugins"
-        },
-        "installLocation": "/config/.claude/plugins/marketplaces/'"$marketplace_name"'",
-        "lastUpdated": "'"$(date -Iseconds)"'"
-    }
-    ' "$known_file" > "${known_file}.tmp" && mv "${known_file}.tmp" "$known_file"
+    claude plugin marketplace add $marketplace_name
 
     log_success "Marketplace configured: $marketplace_name"
     return 0
@@ -122,17 +94,7 @@ enable_plugin() {
 
     log "Enabling plugin: $plugin_name"
 
-    # Update settings.json
-    local settings_file="/config/.claude/settings.json"
-    if [ ! -f "$settings_file" ]; then
-        echo '{}' > "$settings_file"
-    fi
-
-    # Enable the plugin
-    jq --arg plugin "$plugin_name" '
-    if .enabledPlugins then . else .enabledPlugins = {} end |
-    .enabledPlugins[$plugin] = true
-    ' "$settings_file" > "${settings_file}.tmp" && mv "${settings_file}.tmp" "$settings_file"
+    claude plugin install $plugin_name --scope user
 
     log_success "Plugin enabled: $plugin_name"
     return 0
@@ -152,10 +114,6 @@ main() {
         log_error "Pre-flight check failed: Network connectivity issue"
         return 1
     fi
-
-    # Ensure Claude directories exist
-    mkdir -p /config/.claude/plugins/marketplaces
-    mkdir -p /config/.claude/plugins/cache
 
     # Initialize counters
     marketplace_success=0
@@ -203,15 +161,6 @@ main() {
     log "Configuration completed:"
     log "- Marketplaces: $marketplace_success successful, $marketplace_failed failed"
     log "- Plugins: $plugin_success successful, $plugin_failed failed"
-
-    # Verify configuration
-    if [ -f "/config/.claude/plugins/known_marketplaces.json" ]; then
-        log "Marketplace configuration verified"
-    fi
-
-    if [ -f "/config/.claude/settings.json" ]; then
-        log "Plugin settings verified"
-    fi
 
     # Determine overall success
     if [ $marketplace_failed -eq 0 ] && [ $plugin_failed -eq 0 ]; then
