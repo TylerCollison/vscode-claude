@@ -60,29 +60,16 @@ parse_env_var() {
     echo "$var_value" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$'
 }
 
-# Extract marketplace name from URL or source
-extract_marketplace_name() {
-    local source="$1"
-
-    # Handle GitHub URLs
-    if [[ "$source" =~ github\.com/([^/]+)/([^/]+) ]]; then
-        local org="${BASH_REMATCH[1]}"
-        local repo="${BASH_REMATCH[2]}"
-        echo "${org}-${repo}" | sed 's/[^a-zA-Z0-9_-]//g'
-    # Handle simple names
-    else
-        echo "$source" | sed 's/[^a-zA-Z0-9_-]//g'
-    fi
-}
-
 # Add marketplace configuration
 add_marketplace_config() {
-    local source="$1"
-    local marketplace_name=$(extract_marketplace_name "$source")
+    local marketplace_name="$1"
 
     log "Configuring marketplace: $source (name: $marketplace_name)"
 
-    claude plugin marketplace add $marketplace_name
+    if ! claude plugin marketplace add $marketplace_name; then
+        log_error "Failed to configure marketplace: $marketplace_name"
+        return 1
+    fi
 
     log_success "Marketplace configured: $marketplace_name"
     return 0
@@ -94,7 +81,10 @@ enable_plugin() {
 
     log "Enabling plugin: $plugin_name"
 
-    claude plugin install $plugin_name --scope user
+    if ! claude plugin install $plugin_name --scope user; then
+        log_error "Failed to enable plugin: $plugin_name"
+        return 1
+    fi
 
     log_success "Plugin enabled: $plugin_name"
     return 0
