@@ -101,7 +101,7 @@ log "  Target: $TARGET_DIR"
 
 # Clone repository
 log "Cloning repository..."
-if ! git clone --depth 1 "$GIT_REPO_URL" "$TARGET_DIR"; then
+if ! git clone "$GIT_REPO_URL" "$TARGET_DIR"; then
     error_exit "Failed to clone git repository: $GIT_REPO_URL"
 fi
 
