@@ -81,16 +81,6 @@ if [ -z "$GIT_BRANCH_NAME" ]; then
     log "No branch specified, generating procedural branch name: $GIT_BRANCH_NAME"
 fi
 
-# Validate DEFAULT_WORKSPACE directory exists and is writable
-if [ ! -d "$DEFAULT_WORKSPACE" ]; then
-    log "$DEFAULT_WORKSPACE does not exist, creating"
-    mkdir "$DEFAULT_WORKSPACE"
-fi
-
-if [ ! -w "$DEFAULT_WORKSPACE" ]; then
-    error_exit "DEFAULT_WORKSPACE directory '$DEFAULT_WORKSPACE' is not writable"
-fi
-
 # Create process-specific temporary directory
 TEMP_DIR="/tmp/git-setup-$$"
 log "Creating temporary directory: $TEMP_DIR"
