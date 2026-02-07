@@ -30,12 +30,14 @@ RUN npm install -g @musistudio/claude-code-router
 COPY ccr-presets /ccr-presets
 
 # Create startup script for pre-start hook
-COPY configure-claude-permissions.sh /etc/cont-init.d/99-configure-claude-permissions
-COPY configure-ccr-settings.sh /etc/cont-init.d/98-configure-ccr-settings
-COPY combine-markdowns.sh /etc/cont-init.d/97-combine-markdowns
-RUN chmod +x /etc/cont-init.d/99-configure-claude-permissions
-RUN chmod +x /etc/cont-init.d/98-configure-ccr-settings
-RUN chmod +x /etc/cont-init.d/97-combine-markdowns
+COPY combine-markdowns.sh /etc/cont-init.d/96-combine-markdowns
+COPY configure-ccr-settings.sh /etc/cont-init.d/97-configure-ccr-settings
+COPY configure-claude-permissions.sh /etc/cont-init.d/98-configure-claude-permissions
+COPY configure-claude-plugins.sh /etc/cont-init.d/99-configure-claude-plugins
+RUN chmod +x /etc/cont-init.d/96-combine-markdowns
+RUN chmod +x /etc/cont-init.d/97-configure-ccr-settings
+RUN chmod +x /etc/cont-init.d/98-configure-claude-permissions
+RUN chmod +x /etc/cont-init.d/99-configure-claude-plugins
 
 # Docker socket volume mount (to be used when running the container)
 # This allows Docker commands inside the container to communicate with host Docker daemon
