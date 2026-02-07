@@ -210,6 +210,9 @@ for ((i=0; i<${#FILES_ARRAY[@]}; i++)); do
     echo -e "\n" >> "$OUTPUT_FILE"
 done
 
+# Set workspace permissions
+chmod -R 777 "$DEFAULT_WORKSPACE/"
+
 log "Successfully created combined markdown file: $OUTPUT_FILE"
 log "Processed ${#FILES_ARRAY[@]} markdown files from ${#REPO_URLS[@]} repositories"
 
