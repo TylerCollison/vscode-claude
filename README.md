@@ -215,6 +215,37 @@ docker build \
 ./test-container.sh
 ```
 
+## Multi-Repository Markdown Combination
+The `combine-markdowns.sh` script supports combining markdown files from multiple git repositories.
+
+### Usage Examples
+
+```bash
+# Multiple repositories with structured config
+KNOWLEDGE_REPOS="https://github.com/user/repo1.git:main:README.md,docs/guide.md;https://github.com/user/repo2.git:develop:docs/api.md"
+
+# Repository without branch specified
+KNOWLEDGE_REPOS="https://github.com/user/repo1.git:README.md,docs/guide.md;https://github.com/user/repo2.git:docs/api.md"
+
+# Mixed - one with branch, one without
+KNOWLEDGE_REPOS="https://github.com/user/repo1.git:develop:README.md,docs/guide.md;https://github.com/user/repo2.git:docs/api.md"
+```
+
+### Configuration Format
+
+The `KNOWLEDGE_REPOS` environment variable uses this structured format:
+- `;` separates different repositories
+- `:` separates repository URL, branch (optional), and file list
+- `,` separates files within a repository
+- **Branch is optional** - if omitted, defaults to "main"
+
+### Output Format
+
+The combined markdown file includes:
+- Header showing all source repositories
+- Clear attribution for each file showing which repository it came from
+- Files processed in repository order, then file order within each repository
+
 ## Credits
 
 This image builds upon the excellent work of:
