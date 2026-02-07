@@ -83,7 +83,8 @@ fi
 
 # Validate DEFAULT_WORKSPACE directory exists and is writable
 if [ ! -d "$DEFAULT_WORKSPACE" ]; then
-    error_exit "DEFAULT_WORKSPACE directory '$DEFAULT_WORKSPACE' does not exist"
+    log "$DEFAULT_WORKSPACE does not exist, creating"
+    mkdir "$DEFAULT_WORKSPACE"
 fi
 
 if [ ! -w "$DEFAULT_WORKSPACE" ]; then
@@ -96,8 +97,7 @@ log "Creating temporary directory: $TEMP_DIR"
 mkdir -p "$TEMP_DIR"
 
 # Extract repository name from URL for target directory
-REPO_NAME=$(basename "$GIT_REPO_URL" .git)
-TARGET_DIR="$DEFAULT_WORKSPACE/$REPO_NAME"
+TARGET_DIR="$DEFAULT_WORKSPACE"
 
 # Check if target directory already exists
 if [ -d "$TARGET_DIR" ]; then
