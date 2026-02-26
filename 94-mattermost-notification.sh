@@ -15,12 +15,6 @@ error_exit() {
     exit 1
 }
 
-# Graceful exit function for optional functionality
-graceful_exit() {
-    log "INFO: $1 - skipping Mattermost notification"
-    exit 0
-}
-
 # Success logging function
 log_success() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - SUCCESS: $1"
@@ -36,28 +30,20 @@ make_api_call() {
     local retry_count=0
 
     while [ $retry_count -le $max_retries ]; do
-        # Use process substitution to hide token from command-line arguments
-        local auth_header_file
-        auth_header_file=$(mktemp)
-        echo "Authorization: Bearer $mm_token" > "$auth_header_file"
-
-        local curl_cmd=(curl -s -w "%{http_code}" --max-time 30)
+        local curl_cmd=(curl -s -w "%{http_code}" --max-time 30 -H "Authorization: Bearer $mm_token")
 
         if [ "$method" = "POST" ]; then
             curl_cmd+=(-X POST -H "Content-Type: application/json")
             [ -n "$data" ] && curl_cmd+=(-d "$data")
         fi
 
-        curl_cmd+=(-H "@$auth_header_file" "$url")
+        curl_cmd+=("$url")
 
         # Execute curl command and capture both response body and status code
         local response
         response=$("${curl_cmd[@]}")
         local http_code="${response: -3}"
         local response_body="${response%???}"
-
-        # Clean up temp file
-        rm -f "$auth_header_file"
 
         # Handle HTTP status codes
         case "$http_code" in
@@ -100,32 +86,30 @@ resolve_channel_id() {
     local channel_name="$1"
     local mm_address="$2"
     local mm_token="$3"
+    local team_name="${4:-home}"
 
-    log "Resolving channel name '$channel_name' to channel ID..."
+    log "Resolving channel name '$channel_name' to channel ID..." >&2
 
-    # Call Mattermost API to get channel list
+    # Use direct channel resolution endpoint with team name from MM_TEAM_NAME environment variable
     local response
-    response=$(make_api_call "$mm_address/api/v4/channels" "GET" "" "$mm_token")
+    response=$(make_api_call "$mm_address/api/v4/teams/name/$team_name/channels/name/$channel_name" "GET" "" "$mm_token")
 
     # Use jq for robust JSON parsing
     if ! command -v jq >/dev/null 2>&1; then
         # Fallback to grep/cut with improved safety
-        channel_id=$(echo "$response" | grep -o '"id":"[^"]*","name":"'"$channel_name"'"' | head -1 | cut -d'"' -f4)
+        channel_id=$(echo "$response" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
         if [ -z "$channel_id" ]; then
-            # Try alternative pattern
-            channel_id=$(echo "$response" | grep -o '"name":"'"$channel_name"'","id":"[^"]*"' | head -1 | cut -d'"' -f8)
+            error_exit "Channel '$channel_name' not found or authentication failed"
         fi
     else
         # Use jq for proper JSON parsing
-        channel_id=$(echo "$response" | jq -r --arg channel "$channel_name"
-            '.[] | select(.name == $channel) | .id' 2>/dev/null || echo "")
+        channel_id=$(echo "$response" | jq -r '.id' 2>/dev/null || echo "")
+        if [ -z "$channel_id" ]; then
+            error_exit "Channel '$channel_name' not found or authentication failed"
+        fi
     fi
 
-    if [ -z "$channel_id" ]; then
-        error_exit "Channel '$channel_name' not found or authentication failed"
-    fi
-
-    log "Resolved channel '$channel_name' to ID: $channel_id"
+    log "Resolved channel '$channel_name' in team '$team_name' to ID: $channel_id" >&2
     echo "$channel_id"
 }
 
@@ -138,27 +122,39 @@ post_to_mattermost() {
 
     log "Posting message to Mattermost channel ID: $channel_id"
 
-    # Escape message for JSON
-    local escaped_message
-    escaped_message=$(echo "$message" | sed 's/"/\\"/g' | sed 's/\n/\\n/g')
+    # Format message payload using jq if available, otherwise use printf
+    local payload
+    if command -v jq >/dev/null 2>&1; then
+        payload=$(jq -n --arg channel_id "$channel_id" --arg message "$message" '{"channel_id": $channel_id, "message": $message}')
+    else
+        payload=$(printf '{"channel_id": "%s", "message": "%s"}' "$channel_id" "$(echo "$message" | sed 's/"/\\"/g')")
+    fi
 
-    # Format message payload
-    local payload="{\"channel_id\": \"$channel_id\", \"message\": \"$escaped_message\"}"
-
-    # Post message to Mattermost
+    # Post message to Mattermost - use direct curl (proven to work)
     local response
-    response=$(make_api_call "$mm_address/api/v4/posts" "POST" "$payload" "$mm_token")
+    response=$(curl -s -w "%{http_code}" -H "Authorization: Bearer $mm_token" -H "Content-Type: application/json" -d "$payload" "$mm_address/api/v4/posts")
 
     # Validate response using jq if available
     if command -v jq >/dev/null 2>&1; then
         local post_id
         post_id=$(echo "$response" | jq -r '.id' 2>/dev/null || echo "")
-        if [ -z "$post_id" ]; then
-            error_exit "Failed to parse successful response from Mattermost"
+        # Check if the response indicates an error
+        local status_code
+        status_code=$(echo "$response" | jq -r '.status_code' 2>/dev/null || echo "")
+        if [ -n "$status_code" ] && [ "$status_code" != "null" ] && [ "$status_code" != "" ]; then
+            # This is an error response
+            error_exit "Message post failed - check Mattermost server configuration"
         fi
-        log "Message posted successfully with ID: $post_id"
+        if [ -n "$post_id" ] && [ "$post_id" != "null" ] && [ "$post_id" != "" ]; then
+            log "Message posted successfully with ID: $post_id"
+        else
+            error_exit "Message post failed - check Mattermost server configuration"
+        fi
     else
         # Fallback validation using grep
+        if echo "$response" | grep -q '"status_code"'; then
+            error_exit "Message post failed - check Mattermost server configuration"
+        fi
         if ! echo "$response" | grep -q '"id"'; then
             error_exit "Message post failed - check Mattermost server configuration"
         fi
@@ -171,33 +167,37 @@ post_to_mattermost() {
 main() {
     log "Starting Mattermost notification script"
 
-    # Validate required environment variables with graceful degradation
+    # Validate required environment variables
     log "Validating environment variables..."
 
     if [ -z "${MM_ADDRESS:-}" ]; then
-        graceful_exit "MM_ADDRESS environment variable is not set"
+        error_exit "MM_ADDRESS environment variable is required"
     fi
 
     if [ -z "${MM_CHANNEL:-}" ]; then
-        graceful_exit "MM_CHANNEL environment variable is not set"
+        error_exit "MM_CHANNEL environment variable is required"
     fi
 
     if [ -z "${MM_TOKEN:-}" ]; then
-        graceful_exit "MM_TOKEN environment variable is not set"
+        error_exit "MM_TOKEN environment variable is required"
     fi
 
     if [ -z "${PROMPT:-}" ]; then
-        graceful_exit "PROMPT environment variable is not set"
+        error_exit "PROMPT environment variable is required"
     fi
 
     if [ -z "${IDE_ADDRESS:-}" ]; then
-        graceful_exit "IDE_ADDRESS environment variable is not set"
+        error_exit "IDE_ADDRESS environment variable is required"
     fi
 
     log "All required environment variables are present"
 
+    # Log team name being used (defaults to 'home' if MM_TEAM_NAME is not set)
+    local team_name="${MM_TEAM_NAME:-home}"
+    log "Using Mattermost team: $team_name"
+
     # Resolve channel name to channel ID
-    channel_id=$(resolve_channel_id "$MM_CHANNEL" "$MM_ADDRESS" "$MM_TOKEN")
+    channel_id=$(resolve_channel_id "$MM_CHANNEL" "$MM_ADDRESS" "$MM_TOKEN" "$team_name")
 
     # Format markdown message
     message="🚀 **Claude Code Development Environment Started**
@@ -205,12 +205,7 @@ main() {
 **Container Information:**
 - **Prompt:** $PROMPT
 - **IDE Address:** $IDE_ADDRESS
-- **Started at:** $(date '+%Y-%m-%d %H:%M:%S')
-
-**Environment Details:**
-- Claude Code Version: 2.1.59.17f
-- Platform: $(uname -s) $(uname -m)
-- Working Directory: $(pwd)
+- **Started at:** $(date)
 
 This container is ready for development work!"
 
