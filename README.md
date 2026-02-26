@@ -59,6 +59,101 @@ docker run -d \
 # Access at http://localhost:8443
 ```
 
+## Environment Variables Reference
+
+This container supports extensive configuration through environment variables. Below is a comprehensive reference organized by functionality:
+
+### Container Configuration
+- `PUID` - **User ID** for container processes (default: `1000`)
+- `PGID` - **Group ID** for container processes (default: `1000`)
+- `TZ` - **Timezone** configuration (default: `Etc/UTC`, examples: `America/New_York`, `Europe/London`)
+- `PROXY_DOMAIN` - **Reverse proxy domain** for external access
+- `DEFAULT_WORKSPACE` - **Default workspace directory** (default: `/config/workspace`)
+- `PWA_APPNAME` - **Progressive Web App name** for browser installation
+
+### Authentication & Access Control
+- `PASSWORD` - **Plaintext password** for VS Code web interface
+- `HASHED_PASSWORD` - **Argon2id-hashed password** (recommended for security)
+- `SUDO_PASSWORD` - **Plaintext sudo password** for administrative operations
+- `SUDO_PASSWORD_HASH` - **Hashed sudo password** for secure administrative access
+
+### AI Model Configuration
+- `NIM_API_KEY` - **NVIDIA NIM API key** - Required for NIM-hosted models
+- `GOOGLE_API_KEY` - **Google AI Studio API key** - Required for Google models
+
+### Claude Code Security
+- `CLAUDE_CODE_PERMISSION_MODE` - **Permission control** for Claude Code operations:
+  - `acceptEdits` (default) - Balanced security with user confirmation
+  - `bypassPermissions` - Full access for trusted environments
+  - `default` - Claude's default permission behavior
+  - `plan` - Planning mode without execution
+  - `dontAsk` - Suppress confirmation prompts
+
+### Multi-Repository Knowledge
+- `KNOWLEDGE_REPOS` - **Git repository URLs** for markdown documentation combining:
+  ```bash
+  # Format: REPO_URL[:BRANCH]:FILE1,FILE2;REPO_URL[:BRANCH]:FILE1
+  KNOWLEDGE_REPOS="https://github.com/user/repo1.git:main:README.md,docs/guide.md;https://github.com/user/repo2.git:develop:docs/api.md"
+  ```
+
+## Security Best Practices
+
+### Sensitive Environment Variables
+
+When deploying this container, handle sensitive environment variables with care:
+
+**High-Security Variables:**
+- `PASSWORD` / `HASHED_PASSWORD` - Container access authentication
+- `SUDO_PASSWORD` / `SUDO_PASSWORD_HASH` - Administrative privileges
+- `MM_TOKEN` - Mattermost bot authentication token
+- `NIM_API_KEY` - NVIDIA NIM API key
+- `GOOGLE_API_KEY` - Google AI Studio API key
+
+**Security Recommendations:**
+
+1. **Use Docker Secrets or HashiCorp Vault** for production deployments:
+   ```bash
+   # Docker Swarm secrets
+   echo "your-password" | docker secret create code-password -
+
+   # Use in compose file
+   secrets:
+     - code-password
+   ```
+
+2. **Avoid plaintext passwords** in environment files:
+   ```bash
+   # Instead of plaintext:
+   -e PASSWORD=mypassword
+
+   # Use hashed passwords:
+   -e HASHED_PASSWORD="$argon2id$v=19$m=65536,t=3,p=4$..."
+   ```
+
+3. **Restrict network access** when using Docker-in-Docker:
+   ```yaml
+   # In Docker Compose
+   networks:
+     - internal-only
+   ```
+
+4. **Use dedicated tokens** for Mattermost with minimal permissions:
+   - Create bot accounts with channel-specific posting rights
+   - Rotate tokens regularly
+   - Avoid using personal account tokens
+
+### Container Security Considerations
+
+**Docker Socket Access:**
+- Mounting `/var/run/docker.sock` gives container full Docker host control
+- Only enable in trusted environments
+- Consider using rootless Docker or Podman for added security
+
+**File System Access:**
+- Mount volumes with appropriate permissions (`ro` for read-only access)
+- Avoid mounting sensitive host directories unnecessarily
+- Use `:Z` SELinux labels when applicable
+
 ## Docker Compose
 
 For easier deployment and management, you can use Docker Compose. Create a `docker-compose.yml` file:
@@ -174,11 +269,11 @@ This Docker image includes startup notifications that can be sent to Mattermost 
 To enable Mattermost notifications, set the following environment variables:
 
 **Required Environment Variables:**
-- `MM_ADDRESS` - Mattermost server URL (e.g., `http://portainer.home.com:8081`)
-- `MM_CHANNEL` - Target channel name (e.g., `claude-code`)
-- `MM_TOKEN` - Bot authentication token
-- `PROMPT` - Initial prompt text provided to Claude
-- `IDE_ADDRESS` - Claude Code session web address
+- `MM_ADDRESS` - **Mattermost server URL** (e.g., `http://mattermost.yourcompany.com:8065`) - Include protocol and port
+- `MM_CHANNEL` - **Target channel name** (e.g., `claude-code`) - Exact name, case-sensitive
+- `MM_TOKEN` - **Bot authentication token** - Create dedicated bot account for notifications
+- `PROMPT` - **Initial prompt text** that started Claude session - Avoid special JSON-breaking characters
+- `IDE_ADDRESS` - **Claude Code session web address** - Must be valid URL with http:// or https://
 
 **Example Configuration:**
 ```bash
@@ -221,6 +316,54 @@ services:
       - /path/to/your/code:/workspace # Optional: Mount your code directory
     restart: unless-stopped
 ```
+
+### Troubleshooting Mattermost Notifications
+
+If your Mattermost notifications are not working as expected, here are common issues and debugging steps:
+
+**Common Error Scenarios:**
+
+1. **Connection failures** (HTTP 000, 404, 401, 403 errors)
+   - Verify Mattermost server URL is accessible from the container
+   - Check MM_TOKEN authentication token validity
+   - Confirm MM_CHANNEL exists and bot has permission to post
+
+2. **Channel resolution failures**
+   - Ensure MM_CHANNEL name is exact (case-sensitive)
+   - Check bot permissions for the target channel
+   - Verify channel exists and is accessible
+
+3. **Message formatting issues**
+   - IDE_ADDRESS should be a valid URL starting with http:// or https://
+   - PROMPT text should not contain special characters that break JSON formatting
+
+**Debugging Steps:**
+
+1. **Check container logs for Mattermost notification script:**
+   ```bash
+   docker logs claude-dev | grep -i mattermost
+   ```
+
+2. **Test Mattermost API connectivity manually:**
+   ```bash
+   curl -H "Authorization: Bearer $MM_TOKEN" "$MM_ADDRESS/api/v4/channels"
+   ```
+
+3. **Verify environment variables are correctly set:**
+   ```bash
+   docker exec claude-dev env | grep -E "MM_|IDE_|PROMPT"
+   ```
+
+**Retry Behavior and Timeouts:**
+- The script includes retry logic with exponential backoff
+- Initial timeout: 30 seconds per API call
+- Maximum retries: 2 attempts for transient failures
+- Failed notifications exit gracefully without stopping container startup
+
+**IDE_ADDRESS Format Expectations:**
+- Must be a valid web address (http:// or https://)
+- Should point to your Claude Code session URL
+- Examples: `https://your-domain.com:8443`, `http://192.168.1.100:8443`
 
 ## Use Cases
 
@@ -324,6 +467,129 @@ This image builds upon the excellent work of:
 - **Claude Code**: Open an issue on the [Claude Code GitHub issue tracker](https://github.com/anthropics/claude-code/issues)
 - **Claude Code Router**: Open an issue on the [Claude Code Router GitHub issue tracker](https://github.com/musistudio/claude-code-router/issues)
 - **tylercollison2089/vscode-claude**: Open an issue on the [VSCode Claude GitHub issue tracker](https://github.com/TylerCollison/vscode-claude/issues)
+
+## Error Handling and Troubleshooting
+
+### Common Error Scenarios
+
+#### Mattermost Notification Failures
+
+**Symptoms:** Container starts but no notification appears in Mattermost
+
+**Diagnosis Steps:**
+1. Check container logs: `docker logs claude-dev | grep -i mattermost`
+2. Test Mattermost API manually:
+   ```bash
+   curl -H "Authorization: Bearer $MM_TOKEN" "$MM_ADDRESS/api/v4/channels"
+   ```
+3. Verify environment variables: `docker exec claude-dev env | grep MM_`
+
+**Common Causes:**
+- Invalid MM_TOKEN or expired authentication
+- MM_ADDRESS unreachable from container network
+- Channel permissions incorrect
+- Network connectivity issues
+
+#### Claude Code Authentication Issues
+
+**Symptoms:** `claude` command fails with authentication errors
+
+**Diagnosis Steps:**
+1. Verify Claude Code installation: `which claude`
+2. Check authentication flow: `claude --help`
+3. Review network connectivity: `ping api.claude.com`
+
+**Solutions:**
+- Ensure proper internet connectivity
+- Check Claude account authentication status
+- Verify API endpoint accessibility
+
+#### VS Code Server Connection Issues
+
+**Symptoms:** Unable to access VS Code web interface
+
+**Diagnosis:**
+1. Check container status: `docker ps`
+2. Verify port mapping: `docker port claude-dev`
+3. Test web interface: `curl -I http://localhost:8443`
+
+**Common Issues:**
+- Port conflicts with existing services
+- Firewall blocking port 8443
+- Container not starting properly
+
+### Debugging Methodology
+
+#### Container-Level Debugging
+
+1. **Check container logs:**
+   ```bash
+   docker logs claude-dev
+   ```
+
+2. **Inspect container environment:**
+   ```bash
+   docker exec claude-dev env
+   ```
+
+3. **Test internal services:**
+   ```bash
+   docker exec claude-dev curl -I http://localhost:8443
+   ```
+
+#### Application-Level Debugging
+
+1. **VS Code Server status:**
+   ```bash
+   docker exec claude-dev ps aux | grep code-server
+   ```
+
+2. **Claude Code functionality:**
+   ```bash
+   docker exec claude-dev claude --version
+   ```
+
+3. **Mattermost notification script:**
+   ```bash
+   docker exec claude-dev bash /etc/cont-init.d/94-mattermost-notification
+   ```
+
+### Network Troubleshooting
+
+#### DNS Resolution Issues
+- Check `/etc/resolv.conf` inside container
+- Test external connectivity: `docker exec claude-dev ping 8.8.8.8`
+
+#### Port Forwarding Problems
+- Verify host firewall settings
+- Check for port conflicts: `netstat -tulpn | grep 8443`
+
+### Security Configuration Issues
+
+#### Permission Mode Problems
+- Claude Code permissions misconfigured
+- Check `CLAUDE_CODE_PERMISSION_MODE` value
+- Verify `/config/.claude/settings.json` file permissions
+
+#### API Key Issues
+- Missing or invalid API keys for NIM/Google services
+- Check API key format and validity
+- Verify API endpoint accessibility
+
+### Recovery Procedures
+
+#### Container Restart Sequence
+```bash
+docker stop claude-dev
+docker rm claude-dev
+docker run [original parameters]
+```
+
+#### Configuration Reset
+```bash
+docker exec claude-dev rm -rf /config/.claude
+docker restart claude-dev
+```
 
 ## License
 
