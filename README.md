@@ -165,6 +165,63 @@ This image includes Docker CLI tools and supports Docker-in-Docker functionality
 
 **Security Note:** Mounting the Docker socket gives the container full control over the host's Docker daemon. Only use this in trusted environments.
 
+## Mattermost Notifications
+
+This Docker image includes startup notifications that can be sent to Mattermost channels, allowing you to receive alerts when new Claude Code development environments are started.
+
+### Configuration
+
+To enable Mattermost notifications, set the following environment variables:
+
+**Required Environment Variables:**
+- `MM_ADDRESS` - Mattermost server URL (e.g., `http://portainer.home.com:8081`)
+- `MM_CHANNEL` - Target channel name (e.g., `claude-code`)
+- `MM_TOKEN` - Bot authentication token
+- `PROMPT` - Initial prompt text provided to Claude
+- `IDE_ADDRESS` - Claude Code session web address
+
+**Example Configuration:**
+```bash
+docker run -d \
+  --name=claude-dev \
+  -e PUID=1000 \
+  -e PGID=1000 \
+  -e TZ=Etc/UTC \
+  -e MM_ADDRESS=http://portainer.home.com:8081 \
+  -e MM_CHANNEL=claude-code \
+  -e MM_TOKEN=your-bot-token \
+  -e PROMPT=Initial prompt text \
+  -e IDE_ADDRESS=https://your-claude-session.example.com \
+  -p 8443:8443 \
+  tylercollison2089/vscode-claude
+```
+
+### Docker Compose Example
+
+```yaml
+services:
+  claude-dev:
+    image: tylercollison2089/vscode-claude:latest
+    container_name: claude-dev
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+      - PASSWORD=password # optional
+      - MM_ADDRESS=http://portainer.home.com:8081
+      - MM_CHANNEL=claude-code
+      - MM_TOKEN=your-bot-token
+      - PROMPT=Initial prompt text
+      - IDE_ADDRESS=https://your-claude-session.example.com
+    ports:
+      - "8443:8443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock # Optional host docker control
+      - /path/to/code-server/config:/config # Optional: Path to config folder
+      - /path/to/your/code:/workspace # Optional: Mount your code directory
+    restart: unless-stopped
+```
+
 ## Use Cases
 
 ### Personal Development Environment
