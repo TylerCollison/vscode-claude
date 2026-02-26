@@ -8,10 +8,6 @@ RUN apt-get update && apt-get install -y \
     lsb-release \
     jq \
     gettext-base \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Docker CLI tools
-RUN apt-get update && apt-get install -y \
     docker.io \
     && rm -rf /var/lib/apt/lists/*
 
@@ -23,8 +19,7 @@ RUN apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Claude Code and Claude Code Router
-RUN npm install -g @anthropic-ai/claude-code
-RUN npm install -g @musistudio/claude-code-router
+RUN npm install -g @anthropic-ai/claude-code @musistudio/claude-code-router
 
 # Copy ccr-presets to the container
 COPY ccr-presets /ccr-presets
@@ -36,12 +31,12 @@ COPY combine-markdowns.sh /etc/cont-init.d/96-combine-markdowns
 COPY configure-ccr-settings.sh /etc/cont-init.d/97-configure-ccr-settings
 COPY configure-claude-permissions.sh /etc/cont-init.d/98-configure-claude-permissions
 COPY configure-claude-plugins.sh /etc/cont-init.d/99-configure-claude-plugins
-RUN chmod +x /etc/cont-init.d/94-mattermost-notification
-RUN chmod +x /etc/cont-init.d/95-git-repo-setup
-RUN chmod +x /etc/cont-init.d/96-combine-markdowns
-RUN chmod +x /etc/cont-init.d/97-configure-ccr-settings
-RUN chmod +x /etc/cont-init.d/98-configure-claude-permissions
-RUN chmod +x /etc/cont-init.d/99-configure-claude-plugins
+RUN chmod +x /etc/cont-init.d/94-mattermost-notification \
+    /etc/cont-init.d/95-git-repo-setup \
+    /etc/cont-init.d/96-combine-markdowns \
+    /etc/cont-init.d/97-configure-ccr-settings \
+    /etc/cont-init.d/98-configure-claude-permissions \
+    /etc/cont-init.d/99-configure-claude-plugins
 
 # Docker socket volume mount (to be used when running the container)
 # This allows Docker commands inside the container to communicate with host Docker daemon

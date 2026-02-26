@@ -15,6 +15,12 @@ error_exit() {
     exit 1
 }
 
+# Graceful exit function for optional functionality
+graceful_exit() {
+    log "INFO: $1 - skipping Mattermost notification"
+    exit 0
+}
+
 # Success logging function
 log_success() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - SUCCESS: $1"
@@ -165,27 +171,27 @@ post_to_mattermost() {
 main() {
     log "Starting Mattermost notification script"
 
-    # Validate required environment variables
+    # Validate required environment variables with graceful degradation
     log "Validating environment variables..."
 
     if [ -z "${MM_ADDRESS:-}" ]; then
-        error_exit "MM_ADDRESS environment variable is required"
+        graceful_exit "MM_ADDRESS environment variable is not set"
     fi
 
     if [ -z "${MM_CHANNEL:-}" ]; then
-        error_exit "MM_CHANNEL environment variable is required"
+        graceful_exit "MM_CHANNEL environment variable is not set"
     fi
 
     if [ -z "${MM_TOKEN:-}" ]; then
-        error_exit "MM_TOKEN environment variable is required"
+        graceful_exit "MM_TOKEN environment variable is not set"
     fi
 
     if [ -z "${PROMPT:-}" ]; then
-        error_exit "PROMPT environment variable is required"
+        graceful_exit "PROMPT environment variable is not set"
     fi
 
     if [ -z "${IDE_ADDRESS:-}" ]; then
-        error_exit "IDE_ADDRESS environment variable is required"
+        graceful_exit "IDE_ADDRESS environment variable is not set"
     fi
 
     log "All required environment variables are present"
