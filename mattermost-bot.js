@@ -733,245 +733,43 @@ if (require.main === module) {
     });
 }
 
-class ClaudeCodeSession {
-    // Cache CCR availability at class level to avoid repeated checks
-    static ccrAvailable = null;
-    static ccrChecked = false;
-
-    constructor(threadId) {
-        this.threadId = threadId;
-        this.sessionId = this.generateSessionId();
-        this.createdAt = Date.now();
-        this.lastActivity = Date.now();
-        this.timeout = parseInt(process.env.CC_SESSION_TIMEOUT) || 3600000; // 1 hour default
-        this.maxContextLength = 4000;
-        this.isActive = true;
-        this.conversationHistory = [];
-        this.securityToken = this.generateSecurityToken();
-        this.claudeProcess = null;
-
-        console.log(`Session created for thread ${threadId}: ${this.sessionId}`);
+class PersistentSession {
+    constructor(config = {}) {
+        this.config = config;
+        this.process = null;
+        this.stdoutBuffer = '';
+        this.stderrBuffer = '';
+        this.messageQueue = [];
+        this.processing = false;
+        this.messageCallbacks = new Map();
+        this.messageIdCounter = 0;
+        this.isAlive = false;
+        this.restartAttempts = 0;
+        this.maxRestartAttempts = config.maxRestartAttempts || 3;
     }
 
-    // Check CCR availability once and cache the result
-    static checkCCRAvailability() {
-        if (ClaudeCodeSession.ccrChecked) {
-            return ClaudeCodeSession.ccrAvailable;
-        }
-
-        ClaudeCodeSession.ccrChecked = true;
-        let ccrAvailable = false;
-
-        try {
-            ccrAvailable = spawnSync('which', ['ccr']).status === 0;
-            console.log(`CCR availability check: ${ccrAvailable ? 'available' : 'not available'}`);
-        } catch (error) {
-            console.warn('Failed to check ccr command availability:', error.message);
-            ccrAvailable = false;
-        }
-
-        ClaudeCodeSession.ccrAvailable = ccrAvailable;
-        return ccrAvailable;
+    async initialize() {
+        await this.startClaudeProcess();
     }
 
-    // Method to refresh CCR availability cache if needed
-    static refreshCCRAvailability() {
-        ClaudeCodeSession.ccrChecked = false;
-        ClaudeCodeSession.ccrAvailable = null;
-        return ClaudeCodeSession.checkCCRAvailability();
+    async startClaudeProcess() {
+        // Implementation will be added in next task
     }
 
-    // Generate unique session ID
-    generateSessionId() {
-        return `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    async sendMessage(message) {
+        // Implementation will be added in next task
     }
 
-    // Generate security token for session validation
-    generateSecurityToken() {
-        return Buffer.from(`${this.sessionId}_${Date.now()}_${Math.random().toString(36)}`).toString('base64');
+    isAlive() {
+        return this.isAlive && this.process && !this.process.killed;
     }
 
-    // Update last activity timestamp
-    updateActivity() {
-        this.lastActivity = Date.now();
-        this.isActive = true;
+    async restart() {
+        // Implementation will be added in next task
     }
 
-    // Check if session is expired
-    isExpired() {
-        return Date.now() - this.lastActivity > this.timeout;
-    }
-
-    // Validate session is still active and valid
-    isValidSession() {
-        return this.isActive && !this.isExpired();
-    }
-
-    // Add message to conversation history
-    addToContext(message, isUserMessage = true) {
-        // Limit history length to prevent excessive memory usage
-        const historyEntry = {
-            timestamp: Date.now(),
-            isUserMessage,
-            content: message.substring(0, 1000), // Limit message length
-            sessionId: this.sessionId
-        };
-
-        this.conversationHistory.push(historyEntry);
-
-        // Trim history if exceeds maximum length
-        const totalLength = this.conversationHistory.reduce((sum, entry) =>
-            sum + entry.content.length, 0);
-
-        while (totalLength > this.maxContextLength && this.conversationHistory.length > 1) {
-            this.conversationHistory.shift();
-        }
-
-        this.updateActivity();
-    }
-
-    // Get conversation history as formatted string
-    getContext() {
-        return this.conversationHistory.map(entry =>
-            `${entry.isUserMessage ? 'User' : 'Assistant'}: ${entry.content}`
-        ).join('\n');
-    }
-
-    // Clear session data securely
-    clearSession() {
-        this.conversationHistory = [];
-        this.isActive = false;
-        console.log(`Session ${this.sessionId} cleared`);
-    }
-
-    // Destroy session and clean up
-    destroy() {
-        this.cleanup();
-        this.clearSession();
-        console.log(`Session ${this.sessionId} destroyed`);
-    }
-
-    // Send message to Claude Code
-    async sendToClaude(message) {
-        this.lastActivity = Date.now();
-
-        return new Promise((resolve, reject) => {
-            // Security Fix 2: Configurable permission mode
-            const permissionMode = process.env.CLAUDE_PERMISSION_MODE || 'default';
-
-            // Determine which command to use
-            const ccrProfile = process.env.CCR_PROFILE;
-            const useCCR = ccrProfile && ccrProfile.trim() !== '';
-
-            // Use cached CCR availability check
-            const ccrAvailable = ClaudeCodeSession.checkCCRAvailability();
-
-            const command = useCCR && ccrAvailable ? 'ccr' : 'claude';
-            const args = useCCR && ccrAvailable ?
-                [ccrProfile, '--permission-mode', permissionMode] :
-                ['--permission-mode', permissionMode];
-
-            // Comprehensive logging for debugging and monitoring
-            console.log(`CCR_PROFILE: ${ccrProfile || 'not set'}`);
-            console.log(`ccr command available: ${ccrAvailable}`);
-            console.log(`Selected command: ${command}`);
-            console.log(`Command arguments: ${JSON.stringify(args)}`);
-
-            if (useCCR && !ccrAvailable) {
-                console.warn('CCR_PROFILE set but ccr command not available, falling back to claude');
-            }
-
-            console.log(`Using command: ${command} ${args.join(' ')}`);
-
-            // Check if we're running inside a Claude Code session (nested)
-            if (process.env.CLAUDECODE) {
-                console.log('Running inside Claude Code session - using mock response for testing');
-                // Provide a mock response for testing purposes
-                const mockResponse = `I'm Claude Code, an AI assistant designed to help with software development tasks. I can help you write code, debug issues, refactor codebases, and more. You asked: "${message}"
-
-Since I'm running inside another Claude Code session, I'm providing this mock response for testing the Mattermost bot integration.`;
-
-                // Simulate a short delay
-                setTimeout(() => {
-                    resolve(mockResponse);
-                }, 1000);
-                return;
-            }
-
-            const claude = spawn(command, args, {
-                stdio: ['pipe', 'pipe', 'pipe']
-            });
-
-            this.claudeProcess = claude;
-            let stdoutOutput = '';
-            let stderrOutput = '';
-
-            claude.stdout.on('data', (data) => {
-                stdoutOutput += data.toString();
-            });
-
-            claude.stderr.on('data', (data) => {
-                const stderrData = data.toString();
-                stderrOutput += stderrData;
-                console.error('Claude stderr:', stderrData);
-            });
-
-            claude.on('close', (code) => {
-                this.claudeProcess = null;
-
-                // Always send stdout output to Mattermost, even on non-zero exit codes
-                const stdoutContent = stdoutOutput.trim();
-                const stderrContent = stderrOutput.trim();
-
-                // Log stderr for debugging
-                if (stderrContent) {
-                    console.error('Claude stderr output:', stderrContent);
-                }
-
-                if (code === 0) {
-                    resolve(stdoutContent);
-                } else {
-                    // On non-zero exit, include stdout and stderr information
-                    let combinedOutput = stdoutContent;
-
-                    if (stderrContent) {
-                        combinedOutput += `\n\n[Stderr output:]\n${stderrContent}`;
-                    }
-
-                    combinedOutput += `\n\n[Process exited with code ${code}]`;
-                    resolve(combinedOutput);
-                }
-            });
-
-            claude.on('error', (error) => {
-                this.claudeProcess = null;
-                const errorMessage = `Failed to start Claude process: ${error.message}`;
-                console.error(errorMessage);
-                // Even on startup error, try to send any captured stdout/stderr
-                const stdoutContent = stdoutOutput.trim();
-                const stderrContent = stderrOutput.trim();
-
-                let combinedOutput = stdoutContent;
-                if (stderrContent) {
-                    combinedOutput += `\n\n[Stderr output:]\n${stderrContent}`;
-                }
-                combinedOutput += `\n\n[Process error: ${errorMessage}]`;
-
-                resolve(combinedOutput || errorMessage);
-            });
-
-            // Send message to Claude
-            claude.stdin.write(message + '\n');
-            claude.stdin.end();
-        });
-    }
-
-    // Clean up Claude process
-    cleanup() {
-        if (this.claudeProcess) {
-            this.claudeProcess.kill();
-            this.claudeProcess = null;
-        }
+    async destroy() {
+        // Implementation will be added in next task
     }
 }
 
@@ -1037,4 +835,4 @@ MattermostBot.prototype.sendStartupNotification = async function() {
     });
 };
 
-module.exports = { MattermostBot, ClaudeCodeSession };
+module.exports = { MattermostBot, PersistentSession };
