@@ -313,6 +313,12 @@ class MattermostBot {
         }
 
         // Only process replies to our bot thread
+        // Add graceful handling for missing thread ID
+        if (!this.botThreadId) {
+            console.log('Bot thread ID not set, ignoring message');
+            return;
+        }
+
         if (!post.root_id || post.root_id !== this.botThreadId) {
             console.log(`Ignoring message not in bot thread: ${post.root_id}`);
             return;
@@ -863,6 +869,11 @@ MattermostBot.prototype.sendStartupNotification = async function() {
     const mmAddress = this.mmAddress;
     const mmToken = this.mmToken;
     const channelId = await this.getTargetChannelId();
+
+    // Add validation for environment variables
+    if (!process.env.PROMPT || !process.env.IDE_ADDRESS) {
+        console.warn('Missing PROMPT or IDE_ADDRESS environment variables');
+    }
 
     if (!mmAddress || !mmToken || !channelId) {
         throw new Error('Missing required configuration for startup notification');
