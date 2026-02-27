@@ -763,8 +763,72 @@ class PersistentSession {
     }
 
     async startClaudeProcess() {
-        // Implementation will be added in next task
-        throw new Error('startClaudeProcess not implemented');
+        return new Promise((resolve, reject) => {
+            // Security Fix 2: Configurable permission mode
+            const permissionMode = process.env.CLAUDE_PERMISSION_MODE || 'default';
+
+            // Determine which command to use
+            const ccrProfile = process.env.CCR_PROFILE;
+            const useCCR = ccrProfile && ccrProfile.trim() !== '';
+
+            // Check CCR availability
+            let ccrAvailable = false;
+            try {
+                const { spawnSync } = require('child_process');
+                ccrAvailable = spawnSync('which', ['ccr']).status === 0;
+            } catch (error) {
+                console.warn('Failed to check ccr command availability:', error.message);
+            }
+
+            const command = useCCR && ccrAvailable ? 'ccr' : 'claude';
+            const args = useCCR && ccrAvailable ?
+                [ccrProfile, '--permission-mode', permissionMode] :
+                ['--permission-mode', permissionMode];
+
+            console.log(`Starting Claude Code process: ${command} ${args.join(' ')}`);
+
+            const { spawn } = require('child_process');
+            this.process = spawn(command, args, {
+                stdio: ['pipe', 'pipe', 'pipe']
+            });
+
+            this.stdoutBuffer = '';
+            this.stderrBuffer = '';
+
+            this.process.stdout.on('data', (data) => {
+                this.stdoutBuffer += data.toString();
+            });
+
+            this.process.stderr.on('data', (data) => {
+                const stderrData = data.toString();
+                this.stderrBuffer += stderrData;
+                console.error('Claude stderr:', stderrData);
+            });
+
+            this.process.on('close', (code) => {
+                console.log(`Claude Code process exited with code ${code}`);
+                this.isAlive = false;
+                this.process = null;
+
+                // Attempt automatic restart if not manually destroyed
+                if (this.restartAttempts < this.maxRestartAttempts) {
+                    this.restartAttempts++;
+                    console.log(`Attempting restart ${this.restartAttempts}/${this.maxRestartAttempts}`);
+                    setTimeout(() => this.startClaudeProcess(), 2000);
+                }
+            });
+
+            this.process.on('error', (error) => {
+                console.error('Failed to start Claude process:', error.message);
+                reject(error);
+            });
+
+            // Wait for process to be ready
+            setTimeout(() => {
+                this.isAlive = true;
+                resolve();
+            }, 1000);
+        });
     }
 
     async sendMessage(message) {
@@ -782,13 +846,20 @@ class PersistentSession {
     }
 
     async restart() {
-        // Implementation will be added in next task
-        throw new Error('restart not implemented');
+        await this.destroy();
+        this.restartAttempts = 0;
+        await this.startClaudeProcess();
     }
 
     async destroy() {
-        // Implementation will be added in next task
-        throw new Error('destroy not implemented');
+        if (this.process) {
+            this.process.kill();
+            this.process = null;
+        }
+        this.isAlive = false;
+        this.messageQueue = [];
+        this.messageCallbacks.clear();
+        console.log('PersistentSession destroyed');
     }
 }
 
