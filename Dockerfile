@@ -48,7 +48,10 @@ RUN chmod +x /95-git-repo-setup \
 COPY mattermost-bot.js /mattermost-bot.js
 
 # Install Node.js dependencies for Mattermost bot securely
-RUN npm install --prefix / --production --no-audit --save-exact ws@8.14.2
+RUN mkdir -p /app && npm install --prefix /app --production --no-audit --save-exact ws@8.14.2
+
+# Set NODE_PATH to ensure ws dependency can be found
+ENV NODE_PATH=/app/node_modules
 
 # Docker socket volume mount (to be used when running the container)
 # This allows Docker commands inside the container to communicate with host Docker daemon
