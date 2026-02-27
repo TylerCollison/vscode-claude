@@ -365,6 +365,45 @@ If your Mattermost notifications are not working as expected, here are common is
 - Should point to your Claude Code session URL
 - Examples: `https://your-domain.com:8443`, `http://192.168.1.100:8443`
 
+## Bidirectional Mattermost Integration
+
+This image includes bidirectional integration with Mattermost, allowing you to interact with Claude Code entirely through Mattermost threads.
+
+### Configuration
+
+Enable bidirectional integration by setting:
+
+```bash
+MM_BOT_ENABLED="true"
+```
+
+**Additional Environment Variables:**
+- `CC_SESSION_TIMEOUT`: Session timeout in seconds (default: 3600)
+- `CC_MAX_CONTEXT_LENGTH`: Claude Code context limit (default: 4000)
+
+### Usage
+
+1. **Startup**: The container posts a notification to Mattermost when starting
+2. **Interaction**: Reply to the notification thread in Mattermost
+3. **Response**: Claude Code processes your message and replies in the same thread
+4. **Session**: Conversation context is maintained throughout the thread
+
+### Example Configuration
+
+```yaml
+services:
+  claude-dev:
+    image: tylercollison2089/vscode-claude:latest
+    environment:
+      - MM_ADDRESS=http://mattermost.example.com
+      - MM_CHANNEL=claude-code
+      - MM_TOKEN=your-bot-token
+      - MM_BOT_ENABLED=true
+      - CC_SESSION_TIMEOUT=3600
+      - CC_MAX_CONTEXT_LENGTH=4000
+    # ... other configuration
+```
+
 ## Use Cases
 
 ### Personal Development Environment
