@@ -76,18 +76,63 @@ class MattermostBot {
     }
 
     async connect() {
-        try {
-            console.log('Mattermost bot service starting...');
-            console.log(`Connecting to Mattermost server: ${this.mmAddress}`);
+        const mmAddress = this.mmAddress;
+        const mmToken = this.mmToken;
 
-            // WebSocket connection logic will be implemented in next task
-            // This is placeholder for the actual implementation
-
-            console.log('Mattermost bot service initialization complete');
-        } catch (error) {
-            const errorId = this.handleError(error, 'connect');
-            throw new Error(`Connection failed (Error ID: ${errorId})`);
+        if (!mmAddress || !mmToken) {
+            throw new Error('MM_ADDRESS and MM_TOKEN environment variables required');
         }
+
+        // Extract base URL and create WebSocket URL
+        const baseUrl = mmAddress.replace(/^http/, 'ws');
+        const wsUrl = `${baseUrl}/api/v4/websocket`;
+
+        console.log(`Connecting to Mattermost WebSocket: ${wsUrl}`);
+
+        this.ws = new WebSocket(wsUrl, {
+            headers: {
+                'Authorization': `Bearer ${mmToken}`
+            }
+        });
+
+        this.setupWebSocketHandlers();
+    }
+
+    setupWebSocketHandlers() {
+        this.ws.on('open', () => {
+            console.log('Connected to Mattermost WebSocket');
+            this.reconnectAttempts = 0;
+        });
+
+        this.ws.on('message', (data) => {
+            this.handleMessage(JSON.parse(data));
+        });
+
+        this.ws.on('close', () => {
+            console.log('WebSocket connection closed');
+            this.attemptReconnect();
+        });
+
+        this.ws.on('error', (error) => {
+            console.error('WebSocket error:', error);
+        });
+    }
+
+    attemptReconnect() {
+        if (this.reconnectAttempts < this.maxReconnectAttempts) {
+            this.reconnectAttempts++;
+            const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+            console.log(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
+
+            setTimeout(() => {
+                this.connect().catch(console.error);
+            }, delay);
+        }
+    }
+
+    handleMessage(data) {
+        // Message handling will be implemented in later tasks
+        console.log('Received WebSocket message:', JSON.stringify(data, null, 2));
     }
 
     // Session management methods will be implemented in later tasks
