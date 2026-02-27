@@ -735,6 +735,11 @@ if (require.main === module) {
 
 class PersistentSession {
     constructor(config = {}) {
+        // Validate config
+        if (typeof config !== 'object' || config === null) {
+            throw new Error('Config must be a valid object');
+        }
+
         this.config = config;
         this.process = null;
         this.stdoutBuffer = '';
@@ -749,27 +754,41 @@ class PersistentSession {
     }
 
     async initialize() {
-        await this.startClaudeProcess();
+        try {
+            await this.startClaudeProcess();
+        } catch (error) {
+            console.error('Failed to initialize PersistentSession:', error);
+            throw error;
+        }
     }
 
     async startClaudeProcess() {
         // Implementation will be added in next task
+        throw new Error('startClaudeProcess not implemented');
     }
 
     async sendMessage(message) {
+        // Validate message parameter
+        if (typeof message !== 'string' || message.trim() === '') {
+            throw new Error('Message must be a non-empty string');
+        }
+
         // Implementation will be added in next task
+        throw new Error('sendMessage not implemented');
     }
 
-    isAlive() {
+    checkAlive() {
         return this.isAlive && this.process && !this.process.killed;
     }
 
     async restart() {
         // Implementation will be added in next task
+        throw new Error('restart not implemented');
     }
 
     async destroy() {
         // Implementation will be added in next task
+        throw new Error('destroy not implemented');
     }
 }
 
