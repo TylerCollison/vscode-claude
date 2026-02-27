@@ -26,6 +26,7 @@ class MattermostBot {
         this.reconnectAttempts = 0;
         this.maxReconnectAttempts = config.maxReconnectAttempts || 5;
         this.targetChannelId = null;
+        this.botThreadId = null;
     }
 
     // Validate environment configuration
@@ -138,11 +139,18 @@ class MattermostBot {
         try {
             await this.resolveChannelId();
             await this.connect();
+
+            // Critical: startup notification must succeed
+            const notificationResponse = await this.sendStartupNotification();
+            this.botThreadId = notificationResponse.id;
+            console.log(`Startup notification posted with thread ID: ${this.botThreadId}`);
+
             this.startSessionCleanupInterval();
             console.log('Mattermost bot initialized successfully');
         } catch (error) {
             const errorId = this.handleError(error, 'Bot initialization');
-            throw new Error(`Bot initialization failed (errorId: ${errorId})`);
+            console.error(`Bot initialization failed (errorId: ${errorId}), exiting...`);
+            process.exit(1); // Exit on critical failure
         }
     }
 
@@ -842,5 +850,62 @@ class ClaudeCodeSession {
         }
     }
 }
+
+// Send startup notification to Mattermost
+MattermostBot.prototype.sendStartupNotification = async function() {
+    const mmAddress = this.mmAddress;
+    const mmToken = this.mmToken;
+    const channelId = await this.getTargetChannelId();
+
+    if (!mmAddress || !mmToken || !channelId) {
+        throw new Error('Missing required configuration for startup notification');
+    }
+
+    const message = `🚀 **Claude Code Development Environment Started**\n\n**Container Information:**\n- **Prompt:** ${process.env.PROMPT || 'Not set'}\n- **IDE Address:** ${process.env.IDE_ADDRESS || 'Not set'}\n- **Started at:** ${new Date()}\n\nThis container is ready for development work!`;
+
+    const payload = {
+        channel_id: channelId,
+        message: message
+    };
+
+    const url = `${mmAddress}/api/v4/posts`;
+
+    return new Promise((resolve, reject) => {
+        const urlObj = new URL(url);
+        const protocol = urlObj.protocol === 'https:' ? require('https') : require('http');
+
+        const request = protocol.request(urlObj, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${mmToken}`,
+                'Content-Type': 'application/json'
+            }
+        }, (response) => {
+            let data = '';
+            response.on('data', chunk => data += chunk);
+            response.on('end', () => {
+                if (response.statusCode >= 200 && response.statusCode < 300) {
+                    try {
+                        const parsedResponse = JSON.parse(data);
+                        resolve(parsedResponse);
+                    } catch (parseError) {
+                        reject(new Error(`Failed to parse API response: ${parseError.message}`));
+                    }
+                } else {
+                    reject(new Error(`HTTP ${response.statusCode}: ${data}`));
+                }
+            });
+        });
+
+        request.on('error', reject);
+        request.setTimeout(10000, () => {
+            request.destroy();
+            reject(new Error('Startup notification request timeout after 10 seconds'));
+        });
+
+        request.write(JSON.stringify(payload));
+        request.end();
+    });
+};
 
 module.exports = { MattermostBot, ClaudeCodeSession };
