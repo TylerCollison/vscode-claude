@@ -130,9 +130,36 @@ class MattermostBot {
         }
     }
 
-    handleMessage(data) {
-        // Message handling will be implemented in later tasks
-        console.log('Received WebSocket message:', JSON.stringify(data, null, 2));
+    handleMessage(message) {
+        if (message.event === 'posted') {
+            this.handlePostMessage(message);
+        } else if (message.event === 'hello') {
+            console.log('Mattermost WebSocket handshake complete');
+        }
+    }
+
+    handlePostMessage(message) {
+        const post = JSON.parse(message.data.post);
+
+        // Only process messages in the target channel
+        if (post.channel_id !== this.getTargetChannelId()) {
+            return;
+        }
+
+        // Handle thread replies (not the initial notification)
+        if (post.root_id) {
+            this.processUserInput(post);
+        }
+    }
+
+    getTargetChannelId() {
+        // This will be implemented when we resolve channel names
+        return process.env.MM_CHANNEL_ID || '';
+    }
+
+    processUserInput(post) {
+        console.log('Processing user input:', post.message);
+        // Claude Code integration will be implemented in next task
     }
 
     // Session management methods will be implemented in later tasks
