@@ -24,24 +24,24 @@ RUN npm install -g @anthropic-ai/claude-code @musistudio/claude-code-router
 # Copy ccr-presets to the container
 COPY ccr-presets /ccr-presets
 
-# Copy startup scripts (with .disabled extension to prevent auto-execution)
-COPY git-repo-setup.sh /etc/cont-init.d/95-git-repo-setup.disabled
-COPY combine-markdowns.sh /etc/cont-init.d/96-combine-markdowns.disabled
-COPY configure-ccr-settings.sh /etc/cont-init.d/97-configure-ccr-settings.disabled
-COPY configure-claude-permissions.sh /etc/cont-init.d/98-configure-claude-permissions.disabled
-COPY configure-claude-plugins.sh /etc/cont-init.d/99-configure-claude-plugins.disabled
-COPY start-mattermost-bot.sh /etc/cont-init.d/100-mattermost-bot.disabled
+# Copy startup scripts to root directory
+COPY git-repo-setup.sh /95-git-repo-setup
+COPY combine-markdowns.sh /96-combine-markdowns
+COPY configure-ccr-settings.sh /97-configure-ccr-settings
+COPY configure-claude-permissions.sh /98-configure-claude-permissions
+COPY configure-claude-plugins.sh /99-configure-claude-plugins
+COPY start-mattermost-bot.sh /100-mattermost-bot
 
-# Copy master startup script
+# Copy master startup script to cont-init.d (so it runs automatically)
 COPY master-startup.sh /etc/cont-init.d/90-master-startup
 
 # Set execute permissions
-RUN chmod +x /etc/cont-init.d/95-git-repo-setup.disabled \
-    /etc/cont-init.d/96-combine-markdowns.disabled \
-    /etc/cont-init.d/97-configure-ccr-settings.disabled \
-    /etc/cont-init.d/98-configure-claude-permissions.disabled \
-    /etc/cont-init.d/99-configure-claude-plugins.disabled \
-    /etc/cont-init.d/100-mattermost-bot.disabled \
+RUN chmod +x /95-git-repo-setup \
+    /96-combine-markdowns \
+    /97-configure-ccr-settings \
+    /98-configure-claude-permissions \
+    /99-configure-claude-plugins \
+    /100-mattermost-bot \
     /etc/cont-init.d/90-master-startup
 
 # Copy Mattermost bot service

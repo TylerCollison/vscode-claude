@@ -20,12 +20,12 @@ error_exit() {
 
 # List of scripts to execute in order
 STARTUP_SCRIPTS=(
-    "/etc/cont-init.d/95-git-repo-setup.disabled"
-    "/etc/cont-init.d/96-combine-markdowns.disabled"
-    "/etc/cont-init.d/97-configure-ccr-settings.disabled"
-    "/etc/cont-init.d/98-configure-claude-permissions.disabled"
-    "/etc/cont-init.d/99-configure-claude-plugins.disabled"
-    "/etc/cont-init.d/100-mattermost-bot.disabled"
+    "/95-git-repo-setup"
+    "/96-combine-markdowns"
+    "/97-configure-ccr-settings"
+    "/98-configure-claude-permissions"
+    "/99-configure-claude-plugins"
+    "/100-mattermost-bot"
 )
 
 log "Starting master startup sequence..."
