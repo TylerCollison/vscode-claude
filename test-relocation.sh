@@ -3,7 +3,7 @@ set -euo pipefail
 
 echo "Testing Mattermost bot relocation..."
 
-# Test 1: File exists in new location
+# Test 1: File exists in development location (will be copied to root during Docker build)
 if [ -f "/workspace/mattermost-bot.js" ]; then
     echo "✓ mattermost-bot.js found in workspace directory"
 else
@@ -11,7 +11,7 @@ else
     exit 1
 fi
 
-# Test 2: Dependencies installed
+# Test 2: Dependencies installed (will be installed to root during Docker build)
 if [ -d "/workspace/node_modules/ws" ]; then
     echo "✓ ws dependency installed in workspace/node_modules"
 else
