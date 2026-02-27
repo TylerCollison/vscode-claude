@@ -70,14 +70,22 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 # Check if mattermost-bot.js exists
-if [ ! -f "/workspace/mattermost-bot.js" ]; then
-    error_exit "Mattermost bot service not found at /workspace/mattermost-bot.js"
+if [ ! -f "/mattermost-bot.js" ]; then
+    error_exit "Mattermost bot service not found at /mattermost-bot.js"
 fi
 
 log "Starting Mattermost bot service..."
 
+# Change to DEFAULT_WORKSPACE before running bot
+if [ -n "$DEFAULT_WORKSPACE" ] && [ -d "$DEFAULT_WORKSPACE" ]; then
+    log "Changing to DEFAULT_WORKSPACE: $DEFAULT_WORKSPACE"
+    cd "$DEFAULT_WORKSPACE"
+else
+    log "WARNING: DEFAULT_WORKSPACE not set or invalid, running from current directory"
+fi
+
 # Start process
-node /workspace/mattermost-bot.js &
+node /mattermost-bot.js &
 BOT_PID=$!
 
 # Security Fix 3: Atomic PID file creation with validation

@@ -128,8 +128,15 @@ class MattermostBot {
 
         // Optionally log to file in production
         if (process.env.NODE_ENV === 'production') {
-            fs.appendFileSync('/var/log/mattermost-bot.log',
-                `[${timestamp}] [${errorId}] [${context}] ${error.message}\n`);
+            const logPath = process.env.MM_BOT_LOG_PATH || '/tmp/mattermost-bot.log';
+            try {
+                fs.appendFileSync(logPath,
+                    `[${timestamp}] [${errorId}] [${context}] ${error.message}\n`);
+            } catch (logError) {
+                // Fallback to console logging
+                console.error(`Failed to write to log file ${logPath}:`, logError.message);
+                console.error(`Original error [${errorId}] in ${context}:`, error.message);
+            }
         }
 
         return errorId;
