@@ -896,28 +896,61 @@ Since I'm running inside another Claude Code session, I'm providing this mock re
             });
 
             this.claudeProcess = claude;
-            let output = '';
+            let stdoutOutput = '';
+            let stderrOutput = '';
 
             claude.stdout.on('data', (data) => {
-                output += data.toString();
+                stdoutOutput += data.toString();
             });
 
             claude.stderr.on('data', (data) => {
-                console.error('Claude stderr:', data.toString());
+                const stderrData = data.toString();
+                stderrOutput += stderrData;
+                console.error('Claude stderr:', stderrData);
             });
 
             claude.on('close', (code) => {
                 this.claudeProcess = null;
+
+                // Always send stdout output to Mattermost, even on non-zero exit codes
+                const stdoutContent = stdoutOutput.trim();
+                const stderrContent = stderrOutput.trim();
+
+                // Log stderr for debugging
+                if (stderrContent) {
+                    console.error('Claude stderr output:', stderrContent);
+                }
+
                 if (code === 0) {
-                    resolve(output.trim());
+                    resolve(stdoutContent);
                 } else {
-                    reject(new Error(`Claude process exited with code ${code}`));
+                    // On non-zero exit, include stdout and stderr information
+                    let combinedOutput = stdoutContent;
+
+                    if (stderrContent) {
+                        combinedOutput += `\n\n[Stderr output:]\n${stderrContent}`;
+                    }
+
+                    combinedOutput += `\n\n[Process exited with code ${code}]`;
+                    resolve(combinedOutput);
                 }
             });
 
             claude.on('error', (error) => {
                 this.claudeProcess = null;
-                reject(new Error(`Failed to start Claude process: ${error.message}`));
+                const errorMessage = `Failed to start Claude process: ${error.message}`;
+                console.error(errorMessage);
+                // Even on startup error, try to send any captured stdout/stderr
+                const stdoutContent = stdoutOutput.trim();
+                const stderrContent = stderrOutput.trim();
+
+                let combinedOutput = stdoutContent;
+                if (stderrContent) {
+                    combinedOutput += `\n\n[Stderr output:]\n${stderrContent}`;
+                }
+                combinedOutput += `\n\n[Process error: ${errorMessage}]`;
+
+                resolve(combinedOutput || errorMessage);
             });
 
             // Send message to Claude
