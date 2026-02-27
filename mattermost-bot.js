@@ -352,8 +352,11 @@ class MattermostBot {
     }
 
     processUserInput(post) {
+        const threadId = post.root_id || post.id;
+        const message = post.message || '';
+
         // Sanitize and validate user input before processing
-        const sanitizedMessage = this.sanitizeUserInput(post.message || '');
+        const sanitizedMessage = this.sanitizeUserInput(message);
 
         if (!this.isSafeUserInput(sanitizedMessage)) {
             console.error('Potential security risk detected in user input');
@@ -361,16 +364,24 @@ class MattermostBot {
         }
 
         // Get or create session for this thread
-        const threadId = post.root_id || post.id;
         const session = this.getOrCreateSession(threadId);
 
-        // Add user message to conversation context
-        session.addToContext(sanitizedMessage, true);
+        session.sendToClaude(sanitizedMessage)
+            .then(response => {
+                this.sendReply(post, response);
+            })
+            .catch(error => {
+                console.error('Claude processing error:', error);
+                this.sendReply(post, `Error: ${error.message}`);
+            });
 
-        console.log(`Processing user input for thread ${threadId}:`, sanitizedMessage);
+        console.log(`Processing user input for thread ${threadId}:`, sanitizedMessage.substring(0, 100));
         console.log(`Active sessions: ${this.getActiveSessionCount()}`);
+    }
 
-        // Claude Code integration will be implemented in next task
+    sendReply(originalPost, message) {
+        // Mattermost API reply logic will be implemented next
+        console.log(`Would send reply to post ${originalPost.id}: ${message.substring(0, 200)}...`);
     }
 
     // Sanitize user input to remove potentially dangerous content
@@ -452,7 +463,7 @@ class MattermostBot {
         let expiredCount = 0;
 
         for (const [threadId, session] of this.sessions.entries()) {
-            if (session.hasTimedOut()) {
+            if (session.isExpired()) {
                 session.destroy();
                 this.sessions.delete(threadId);
                 expiredCount++;
@@ -467,7 +478,7 @@ class MattermostBot {
     // Validate session exists and is active
     validateSession(threadId, securityToken) {
         const session = this.sessions.get(threadId);
-        if (!session || !session.isValidSession()) {
+        if (!session || session.isExpired()) {
             return false;
         }
 
@@ -483,7 +494,7 @@ class MattermostBot {
     // Get active session count
     getActiveSessionCount() {
         return Array.from(this.sessions.values()).filter(session =>
-            session.isValidSession()
+            !session.isExpired()
         ).length;
     }
 
@@ -542,6 +553,7 @@ class ClaudeCodeSession {
         this.isActive = true;
         this.conversationContext = [];
         this.securityToken = this.generateSecurityToken();
+        this.claudeProcess = null;
 
         console.log(`Session created for thread ${threadId}: ${this.sessionId}`);
     }
@@ -611,8 +623,62 @@ class ClaudeCodeSession {
 
     // Destroy session and clean up
     destroy() {
+        this.cleanup();
         this.clearSession();
         console.log(`Session ${this.sessionId} destroyed`);
+    }
+
+    // Send message to Claude Code
+    async sendToClaude(message) {
+        this.lastActivity = Date.now();
+
+        return new Promise((resolve, reject) => {
+            const claude = spawn('claude', ['--permission-mode', 'bypassPermissions'], {
+                stdio: ['pipe', 'pipe', 'pipe']
+            });
+
+            this.claudeProcess = claude;
+            let output = '';
+
+            claude.stdout.on('data', (data) => {
+                output += data.toString();
+            });
+
+            claude.stderr.on('data', (data) => {
+                console.error('Claude stderr:', data.toString());
+            });
+
+            claude.on('close', (code) => {
+                this.claudeProcess = null;
+                if (code === 0) {
+                    resolve(output.trim());
+                } else {
+                    reject(new Error(`Claude process exited with code ${code}`));
+                }
+            });
+
+            claude.on('error', (error) => {
+                this.claudeProcess = null;
+                reject(new Error(`Failed to start Claude process: ${error.message}`));
+            });
+
+            // Send message to Claude
+            claude.stdin.write(message + '\n');
+            claude.stdin.end();
+        });
+    }
+
+    // Check if session is expired
+    isExpired() {
+        return Date.now() - this.lastActivity > this.timeoutMs;
+    }
+
+    // Clean up Claude process
+    cleanup() {
+        if (this.claudeProcess) {
+            this.claudeProcess.kill();
+            this.claudeProcess = null;
+        }
     }
 }
 
