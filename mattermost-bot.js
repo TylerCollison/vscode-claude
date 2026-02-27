@@ -21,7 +21,7 @@ class MattermostBot {
         this.mmTeam = config.mmTeam || 'home';
 
         // Initialize session management
-        this.sessions = new Map(); // threadId -> ClaudeCodeSession
+        this.sessions = new Map(); // threadId -> PersistentSession
         this.ws = null;
         this.reconnectAttempts = 0;
         this.maxReconnectAttempts = config.maxReconnectAttempts || 5;
@@ -511,7 +511,7 @@ class MattermostBot {
 
         // Use direct Map operations as specified in the spec
         if (!this.sessions.has(threadId)) {
-            this.sessions.set(threadId, new ClaudeCodeSession(threadId));
+            this.sessions.set(threadId, new PersistentSession(threadId));
         }
         const session = this.sessions.get(threadId);
 
@@ -733,7 +733,7 @@ if (require.main === module) {
     });
 }
 
-class ClaudeCodeSession {
+class PersistentSession {
     // Cache CCR availability at class level to avoid repeated checks
     static ccrAvailable = null;
     static ccrChecked = false;
@@ -748,18 +748,27 @@ class ClaudeCodeSession {
         this.isActive = true;
         this.conversationHistory = [];
         this.securityToken = this.generateSecurityToken();
-        this.claudeProcess = null;
+
+        // Persistent process management properties
+        this.process = null;
+        this.stdoutBuffer = '';
+        this.stderrBuffer = '';
+        this.isAlive = false;
+        this.restartAttempts = 0;
+        this.maxRestartAttempts = parseInt(process.env.MAX_RESTART_ATTEMPTS) || 5;
+        this.messageQueue = [];
+        this.messageCallbacks = new Map();
 
         console.log(`Session created for thread ${threadId}: ${this.sessionId}`);
     }
 
     // Check CCR availability once and cache the result
     static checkCCRAvailability() {
-        if (ClaudeCodeSession.ccrChecked) {
-            return ClaudeCodeSession.ccrAvailable;
+        if (PersistentSession.ccrChecked) {
+            return PersistentSession.ccrAvailable;
         }
 
-        ClaudeCodeSession.ccrChecked = true;
+        PersistentSession.ccrChecked = true;
         let ccrAvailable = false;
 
         try {
@@ -770,15 +779,15 @@ class ClaudeCodeSession {
             ccrAvailable = false;
         }
 
-        ClaudeCodeSession.ccrAvailable = ccrAvailable;
+        PersistentSession.ccrAvailable = ccrAvailable;
         return ccrAvailable;
     }
 
     // Method to refresh CCR availability cache if needed
     static refreshCCRAvailability() {
-        ClaudeCodeSession.ccrChecked = false;
-        ClaudeCodeSession.ccrAvailable = null;
-        return ClaudeCodeSession.checkCCRAvailability();
+        PersistentSession.ccrChecked = false;
+        PersistentSession.ccrAvailable = null;
+        return PersistentSession.checkCCRAvailability();
     }
 
     // Generate unique session ID
@@ -864,7 +873,7 @@ class ClaudeCodeSession {
             const useCCR = ccrProfile && ccrProfile.trim() !== '';
 
             // Use cached CCR availability check
-            const ccrAvailable = ClaudeCodeSession.checkCCRAvailability();
+            const ccrAvailable = PersistentSession.checkCCRAvailability();
 
             const command = useCCR && ccrAvailable ? 'ccr' : 'claude';
             const args = useCCR && ccrAvailable ?
@@ -902,7 +911,7 @@ Since I'm running inside another Claude Code session, I'm providing this mock re
                 stdio: ['pipe', 'pipe', 'pipe']
             });
 
-            this.claudeProcess = claude;
+            this.process = claude;
             let stdoutOutput = '';
             let stderrOutput = '';
 
@@ -917,7 +926,7 @@ Since I'm running inside another Claude Code session, I'm providing this mock re
             });
 
             claude.on('close', (code) => {
-                this.claudeProcess = null;
+                this.process = null;
 
                 // Always send stdout output to Mattermost, even on non-zero exit codes
                 const stdoutContent = stdoutOutput.trim();
@@ -944,7 +953,7 @@ Since I'm running inside another Claude Code session, I'm providing this mock re
             });
 
             claude.on('error', (error) => {
-                this.claudeProcess = null;
+                this.process = null;
                 const errorMessage = `Failed to start Claude process: ${error.message}`;
                 console.error(errorMessage);
                 // Even on startup error, try to send any captured stdout/stderr
@@ -966,11 +975,100 @@ Since I'm running inside another Claude Code session, I'm providing this mock re
         });
     }
 
+    // Start Claude Code process
+    async startClaudeProcess() {
+        return new Promise((resolve, reject) => {
+            // Security Fix 2: Configurable permission mode
+            const permissionMode = process.env.CLAUDE_PERMISSION_MODE || 'default';
+
+            // Determine which command to use
+            const ccrProfile = process.env.CCR_PROFILE;
+            const useCCR = ccrProfile && ccrProfile.trim() !== '';
+
+            // Check CCR availability
+            let ccrAvailable = false;
+            try {
+                const { spawnSync } = require('child_process');
+                ccrAvailable = spawnSync('which', ['ccr']).status === 0;
+            } catch (error) {
+                console.warn('Failed to check ccr command availability:', error.message);
+            }
+
+            const command = useCCR && ccrAvailable ? 'ccr' : 'claude';
+            const args = useCCR && ccrAvailable ?
+                [ccrProfile, '--permission-mode', permissionMode] :
+                ['--permission-mode', permissionMode];
+
+            console.log(`Starting Claude Code process: ${command} ${args.join(' ')}`);
+
+            const { spawn } = require('child_process');
+            this.process = spawn(command, args, {
+                stdio: ['pipe', 'pipe', 'pipe']
+            });
+
+            this.stdoutBuffer = '';
+            this.stderrBuffer = '';
+
+            this.process.stdout.on('data', (data) => {
+                this.stdoutBuffer += data.toString();
+            });
+
+            this.process.stderr.on('data', (data) => {
+                const stderrData = data.toString();
+                this.stderrBuffer += stderrData;
+                console.error('Claude stderr:', stderrData);
+            });
+
+            this.process.on('close', (code) => {
+                console.log(`Claude Code process exited with code ${code}`);
+                this.isAlive = false;
+                this.process = null;
+
+                // Attempt automatic restart if not manually destroyed
+                if (this.restartAttempts < this.maxRestartAttempts) {
+                    this.restartAttempts++;
+                    console.log(`Attempting restart ${this.restartAttempts}/${this.maxRestartAttempts}`);
+                    setTimeout(() => this.startClaudeProcess(), 2000);
+                }
+            });
+
+            this.process.on('error', (error) => {
+                console.error('Failed to start Claude process:', error.message);
+                reject(error);
+            });
+
+            // Wait for process to be ready
+            setTimeout(() => {
+                this.isAlive = true;
+                resolve();
+            }, 1000);
+        });
+    }
+
+    // Destroy session and clean up process
+    async destroy() {
+        if (this.process) {
+            this.process.kill();
+            this.process = null;
+        }
+        this.isAlive = false;
+        this.messageQueue = [];
+        this.messageCallbacks.clear();
+        console.log('PersistentSession destroyed');
+    }
+
+    // Restart Claude process
+    async restart() {
+        await this.destroy();
+        this.restartAttempts = 0;
+        await this.startClaudeProcess();
+    }
+
     // Clean up Claude process
     cleanup() {
-        if (this.claudeProcess) {
-            this.claudeProcess.kill();
-            this.claudeProcess = null;
+        if (this.process) {
+            this.process.kill();
+            this.process = null;
         }
     }
 }
@@ -1037,4 +1135,4 @@ MattermostBot.prototype.sendStartupNotification = async function() {
     });
 };
 
-module.exports = { MattermostBot, ClaudeCodeSession };
+module.exports = { MattermostBot, PersistentSession };
