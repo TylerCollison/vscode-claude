@@ -5,6 +5,8 @@
 const WebSocket = require('ws');
 const { spawn } = require('child_process');
 const fs = require('fs');
+const https = require('https');
+const http = require('http');
 // fetch is globally available in Node.js 22+
 
 class MattermostBot {
@@ -19,10 +21,6 @@ class MattermostBot {
 
         // Initialize session management
         this.sessions = new Map(); // threadId -> ClaudeCodeSession
-        this.sessionConfig = {
-            sessionTimeout: parseInt(config.sessionTimeout) || 3600000, // 1 hour default
-            maxContextLength: parseInt(config.maxContextLength) || 4000
-        };
         this.ws = null;
         this.reconnectAttempts = 0;
         this.maxReconnectAttempts = config.maxReconnectAttempts || 5;
@@ -363,25 +361,84 @@ class MattermostBot {
             return;
         }
 
-        // Get or create session for this thread
-        const session = this.getOrCreateSession(threadId);
+        // Use direct Map operations as specified in the spec
+        if (!this.sessions.has(threadId)) {
+            this.sessions.set(threadId, new ClaudeCodeSession(threadId));
+        }
+        const session = this.sessions.get(threadId);
 
         session.sendToClaude(sanitizedMessage)
             .then(response => {
-                this.sendReply(post, response);
+                return this.sendReply(post, response);
+            })
+            .then(() => {
+                console.log('Reply sent successfully');
             })
             .catch(error => {
-                console.error('Claude processing error:', error);
-                this.sendReply(post, `Error: ${error.message}`);
+                console.error('Error processing user input:', error);
+                // Attempt to send error message
+                this.sendReply(post, `Error processing request: ${error.message}`)
+                    .catch(e => console.error('Failed to send error message:', e));
             });
 
         console.log(`Processing user input for thread ${threadId}:`, sanitizedMessage.substring(0, 100));
         console.log(`Active sessions: ${this.getActiveSessionCount()}`);
     }
 
-    sendReply(originalPost, message) {
-        // Mattermost API reply logic will be implemented next
-        console.log(`Would send reply to post ${originalPost.id}: ${message.substring(0, 200)}...`);
+    async sendReply(originalPost, message) {
+        const mmAddress = this.mmAddress;
+        const mmToken = this.mmToken;
+
+        // Validate required parameters
+        if (!mmAddress || !mmToken) {
+            throw new Error('MM_ADDRESS and MM_TOKEN environment variables required');
+        }
+
+        const payload = {
+            channel_id: originalPost.channel_id,
+            message: message,
+            root_id: originalPost.root_id || originalPost.id
+        };
+
+        const url = `${mmAddress}/api/v4/posts`;
+
+        return new Promise((resolve, reject) => {
+            const urlObj = new URL(url);
+            const protocol = urlObj.protocol === 'https:' ? https : http;
+
+            const request = protocol.request(urlObj, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${mmToken}`,
+                    'Content-Type': 'application/json'
+                }
+            }, (response) => {
+                let data = '';
+                response.on('data', chunk => data += chunk);
+                response.on('end', () => {
+                    if (response.statusCode >= 200 && response.statusCode < 300) {
+                        try {
+                            const parsedResponse = JSON.parse(data);
+                            resolve(parsedResponse);
+                        } catch (parseError) {
+                            // If parsing fails but status is good, still resolve
+                            resolve(data);
+                        }
+                    } else {
+                        reject(new Error(`HTTP ${response.statusCode}: ${data}`));
+                    }
+                });
+            });
+
+            request.on('error', reject);
+            request.setTimeout(10000, () => {
+                request.destroy();
+                reject(new Error('Mattermost API request timeout after 10 seconds'));
+            });
+
+            request.write(JSON.stringify(payload));
+            request.end();
+        });
     }
 
     // Sanitize user input to remove potentially dangerous content
@@ -442,21 +499,6 @@ class MattermostBot {
         }, 300000); // Check every 5 minutes
     }
 
-    // Get or create session for thread
-    getOrCreateSession(threadId) {
-        let session = this.sessions.get(threadId);
-
-        if (!session || !session.isValidSession()) {
-            // Create new session
-            session = new ClaudeCodeSession(threadId, this.sessionConfig);
-            this.sessions.set(threadId, session);
-            console.log(`Created new session for thread: ${threadId}`);
-        } else {
-            session.updateActivity();
-        }
-
-        return session;
-    }
 
     // Clean up expired sessions
     cleanupExpiredSessions() {
@@ -543,15 +585,15 @@ if (require.main === module) {
 }
 
 class ClaudeCodeSession {
-    constructor(threadId, config = {}) {
+    constructor(threadId) {
         this.threadId = threadId;
         this.sessionId = this.generateSessionId();
         this.createdAt = Date.now();
         this.lastActivity = Date.now();
-        this.timeoutMs = config.sessionTimeout || 3600000; // 1 hour default
-        this.maxContextLength = config.maxContextLength || 4000;
+        this.timeout = parseInt(process.env.CC_SESSION_TIMEOUT) || 3600000; // 1 hour default
+        this.maxContextLength = 4000;
         this.isActive = true;
-        this.conversationContext = [];
+        this.conversationHistory = [];
         this.securityToken = this.generateSecurityToken();
         this.claudeProcess = null;
 
@@ -576,7 +618,7 @@ class ClaudeCodeSession {
 
     // Check if session has timed out
     hasTimedOut() {
-        return Date.now() - this.lastActivity > this.timeoutMs;
+        return Date.now() - this.lastActivity > this.timeout;
     }
 
     // Validate session is still active and valid
@@ -584,39 +626,39 @@ class ClaudeCodeSession {
         return this.isActive && !this.hasTimedOut();
     }
 
-    // Add message to conversation context
+    // Add message to conversation history
     addToContext(message, isUserMessage = true) {
-        // Limit context length to prevent excessive memory usage
-        const contextEntry = {
+        // Limit history length to prevent excessive memory usage
+        const historyEntry = {
             timestamp: Date.now(),
             isUserMessage,
             content: message.substring(0, 1000), // Limit message length
             sessionId: this.sessionId
         };
 
-        this.conversationContext.push(contextEntry);
+        this.conversationHistory.push(historyEntry);
 
-        // Trim context if exceeds maximum length
-        const totalLength = this.conversationContext.reduce((sum, entry) =>
+        // Trim history if exceeds maximum length
+        const totalLength = this.conversationHistory.reduce((sum, entry) =>
             sum + entry.content.length, 0);
 
-        while (totalLength > this.maxContextLength && this.conversationContext.length > 1) {
-            this.conversationContext.shift();
+        while (totalLength > this.maxContextLength && this.conversationHistory.length > 1) {
+            this.conversationHistory.shift();
         }
 
         this.updateActivity();
     }
 
-    // Get conversation context as formatted string
+    // Get conversation history as formatted string
     getContext() {
-        return this.conversationContext.map(entry =>
+        return this.conversationHistory.map(entry =>
             `${entry.isUserMessage ? 'User' : 'Assistant'}: ${entry.content}`
         ).join('\n');
     }
 
     // Clear session data securely
     clearSession() {
-        this.conversationContext = [];
+        this.conversationHistory = [];
         this.isActive = false;
         console.log(`Session ${this.sessionId} cleared`);
     }
@@ -670,7 +712,7 @@ class ClaudeCodeSession {
 
     // Check if session is expired
     isExpired() {
-        return Date.now() - this.lastActivity > this.timeoutMs;
+        return Date.now() - this.lastActivity > this.timeout;
     }
 
     // Clean up Claude process
