@@ -650,6 +650,10 @@ if (require.main === module) {
 }
 
 class ClaudeCodeSession {
+    // Cache CCR availability at class level to avoid repeated checks
+    static ccrAvailable = null;
+    static ccrChecked = false;
+
     constructor(threadId) {
         this.threadId = threadId;
         this.sessionId = this.generateSessionId();
@@ -663,6 +667,34 @@ class ClaudeCodeSession {
         this.claudeProcess = null;
 
         console.log(`Session created for thread ${threadId}: ${this.sessionId}`);
+    }
+
+    // Check CCR availability once and cache the result
+    static checkCCRAvailability() {
+        if (ClaudeCodeSession.ccrChecked) {
+            return ClaudeCodeSession.ccrAvailable;
+        }
+
+        ClaudeCodeSession.ccrChecked = true;
+        let ccrAvailable = false;
+
+        try {
+            ccrAvailable = spawnSync('which', ['ccr']).status === 0;
+            console.log(`CCR availability check: ${ccrAvailable ? 'available' : 'not available'}`);
+        } catch (error) {
+            console.warn('Failed to check ccr command availability:', error.message);
+            ccrAvailable = false;
+        }
+
+        ClaudeCodeSession.ccrAvailable = ccrAvailable;
+        return ccrAvailable;
+    }
+
+    // Method to refresh CCR availability cache if needed
+    static refreshCCRAvailability() {
+        ClaudeCodeSession.ccrChecked = false;
+        ClaudeCodeSession.ccrAvailable = null;
+        return ClaudeCodeSession.checkCCRAvailability();
     }
 
     // Generate unique session ID
@@ -747,18 +779,23 @@ class ClaudeCodeSession {
             const ccrProfile = process.env.CCR_PROFILE;
             const useCCR = ccrProfile && ccrProfile.trim() !== '';
 
-            // Check if ccr command is available
-            let ccrAvailable = false;
-            try {
-                ccrAvailable = spawnSync('which', ['ccr']).status === 0;
-            } catch (error) {
-                console.warn('Failed to check ccr command availability:', error.message);
-            }
+            // Use cached CCR availability check
+            const ccrAvailable = ClaudeCodeSession.checkCCRAvailability();
 
             const command = useCCR && ccrAvailable ? 'ccr' : 'claude';
             const args = useCCR && ccrAvailable ?
                 [ccrProfile, '--permission-mode', permissionMode] :
                 ['--permission-mode', permissionMode];
+
+            // Comprehensive logging for debugging and monitoring
+            console.log(`CCR_PROFILE: ${ccrProfile || 'not set'}`);
+            console.log(`ccr command available: ${ccrAvailable}`);
+            console.log(`Selected command: ${command}`);
+            console.log(`Command arguments: ${JSON.stringify(args)}`);
+
+            if (useCCR && !ccrAvailable) {
+                console.warn('CCR_PROFILE set but ccr command not available, falling back to claude');
+            }
 
             console.log(`Using command: ${command} ${args.join(' ')}`);
 
