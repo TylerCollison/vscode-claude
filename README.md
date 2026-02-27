@@ -80,6 +80,7 @@ This container supports extensive configuration through environment variables. B
 ### AI Model Configuration
 - `NIM_API_KEY` - **NVIDIA NIM API key** - Required for NIM-hosted models
 - `GOOGLE_API_KEY` - **Google AI Studio API key** - Required for Google models
+- `CCR_PROFILE` - **Claude Code Router profile** - Uses `ccr <profile>` command when set and available, falls back to `claude`
 
 ### Claude Code Security
 - `CLAUDE_CODE_PERMISSION_MODE` - **Permission control** for Claude Code operations:
@@ -211,8 +212,8 @@ For VS Code settings, themes, and extension management, please refer to the [lin
 ### Claude Code Setup
 After starting the container:
 1. Open the terminal in VS Code
-2. Run `claude` to start Claude Code directly or `ccr default` to use Claude Code Router with the default configuration (more presets coming soon!). Note that the default Claude Code Router preset requires the NIM_API_KEY and GOOGLE_API_KEY environment variables be set. 
-3. If using Claude Code directly, follow the authentication prompts for your Claude account. If using Claude Code Router, see the [Claude Code Router GitHub Repository](https://github.com/musistudio/claude-code-router) for configuration instructions.
+2. Run `claude` to start Claude Code directly or set `CCR_PROFILE` environment variable to automatically use Claude Code Router with the specified profile
+3. If using Claude Code directly, follow the authentication prompts for your Claude account. If using Claude Code Router (via `CCR_PROFILE` or `ccr` command), see the [Claude Code Router GitHub Repository](https://github.com/musistudio/claude-code-router) for configuration instructions.
 
 ### Permission Control
 This image includes advanced permission control for Claude Code operations. You can configure security settings using environment variables:
@@ -489,6 +490,24 @@ This integration follows the security best practices outlined in the [Security B
 - Input validation and sanitization
 - No sensitive data exposure
 - Secure error handling
+
+## Claude Code Router Integration
+
+The Mattermost bot supports Claude Code Router when the `CCR_PROFILE` environment variable is set and the `ccr` command is available.
+
+**Configuration:**
+- `CCR_PROFILE` - Set to the desired CCR profile name (e.g., "default")
+- When set and `ccr` command is available, uses `ccr <profile>` instead of `claude`
+- Falls back to `claude` command if conditions not met
+
+**Example:**
+```bash
+docker run -d \
+  --name=claude-dev \
+  -e CCR_PROFILE=default \
+  # ... other environment variables
+  tylercollison2089/vscode-claude
+```
 
 ## Use Cases
 
