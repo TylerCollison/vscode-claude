@@ -24,9 +24,7 @@ class MattermostBot {
         this.ws = null;
         this.reconnectAttempts = 0;
         this.maxReconnectAttempts = config.maxReconnectAttempts || 5;
-
-        // Start session cleanup interval
-        this.startSessionCleanupInterval();
+        this.targetChannelId = null;
     }
 
     // Validate environment configuration
@@ -130,9 +128,52 @@ class MattermostBot {
         return errorId;
     }
 
+    async initialize() {
+        await this.resolveChannelId();
+        await this.connect();
+        this.startSessionCleanupInterval();
+    }
+
+    async resolveChannelId() {
+        const mmAddress = process.env.MM_ADDRESS;
+        const mmToken = process.env.MM_TOKEN;
+        const channelName = process.env.MM_CHANNEL;
+
+        if (!channelName) {
+            throw new Error('MM_CHANNEL environment variable required');
+        }
+
+        const url = `${mmAddress}/api/v4/channels/name/${channelName}`;
+
+        return new Promise((resolve, reject) => {
+            const request = (mmAddress.startsWith('https') ? https : http).request(url, {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${mmToken}`
+                }
+            }, (response) => {
+                let data = '';
+                response.on('data', chunk => data += chunk);
+                response.on('end', () => {
+                    if (response.statusCode === 200) {
+                        const channel = JSON.parse(data);
+                        this.targetChannelId = channel.id;
+                        console.log(`Resolved channel ${channelName} to ID: ${channel.id}`);
+                        resolve(channel.id);
+                    } else {
+                        reject(new Error(`Failed to resolve channel: HTTP ${response.statusCode}`));
+                    }
+                });
+            });
+
+            request.on('error', reject);
+            request.end();
+        });
+    }
+
     async connect() {
-        const mmAddress = this.mmAddress;
-        const mmToken = this.mmToken;
+        const mmAddress = process.env.MM_ADDRESS;
+        const mmToken = process.env.MM_TOKEN;
 
         if (!mmAddress || !mmToken) {
             throw new Error('MM_ADDRESS and MM_TOKEN environment variables required');
@@ -257,9 +298,14 @@ class MattermostBot {
     }
 
     async getTargetChannelId() {
+        if (this.targetChannelId) {
+            return this.targetChannelId;
+        }
+
         // First check for direct channel ID
         if (process.env.MM_CHANNEL_ID) {
-            return process.env.MM_CHANNEL_ID;
+            this.targetChannelId = process.env.MM_CHANNEL_ID;
+            return this.targetChannelId;
         }
 
         // Resolve channel name to ID using Mattermost API
@@ -267,7 +313,8 @@ class MattermostBot {
             try {
                 const channelId = await this.resolveChannelByName(this.mmChannel);
                 if (channelId) {
-                    return channelId;
+                    this.targetChannelId = channelId;
+                    return this.targetChannelId;
                 }
             } catch (error) {
                 this.handleError(error, 'channel resolution');
@@ -276,17 +323,21 @@ class MattermostBot {
         }
 
         // Fallback to MM_CHANNEL_ID if available
-        return process.env.MM_CHANNEL_ID || '';
+        this.targetChannelId = process.env.MM_CHANNEL_ID || '';
+        return this.targetChannelId;
     }
 
     async resolveChannelByName(channelName) {
-        if (!this.mmAddress || !this.mmToken) {
+        const mmAddress = process.env.MM_ADDRESS;
+        const mmToken = process.env.MM_TOKEN;
+
+        if (!mmAddress || !mmToken) {
             throw new Error('Missing Mattermost configuration for channel resolution');
         }
 
         return new Promise((resolve, reject) => {
             // Parse the URL and determine protocol
-            const url = new URL(`${this.mmAddress}/api/v4/channels`);
+            const url = new URL(`${mmAddress}/api/v4/channels`);
             const protocol = url.protocol === 'https:' ? require('https') : require('http');
 
             const options = {
@@ -295,7 +346,7 @@ class MattermostBot {
                 path: url.pathname + url.search,
                 method: 'GET',
                 headers: {
-                    'Authorization': `Bearer ${this.mmToken}`,
+                    'Authorization': `Bearer ${mmToken}`,
                     'Content-Type': 'application/json'
                 }
             };
@@ -350,7 +401,7 @@ class MattermostBot {
     }
 
     processUserInput(post) {
-        const threadId = post.root_id || post.id;
+        const threadId = post.root_id;
         const message = post.message || '';
 
         // Sanitize and validate user input before processing
@@ -386,8 +437,8 @@ class MattermostBot {
     }
 
     async sendReply(originalPost, message) {
-        const mmAddress = this.mmAddress;
-        const mmToken = this.mmToken;
+        const mmAddress = process.env.MM_ADDRESS;
+        const mmToken = process.env.MM_TOKEN;
 
         // Validate required parameters
         if (!mmAddress || !mmToken) {
@@ -397,7 +448,7 @@ class MattermostBot {
         const payload = {
             channel_id: originalPost.channel_id,
             message: message,
-            root_id: originalPost.root_id || originalPost.id
+            root_id: originalPost.root_id
         };
 
         const url = `${mmAddress}/api/v4/posts`;
@@ -496,7 +547,7 @@ class MattermostBot {
     startSessionCleanupInterval() {
         setInterval(() => {
             this.cleanupExpiredSessions();
-        }, 300000); // Check every 5 minutes
+        }, 60000); // Check every minute
     }
 
 
@@ -555,7 +606,7 @@ async function main() {
         };
 
         const bot = new MattermostBot(config);
-        await bot.connect();
+        await bot.initialize();
 
         console.log('Mattermost bot service running successfully');
 
