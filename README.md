@@ -275,6 +275,10 @@ To enable Mattermost notifications, set the following environment variables:
 - `PROMPT` - **Initial prompt text** that started Claude session - Avoid special JSON-breaking characters
 - `IDE_ADDRESS` - **Claude Code session web address** - Must be valid URL with http:// or https://
 
+**Optional Variables:**
+- `MM_TEAM` - **Mattermost team name** (default: "home") - Required if channel belongs to specific team
+- `MM_BOT_ENABLED` - **Enable bidirectional integration** (set to "true") - WebSocket-based real-time communication
+
 **Example Configuration:**
 ```bash
 docker run -d \
@@ -284,7 +288,9 @@ docker run -d \
   -e TZ=Etc/UTC \
   -e MM_ADDRESS=http://portainer.home.com:8081 \
   -e MM_CHANNEL=claude-code \
+  -e MM_TEAM=engineering \
   -e MM_TOKEN=your-bot-token \
+  -e MM_BOT_ENABLED=true \
   -e PROMPT=Initial prompt text \
   -e IDE_ADDRESS=https://your-claude-session.example.com \
   -p 8443:8443 \
@@ -305,7 +311,9 @@ services:
       - PASSWORD=password # optional
       - MM_ADDRESS=http://portainer.home.com:8081
       - MM_CHANNEL=claude-code
+      - MM_TEAM=engineering # Optional, defaults to "home"
       - MM_TOKEN=your-bot-token
+      - MM_BOT_ENABLED=true # Enable bidirectional integration
       - PROMPT=Initial prompt text
       - IDE_ADDRESS=https://your-claude-session.example.com
     ports:
@@ -317,9 +325,37 @@ services:
     restart: unless-stopped
 ```
 
-### Troubleshooting Mattermost Notifications
+### Troubleshooting Mattermost Integration
 
-If your Mattermost notifications are not working as expected, here are common issues and debugging steps:
+#### Bidirectional Bot Issues
+
+**WebSocket Connection Problems:**
+- **Symptoms**: Bot doesn't respond to thread replies, connection timeouts
+- **Debugging**: Check bot service logs:
+  ```bash
+  docker logs claude-dev | grep -E "(WebSocket|bot|session)"
+  ```
+- **Common Causes**:
+  - Network firewall blocking WebSocket connections (port 8065 by default)
+  - Mattermost WebSocket endpoint not accessible
+  - MM_TEAM environment variable incorrect or missing
+
+**Session Management Issues:**
+- **Symptoms**: Conversation context lost, repeated introductions
+- **Debugging**: Verify session timeout configuration:
+  ```bash
+  docker exec claude-dev env | grep -E "CC_SESSION_TIMEOUT|CC_MAX_CONTEXT_LENGTH"
+  ```
+- **Memory Management**: Monitor session count to prevent resource exhaustion
+
+**Authentication & Permissions:**
+- **Symptoms**: "401 Unauthorized" or bot unable to post replies
+- **Debugging**: Test token validity and permissions:
+  ```bash
+  curl -H "Authorization: Bearer $MM_TOKEN" "$MM_ADDRESS/api/v4/users/me"
+  ```
+
+#### Notification Delivery Issues
 
 **Common Error Scenarios:**
 
@@ -331,7 +367,7 @@ If your Mattermost notifications are not working as expected, here are common is
 2. **Channel resolution failures**
    - Ensure MM_CHANNEL name is exact (case-sensitive)
    - Check bot permissions for the target channel
-   - Verify channel exists and is accessible
+   - Verify channel exists and accessible (MM_TEAM may be required)
 
 3. **Message formatting issues**
    - IDE_ADDRESS should be a valid URL starting with http:// or https://
@@ -339,26 +375,34 @@ If your Mattermost notifications are not working as expected, here are common is
 
 **Debugging Steps:**
 
-1. **Check container logs for Mattermost notification script:**
-   ```bash
-   docker logs claude-dev | grep -i mattermost
-   ```
+1. **Check container logs for Mattermost services:**
+   - Notification script: `docker logs claude-dev | grep -i mattermost`
+   - Bot service: `docker logs claude-dev | grep -E "(WebSocket|bot|session)"`
 
-2. **Test Mattermost API connectivity manually:**
+2. **Test Mattermost API connectivity:**
    ```bash
    curl -H "Authorization: Bearer $MM_TOKEN" "$MM_ADDRESS/api/v4/channels"
    ```
 
-3. **Verify environment variables are correctly set:**
+3. **Verify environment variables (including bidirectional settings):**
    ```bash
-   docker exec claude-dev env | grep -E "MM_|IDE_|PROMPT"
+   docker exec claude-dev env | grep -E "MM_|IDE_|PROMPT|CC_|MAX_RECONNECT"
+   ```
+
+4. **Test WebSocket endpoint accessibility:**
+   ```bash
+   curl -H "Authorization: Bearer $MM_TOKEN" "$MM_ADDRESS/api/v4/websocket"
+   ```
+
+5. **Verify channel resolution with MM_TEAM:**
+   ```bash
+   curl -H "Authorization: Bearer $MM_TOKEN" "$MM_ADDRESS/api/v4/channels/name/${MM_TEAM}/${MM_CHANNEL}"
    ```
 
 **Retry Behavior and Timeouts:**
-- The script includes retry logic with exponential backoff
-- Initial timeout: 30 seconds per API call
-- Maximum retries: 2 attempts for transient failures
-- Failed notifications exit gracefully without stopping container startup
+- **Notifications**: Retry logic with exponential backoff (30s timeout, 2 attempts)
+- **WebSocket**: Automatic reconnection with exponential backoff (5 max attempts)
+- Failed communications exit gracefully without stopping container startup
 
 **IDE_ADDRESS Format Expectations:**
 - Must be a valid web address (http:// or https://)
@@ -367,7 +411,15 @@ If your Mattermost notifications are not working as expected, here are common is
 
 ## Bidirectional Mattermost Integration
 
-This image includes bidirectional integration with Mattermost, allowing you to interact with Claude Code entirely through Mattermost threads.
+This image includes **bidirectional integration** with Mattermost using **WebSocket-based real-time communication**, allowing you to interact with Claude Code entirely through Mattermost threads.
+
+### How It Works
+
+The bidirectional integration establishes a persistent **WebSocket connection** to Mattermost, enabling:
+- **Real-time message reception** - Instant processing of user replies in Mattermost threads
+- **Conversation context management** - Claude Code maintains context per thread throughout the interaction
+- **Session timeout handling** - Automatic cleanup of inactive sessions to manage memory usage
+- **Error handling with retry logic** - Exponential backoff reconnection for network failures
 
 ### Configuration
 
@@ -377,16 +429,39 @@ Enable bidirectional integration by setting:
 MM_BOT_ENABLED="true"
 ```
 
-**Additional Environment Variables:**
-- `CC_SESSION_TIMEOUT`: Session timeout in seconds (default: 3600)
-- `CC_MAX_CONTEXT_LENGTH`: Claude Code context limit (default: 4000)
+**Required Environment Variables:**
+- `MM_ADDRESS` - Mattermost server URL (with protocol and port)
+- `MM_CHANNEL` - Target channel name (case-sensitive)
+- `MM_TOKEN` - Bot authentication token
+- `MM_BOT_ENABLED` - Set to "true" to enable bidirectional functionality
 
-### Usage
+**Optional Environment Variables:**
+- `MM_TEAM` - Mattermost team name (default: "home")
+- `CC_SESSION_TIMEOUT` - Session timeout in seconds (default: 3600)
+- `CC_MAX_CONTEXT_LENGTH` - Claude Code context limit (default: 4000)
+- `MAX_RECONNECT_ATTEMPTS` - WebSocket reconnection attempts (default: 5)
 
-1. **Startup**: The container posts a notification to Mattermost when starting
-2. **Interaction**: Reply to the notification thread in Mattermost
-3. **Response**: Claude Code processes your message and replies in the same thread
-4. **Session**: Conversation context is maintained throughout the thread
+### Session Management & Memory Optimization
+
+**Session Lifecycle:**
+1. Session created when first user reply is detected in a thread
+2. Maintains conversation context across multiple interactions
+3. Automatically expires after `CC_SESSION_TIMEOUT` seconds of inactivity
+4. Cleaned up to free memory resources
+
+**Memory Management:**
+- Conversation history trimmed to `CC_MAX_CONTEXT_LENGTH` characters
+- Automatic session cleanup prevents memory leaks
+- Input sanitization prevents malicious content injection
+
+### Usage Workflow
+
+1. **Startup Notification**: Container posts notification to Mattermost channel
+2. **WebSocket Connection**: Bot establishes persistent connection to Mattermost
+3. **User Interaction**: Reply to notification thread in Mattermost
+4. **Real-time Processing**: WebSocket delivers message to Claude Code
+5. **Response Delivery**: Claude Code response posted as thread reply
+6. **Context Preservation**: Full conversation history maintained
 
 ### Example Configuration
 
@@ -397,12 +472,23 @@ services:
     environment:
       - MM_ADDRESS=http://mattermost.example.com
       - MM_CHANNEL=claude-code
+      - MM_TEAM=engineering  # Optional, defaults to "home"
       - MM_TOKEN=your-bot-token
       - MM_BOT_ENABLED=true
-      - CC_SESSION_TIMEOUT=3600
-      - CC_MAX_CONTEXT_LENGTH=4000
+      - CC_SESSION_TIMEOUT=3600  # 1 hour timeout
+      - CC_MAX_CONTEXT_LENGTH=4000  # Claude Code context limit
+      - MAX_RECONNECT_ATTEMPTS=5  # WebSocket retry attempts
     # ... other configuration
 ```
+
+### Security Integration
+
+This integration follows the security best practices outlined in the [Security Best Practices](#security-best-practices) section:
+- Uses Mattermost bot tokens with minimal permissions
+- Maintains Claude Code permission modes
+- Input validation and sanitization
+- No sensitive data exposure
+- Secure error handling
 
 ## Use Cases
 
@@ -511,23 +597,35 @@ This image builds upon the excellent work of:
 
 ### Common Error Scenarios
 
-#### Mattermost Notification Failures
+#### Mattermost Integration Failures
 
-**Symptoms:** Container starts but no notification appears in Mattermost
+**Notification Symptoms:** Container starts but no notification appears in Mattermost
+
+**Bidirectional Bot Symptoms:** Bot doesn't respond to thread replies, WebSocket connection failures
 
 **Diagnosis Steps:**
-1. Check container logs: `docker logs claude-dev | grep -i mattermost`
-2. Test Mattermost API manually:
+1. Check container logs for both notification and bot services:
+   ```bash
+   docker logs claude-dev | grep -E "(mattermost|WebSocket|bot|session)"
+   ```
+2. Test Mattermost API connectivity:
    ```bash
    curl -H "Authorization: Bearer $MM_TOKEN" "$MM_ADDRESS/api/v4/channels"
    ```
-3. Verify environment variables: `docker exec claude-dev env | grep MM_`
+3. Verify environment variables (including MM_TEAM):
+   ```bash
+   docker exec claude-dev env | grep -E "MM_|CC_|MAX_RECONNECT"
+   ```
+4. Test WebSocket connection manually:
+   ```bash
+   curl -H "Authorization: Bearer $MM_TOKEN" "$MM_ADDRESS/api/v4/websocket"
+   ```
 
 **Common Causes:**
-- Invalid MM_TOKEN or expired authentication
-- MM_ADDRESS unreachable from container network
-- Channel permissions incorrect
-- Network connectivity issues
+- **Channel/Team Resolution**: MM_TEAM required if channel not in "home" team
+- **WebSocket Access**: Firewall blocking WebSocket connections (port 8065)
+- **Token Permissions**: Bot token needs channel posting and WebSocket permissions
+- **Network Connectivity**: Mattermost server unreachable from container
 
 #### Claude Code Authentication Issues
 

@@ -90,7 +90,7 @@ resolve_channel_id() {
 
     log "Resolving channel name '$channel_name' to channel ID..." >&2
 
-    # Use direct channel resolution endpoint with team name from MM_TEAM_NAME environment variable
+    # Use direct channel resolution endpoint with team name from MM_TEAM environment variable
     local response
     response=$(make_api_call "$mm_address/api/v4/teams/name/$team_name/channels/name/$channel_name" "GET" "" "$mm_token")
 
@@ -192,8 +192,8 @@ main() {
 
     log "All required environment variables are present"
 
-    # Log team name being used (defaults to 'home' if MM_TEAM_NAME is not set)
-    local team_name="${MM_TEAM_NAME:-home}"
+    # Log team name being used (defaults to 'home' if MM_TEAM is not set)
+    local team_name="${MM_TEAM:-home}"
     log "Using Mattermost team: $team_name"
 
     # Resolve channel name to channel ID

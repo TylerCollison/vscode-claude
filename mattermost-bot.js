@@ -18,6 +18,7 @@ class MattermostBot {
         this.mmAddress = config.mmAddress;
         this.mmToken = config.mmToken;
         this.mmChannel = config.mmChannel;
+        this.mmTeam = config.mmTeam || 'home';
 
         // Initialize session management
         this.sessions = new Map(); // threadId -> ClaudeCodeSession
@@ -29,11 +30,16 @@ class MattermostBot {
 
     // Validate environment configuration
     validateConfig(config) {
-        const requiredVars = ['mmAddress', 'mmToken'];
+        const requiredVars = ['mmAddress', 'mmToken', 'mmChannel'];
         const missingVars = requiredVars.filter(varName => !config[varName]);
 
         if (missingVars.length > 0) {
             throw new Error(`Missing required configuration: ${missingVars.join(', ')}`);
+        }
+
+        // Validate mmTeam if provided
+        if (config.mmTeam && typeof config.mmTeam !== 'string') {
+            throw new Error('mmTeam must be a string if provided');
         }
 
         // Validate MM_ADDRESS format
@@ -129,21 +135,28 @@ class MattermostBot {
     }
 
     async initialize() {
-        await this.resolveChannelId();
-        await this.connect();
-        this.startSessionCleanupInterval();
+        try {
+            await this.resolveChannelId();
+            await this.connect();
+            this.startSessionCleanupInterval();
+            console.log('Mattermost bot initialized successfully');
+        } catch (error) {
+            const errorId = this.handleError(error, 'Bot initialization');
+            throw new Error(`Bot initialization failed (errorId: ${errorId})`);
+        }
     }
 
     async resolveChannelId() {
-        const mmAddress = process.env.MM_ADDRESS;
-        const mmToken = process.env.MM_TOKEN;
-        const channelName = process.env.MM_CHANNEL;
+        const mmAddress = this.mmAddress;
+        const mmToken = this.mmToken;
+        const channelName = this.mmChannel;
 
         if (!channelName) {
-            throw new Error('MM_CHANNEL environment variable required');
+            throw new Error('mmChannel configuration is required');
         }
 
-        const url = `${mmAddress}/api/v4/channels/name/${channelName}`;
+        const teamName = this.mmTeam;
+        const url = `${mmAddress}/api/v4/channels/name/${teamName}/${channelName}`;
 
         return new Promise((resolve, reject) => {
             const request = (mmAddress.startsWith('https') ? https : http).request(url, {
@@ -172,11 +185,11 @@ class MattermostBot {
     }
 
     async connect() {
-        const mmAddress = process.env.MM_ADDRESS;
-        const mmToken = process.env.MM_TOKEN;
+        const mmAddress = this.mmAddress;
+        const mmToken = this.mmToken;
 
         if (!mmAddress || !mmToken) {
-            throw new Error('MM_ADDRESS and MM_TOKEN environment variables required');
+            throw new Error('mmAddress and mmToken configuration are required');
         }
 
         // Extract base URL and create WebSocket URL
@@ -328,8 +341,8 @@ class MattermostBot {
     }
 
     async resolveChannelByName(channelName) {
-        const mmAddress = process.env.MM_ADDRESS;
-        const mmToken = process.env.MM_TOKEN;
+        const mmAddress = this.mmAddress;
+        const mmToken = this.mmToken;
 
         if (!mmAddress || !mmToken) {
             throw new Error('Missing Mattermost configuration for channel resolution');
@@ -437,12 +450,12 @@ class MattermostBot {
     }
 
     async sendReply(originalPost, message) {
-        const mmAddress = process.env.MM_ADDRESS;
-        const mmToken = process.env.MM_TOKEN;
+        const mmAddress = this.mmAddress;
+        const mmToken = this.mmToken;
 
         // Validate required parameters
         if (!mmAddress || !mmToken) {
-            throw new Error('MM_ADDRESS and MM_TOKEN environment variables required');
+            throw new Error('mmAddress and mmToken configuration are required');
         }
 
         const payload = {
@@ -602,6 +615,7 @@ async function main() {
             mmAddress: process.env.MM_ADDRESS,
             mmToken: process.env.MM_TOKEN,
             mmChannel: process.env.MM_CHANNEL,
+            mmTeam: process.env.MM_TEAM,
             maxReconnectAttempts: parseInt(process.env.MAX_RECONNECT_ATTEMPTS) || 5
         };
 
@@ -667,14 +681,14 @@ class ClaudeCodeSession {
         this.isActive = true;
     }
 
-    // Check if session has timed out
-    hasTimedOut() {
+    // Check if session is expired
+    isExpired() {
         return Date.now() - this.lastActivity > this.timeout;
     }
 
     // Validate session is still active and valid
     isValidSession() {
-        return this.isActive && !this.hasTimedOut();
+        return this.isActive && !this.isExpired();
     }
 
     // Add message to conversation history
@@ -726,7 +740,9 @@ class ClaudeCodeSession {
         this.lastActivity = Date.now();
 
         return new Promise((resolve, reject) => {
-            const claude = spawn('claude', ['--permission-mode', 'bypassPermissions'], {
+            // Security Fix 2: Configurable permission mode
+            const permissionMode = process.env.CLAUDE_PERMISSION_MODE || 'default';
+            const claude = spawn('claude', ['--permission-mode', permissionMode], {
                 stdio: ['pipe', 'pipe', 'pipe']
             });
 
@@ -759,11 +775,6 @@ class ClaudeCodeSession {
             claude.stdin.write(message + '\n');
             claude.stdin.end();
         });
-    }
-
-    // Check if session is expired
-    isExpired() {
-        return Date.now() - this.lastActivity > this.timeout;
     }
 
     // Clean up Claude process

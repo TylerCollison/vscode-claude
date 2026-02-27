@@ -43,8 +43,8 @@ RUN chmod +x /etc/cont-init.d/94-mattermost-notification \
 # Copy Mattermost bot service
 COPY mattermost-bot.js /workspace/mattermost-bot.js
 
-# Install Node.js dependencies for Mattermost bot
-RUN cd /workspace && npm install ws
+# Install Node.js dependencies for Mattermost bot securely
+RUN cd /workspace && npm install --production --no-audit --save-exact ws@8.14.2
 
 # Docker socket volume mount (to be used when running the container)
 # This allows Docker commands inside the container to communicate with host Docker daemon
