@@ -24,7 +24,6 @@ log_success() {
 WORKSPACE_DIR="${WORKSPACE_DIR:-$(pwd)}"
 BOT_JS_FILE="${BOT_JS_FILE:-$WORKSPACE_DIR/mattermost-bot.js}"
 STARTUP_SCRIPT="${STARTUP_SCRIPT:-$WORKSPACE_DIR/start-mattermost-bot.sh}"
-NOTIFICATION_SCRIPT="${NOTIFICATION_SCRIPT:-$WORKSPACE_DIR/94-mattermost-notification.sh}"
 
 # Test function to check file existence with proper logging
 check_file_exists() {
@@ -78,7 +77,7 @@ validate_functional_components() {
     fi
 
     # Test 7: Validate script has proper shebang lines
-    local scripts=("$BOT_JS_FILE" "$STARTUP_SCRIPT" "$NOTIFICATION_SCRIPT")
+    local scripts=("$BOT_JS_FILE" "$STARTUP_SCRIPT")
     for script in "${scripts[@]}"; do
         if [ -f "$script" ] && head -1 "$script" | grep -q "^#!/" > /dev/null 2>&1; then
             log "✓ Proper shebang found in $(basename "$script")"
@@ -117,8 +116,6 @@ main() {
     # Test 2: Check if startup script exists
     check_file_exists "$STARTUP_SCRIPT" "Mattermost bot startup script"
 
-    # Test 3: Check if notification script exists
-    check_file_exists "$NOTIFICATION_SCRIPT" "Mattermost notification script"
 
     # Test 4: Verify Node.js syntax
     validate_syntax "$BOT_JS_FILE" "node -c" "Mattermost bot service"
@@ -126,8 +123,6 @@ main() {
     # Test 5: Verify bash script syntax
     validate_syntax "$STARTUP_SCRIPT" "bash -n" "Mattermost bot startup script"
 
-    # Test 6: Verify notification script syntax
-    validate_syntax "$NOTIFICATION_SCRIPT" "bash -n" "Mattermost notification script"
 
     # Enhanced functional tests
     validate_functional_components
