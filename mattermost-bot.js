@@ -3,7 +3,7 @@
 // Provides bidirectional communication between Mattermost and Claude Code
 
 const WebSocket = require('ws');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const https = require('https');
 const http = require('http');
@@ -742,7 +742,27 @@ class ClaudeCodeSession {
         return new Promise((resolve, reject) => {
             // Security Fix 2: Configurable permission mode
             const permissionMode = process.env.CLAUDE_PERMISSION_MODE || 'default';
-            const claude = spawn('claude', ['--permission-mode', permissionMode], {
+
+            // Determine which command to use
+            const ccrProfile = process.env.CCR_PROFILE;
+            const useCCR = ccrProfile && ccrProfile.trim() !== '';
+
+            // Check if ccr command is available
+            let ccrAvailable = false;
+            try {
+                ccrAvailable = spawnSync('which', ['ccr']).status === 0;
+            } catch (error) {
+                console.warn('Failed to check ccr command availability:', error.message);
+            }
+
+            const command = useCCR && ccrAvailable ? 'ccr' : 'claude';
+            const args = useCCR && ccrAvailable ?
+                [ccrProfile, '--permission-mode', permissionMode] :
+                ['--permission-mode', permissionMode];
+
+            console.log(`Using command: ${command} ${args.join(' ')}`);
+
+            const claude = spawn(command, args, {
                 stdio: ['pipe', 'pipe', 'pipe']
             });
 
