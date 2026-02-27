@@ -27,16 +27,24 @@ COPY ccr-presets /ccr-presets
 # Create startup script for pre-start hook
 COPY 94-mattermost-notification.sh /etc/cont-init.d/94-mattermost-notification
 COPY git-repo-setup.sh /etc/cont-init.d/95-git-repo-setup
-COPY combine-markdowns.sh /etc/cont-init.d/96-combine-markdowns
-COPY configure-ccr-settings.sh /etc/cont-init.d/97-configure-ccr-settings
-COPY configure-claude-permissions.sh /etc/cont-init.d/98-configure-claude-permissions
-COPY configure-claude-plugins.sh /etc/cont-init.d/99-configure-claude-plugins
+COPY start-mattermost-bot.sh /etc/cont-init.d/96-mattermost-bot
+COPY combine-markdowns.sh /etc/cont-init.d/97-combine-markdowns
+COPY configure-ccr-settings.sh /etc/cont-init.d/98-configure-ccr-settings
+COPY configure-claude-permissions.sh /etc/cont-init.d/99-configure-claude-permissions
+COPY configure-claude-plugins.sh /etc/cont-init.d/100-configure-claude-plugins
 RUN chmod +x /etc/cont-init.d/94-mattermost-notification \
     /etc/cont-init.d/95-git-repo-setup \
-    /etc/cont-init.d/96-combine-markdowns \
-    /etc/cont-init.d/97-configure-ccr-settings \
-    /etc/cont-init.d/98-configure-claude-permissions \
-    /etc/cont-init.d/99-configure-claude-plugins
+    /etc/cont-init.d/96-mattermost-bot \
+    /etc/cont-init.d/97-combine-markdowns \
+    /etc/cont-init.d/98-configure-ccr-settings \
+    /etc/cont-init.d/99-configure-claude-permissions \
+    /etc/cont-init.d/100-configure-claude-plugins
+
+# Copy Mattermost bot service
+COPY mattermost-bot.js /workspace/mattermost-bot.js
+
+# Install Node.js dependencies for Mattermost bot
+RUN cd /workspace && npm install ws
 
 # Docker socket volume mount (to be used when running the container)
 # This allows Docker commands inside the container to communicate with host Docker daemon
