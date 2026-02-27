@@ -312,10 +312,17 @@ class MattermostBot {
             return;
         }
 
-        // Handle thread replies (not the initial notification)
-        if (post.root_id) {
-            this.processUserInput(post);
+        // Only process replies to our bot thread
+        if (!post.root_id || post.root_id !== this.botThreadId) {
+            console.log(`Ignoring message not in bot thread: ${post.root_id}`);
+            return;
         }
+
+        // Add debug logging for successful thread filtering
+        console.log(`Processing message in bot thread: ${post.root_id}`);
+
+        // Handle thread replies
+        this.processUserInput(post);
     }
 
     async getTargetChannelId() {
