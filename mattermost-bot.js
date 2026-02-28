@@ -769,15 +769,26 @@ class PersistentSession {
 
             // Determine which command to use
             const ccrProfile = process.env.CCR_PROFILE;
-            const useCCR = ccrProfile && ccrProfile.trim() !== '';
+            let useCCR = ccrProfile && ccrProfile.trim() !== '';
+
+            // Security Fix: Validate CCR_PROFILE to prevent command injection
+            if (useCCR) {
+                const ccrProfilePattern = /^[a-zA-Z0-9_-]+$/;
+                if (!ccrProfilePattern.test(ccrProfile)) {
+                    console.warn(`Invalid CCR_PROFILE format "${ccrProfile}", falling back to claude command`);
+                    useCCR = false;
+                }
+            }
 
             // Check CCR availability
             let ccrAvailable = false;
-            try {
-                const { spawnSync } = require('child_process');
-                ccrAvailable = spawnSync('which', ['ccr']).status === 0;
-            } catch (error) {
-                console.warn('Failed to check ccr command availability:', error.message);
+            if (useCCR) {
+                try {
+                    const { spawnSync } = require('child_process');
+                    ccrAvailable = spawnSync('which', ['ccr']).status === 0;
+                } catch (error) {
+                    console.warn('Failed to check ccr command availability:', error.message);
+                }
             }
 
             const command = useCCR && ccrAvailable ? 'ccr' : 'claude';
@@ -794,13 +805,25 @@ class PersistentSession {
 
             this.stdoutBuffer = '';
             this.stderrBuffer = '';
+            const MAX_BUFFER_SIZE = 1024 * 1024; // 1MB limit
 
             this.process.stdout.on('data', (data) => {
-                this.stdoutBuffer += data.toString();
+                const newData = data.toString();
+                // Check if buffer exceeds size limit
+                if (this.stdoutBuffer.length + newData.length > MAX_BUFFER_SIZE) {
+                    // Keep only recent data (last 50% of buffer)
+                    this.stdoutBuffer = this.stdoutBuffer.substring(this.stdoutBuffer.length - Math.floor(MAX_BUFFER_SIZE / 2));
+                }
+                this.stdoutBuffer += newData;
             });
 
             this.process.stderr.on('data', (data) => {
                 const stderrData = data.toString();
+                // Check if buffer exceeds size limit
+                if (this.stderrBuffer.length + stderrData.length > MAX_BUFFER_SIZE) {
+                    // Keep only recent data (last 50% of buffer)
+                    this.stderrBuffer = this.stderrBuffer.substring(this.stderrBuffer.length - Math.floor(MAX_BUFFER_SIZE / 2));
+                }
                 this.stderrBuffer += stderrData;
                 console.error('Claude stderr:', stderrData);
             });
@@ -813,8 +836,14 @@ class PersistentSession {
                 // Attempt automatic restart if not manually destroyed
                 if (this.restartAttempts < this.maxRestartAttempts) {
                     this.restartAttempts++;
-                    console.log(`Attempting restart ${this.restartAttempts}/${this.maxRestartAttempts}`);
-                    setTimeout(() => this.startClaudeProcess(), 2000);
+
+                    // Security Fix: Exponential backoff with limits
+                    const baseDelay = 2000;
+                    const maxDelay = 30000;
+                    const delay = Math.min(baseDelay * Math.pow(2, this.restartAttempts - 1), maxDelay);
+
+                    console.log(`Attempting restart ${this.restartAttempts}/${this.maxRestartAttempts} in ${delay}ms`);
+                    setTimeout(() => this.startClaudeProcess(), delay);
                 }
             });
 
@@ -823,11 +852,24 @@ class PersistentSession {
                 reject(error);
             });
 
-            // Wait for process to be ready
+            // Wait for process to be ready with proper readiness checking
+            const checkProcessReady = () => {
+                if (this.process && this.process.stdout) {
+                    this.isAlive = true;
+                    console.log('Claude Code process ready');
+                    resolve();
+                } else if (this.process) {
+                    // Process exists but stdout not ready yet, retry
+                    setTimeout(checkProcessReady, 100);
+                } else {
+                    // Process failed to start
+                    reject(new Error('Claude Code process failed to initialize'));
+                }
+            };
+
             setTimeout(() => {
-                this.isAlive = true;
-                resolve();
-            }, 1000);
+                checkProcessReady();
+            }, 500);
         });
     }
 
