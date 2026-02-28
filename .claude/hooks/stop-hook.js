@@ -37,6 +37,12 @@ class StopHook {
             console.error(`Invalid MM_ADDRESS format: ${process.env.MM_ADDRESS}`);
             process.exit(1);
         }
+
+        // Set reply timeout (default: 24 hours)
+        this.replyTimeoutMs = parseInt(process.env.MM_REPLY_TIMEOUT_MS) || 24 * 60 * 60 * 1000;
+
+        // Set bot user ID for filtering replies
+        this.botUserId = process.env.MM_BOT_USER_ID || null;
     }
 
     getThreadId() {
@@ -77,11 +83,158 @@ class StopHook {
         return threadId;
     }
 
+    // Helper method to sleep for specified milliseconds
+    sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    // Get all replies in the thread
+    async getThreadReplies() {
+        const mmAddress = process.env.MM_ADDRESS;
+        const mmToken = process.env.MM_TOKEN;
+
+        const url = `${mmAddress}/api/v4/posts/${this.threadId}/thread`;
+        const urlObj = new URL(url);
+        const protocol = urlObj.protocol === 'https:' ? https : http;
+
+        return new Promise((resolve, reject) => {
+            const request = protocol.request(urlObj, {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${mmToken}`,
+                    'Content-Type': 'application/json'
+                }
+            }, (response) => {
+                let data = '';
+                response.on('data', chunk => data += chunk);
+                response.on('end', () => {
+                    if (response.statusCode === 200) {
+                        try {
+                            const posts = JSON.parse(data);
+                            resolve(posts.posts || {});
+                        } catch (error) {
+                            reject(new Error('Failed to parse posts response'));
+                        }
+                    } else {
+                        reject(new Error(`Failed to get thread replies: HTTP ${response.statusCode}`));
+                    }
+                });
+            });
+
+            request.on('error', reject);
+            request.setTimeout(5000, () => {
+                request.destroy();
+                reject(new Error('Thread replies request timeout after 5 seconds'));
+            });
+
+            request.end();
+        });
+    }
+
+    // Check if a post is from the bot
+    isBotReply(post) {
+        if (!this.botUserId) {
+            return false;
+        }
+        return post.user_id === this.botUserId;
+    }
+
+    // Get the latest post ID from the thread
+    async getLatestPostId() {
+        const posts = await this.getThreadReplies();
+        const postIds = Object.keys(posts);
+
+        if (postIds.length === 0) {
+            return null;
+        }
+
+        // Sort by create_at timestamp to get the latest
+        const sortedPosts = postIds
+            .map(id => ({ ...posts[id], id }))
+            .sort((a, b) => b.create_at - a.create_at);
+
+        return sortedPosts[0].id;
+    }
+
+    // Find the first non-bot reply after the latest post
+    async findUserReply(lastKnownPostId) {
+        const posts = await this.getThreadReplies();
+        const postIds = Object.keys(posts);
+
+        if (postIds.length === 0) {
+            return null;
+        }
+
+        // Filter out bot posts and find posts newer than lastKnownPostId
+        const userReplies = postIds
+            .map(id => ({ ...posts[id], id }))
+            .filter(post => !this.isBotReply(post))
+            .filter(post => !lastKnownPostId || post.create_at > posts[lastKnownPostId]?.create_at)
+            .sort((a, b) => a.create_at - b.create_at);
+
+        return userReplies.length > 0 ? userReplies[0] : null;
+    }
+
+    // Wait for a user reply with timeout
+    async waitForUserReply() {
+        const startTime = Date.now();
+        let lastKnownPostId = await this.getLatestPostId();
+
+        console.log(`⏳ Waiting for user reply (timeout: ${this.replyTimeoutMs}ms)`);
+
+        while (Date.now() - startTime < this.replyTimeoutMs) {
+            const userReply = await this.findUserReply(lastKnownPostId);
+
+            if (userReply) {
+                console.log(`✅ Found user reply: ${userReply.id}`);
+                return userReply;
+            }
+
+            // Wait 2 seconds before checking again
+            await this.sleep(2000);
+
+            // Update last known post ID in case bot posts were added
+            lastKnownPostId = await this.getLatestPostId();
+        }
+
+        console.log('⏰ Reply timeout reached, no user reply found');
+        return null;
+    }
+
+    // Return JSON block response for Claude Code
+    returnBlockResponse(userReply) {
+        const response = {
+            decision: 'block',
+            reason: userReply.message || ''
+        };
+
+        console.log(JSON.stringify(response, null, 2));
+        process.exit(0);
+    }
+
     async run() {
         try {
             const input = await this.readInput();
             const message = this.extractMessage(input);
+
+            // Send the final message to Mattermost
             await this.sendToMattermost(message);
+
+            // Wait for user reply if timeout is set
+            if (this.replyTimeoutMs > 0) {
+                console.log('🔄 Reply waiting is enabled (timeout: ' + this.replyTimeoutMs + 'ms)');
+                const userReply = await this.waitForUserReply();
+
+                if (userReply) {
+                    // Found a reply, return JSON block response
+                    return this.returnBlockResponse(userReply);
+                }
+                // No reply found within timeout, continue with normal flow
+                console.log('➡️ No user reply found, continuing normal flow');
+            } else {
+                console.log('➡️ Reply waiting is disabled (timeout: 0ms)');
+            }
+
             process.exit(0);
         } catch (error) {
             console.error('Stop hook error:', error.message);

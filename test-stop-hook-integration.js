@@ -111,7 +111,10 @@ class StopHookIntegrationTest {
             process.env.MM_ADDRESS = 'https://mattermost.example.com';
             process.env.MM_TOKEN = 'test-token-456';
 
-            // Test the getThreadId method directly without instantiating the full StopHook
+            // Clear module cache and reload
+            delete require.cache[require.resolve(this.stopHookPath)];
+
+            // Test the getThreadId method directly
             const StopHook = require(this.stopHookPath);
             const hook = new StopHook();
 
