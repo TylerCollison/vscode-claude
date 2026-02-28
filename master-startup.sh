@@ -50,8 +50,6 @@ for script_path in "${STARTUP_SCRIPTS[@]}"; do
     # Execute the script
     if "$script_path"; then
         log_success "Completed: $script_name"
-    else
-        error_exit "Failed to execute: $script_name"
     fi
 done
 

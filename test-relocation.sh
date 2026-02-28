@@ -12,8 +12,8 @@ else
     exit 1
 fi
 
-if grep -q "npm install --prefix /" /workspace/Dockerfile; then
-    echo "✓ Dockerfile installs dependencies to root"
+if grep -q "npm install --prefix /app" /workspace/Dockerfile; then
+    echo "✓ Dockerfile installs dependencies to /app"
 else
     echo "✗ Dockerfile missing correct npm install prefix"
     exit 1

@@ -709,13 +709,19 @@ async function main() {
         console.log('Mattermost bot service running successfully');
 
         // Keep the process alive
-        process.on('SIGINT', () => {
+        process.on('SIGINT', async () => {
             console.log('Shutting down Mattermost bot service...');
+            if (bot.persistentSession) {
+                await bot.persistentSession.destroy();
+            }
             process.exit(0);
         });
 
-        process.on('SIGTERM', () => {
+        process.on('SIGTERM', async () => {
             console.log('Shutting down Mattermost bot service...');
+            if (bot.persistentSession) {
+                await bot.persistentSession.destroy();
+            }
             process.exit(0);
         });
 
