@@ -5,7 +5,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/stop-hook.js"
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/stop-hook.js",
+            "description": "Mattermost Stop Hook: Sends last assistant message to Mattermost thread"
           }
         ]
       }
