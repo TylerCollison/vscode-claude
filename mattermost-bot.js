@@ -20,8 +20,8 @@ class MattermostBot {
         this.mmChannel = config.mmChannel;
         this.mmTeam = config.mmTeam || 'home';
 
-        // Initialize session management
-        this.sessions = new Map(); // threadId -> ClaudeCodeSession
+        // Initialize persistent session management
+        this.persistentSession = null;
         this.ws = null;
         this.reconnectAttempts = 0;
         this.maxReconnectAttempts = config.maxReconnectAttempts || 5;
@@ -152,7 +152,13 @@ class MattermostBot {
             this.botThreadId = notificationResponse.id;
             console.log(`Startup notification posted with thread ID: ${this.botThreadId}`);
 
-            this.startSessionCleanupInterval();
+            // Initialize persistent session
+            this.persistentSession = new PersistentSession({
+                maxRestartAttempts: 3
+            });
+            await this.persistentSession.initialize();
+            console.log('Persistent Claude Code session initialized');
+
             console.log('Mattermost bot initialized successfully');
         } catch (error) {
             const errorId = this.handleError(error, 'Bot initialization');
@@ -509,13 +515,13 @@ class MattermostBot {
             return;
         }
 
-        // Use direct Map operations as specified in the spec
-        if (!this.sessions.has(threadId)) {
-            this.sessions.set(threadId, new ClaudeCodeSession(threadId));
+        // Use persistent session instead of managing multiple sessions
+        if (!this.persistentSession) {
+            console.error('Persistent session not initialized');
+            return;
         }
-        const session = this.sessions.get(threadId);
 
-        session.sendToClaude(sanitizedMessage)
+        this.persistentSession.sendMessage(sanitizedMessage)
             .then(response => {
                 return this.sendReply(post, response);
             })
@@ -530,7 +536,6 @@ class MattermostBot {
             });
 
         console.log(`Processing user input for thread ${threadId}:`, sanitizedMessage.substring(0, 100));
-        console.log(`Active sessions: ${this.getActiveSessionCount()}`);
     }
 
     async sendReply(originalPost, message) {
@@ -640,55 +645,7 @@ class MattermostBot {
         return true;
     }
 
-    // Start periodic session cleanup
-    startSessionCleanupInterval() {
-        setInterval(() => {
-            this.cleanupExpiredSessions();
-        }, 60000); // Check every minute
-    }
 
-
-    // Clean up expired sessions
-    cleanupExpiredSessions() {
-        let expiredCount = 0;
-
-        for (const [threadId, session] of this.sessions.entries()) {
-            if (session.isExpired()) {
-                session.destroy();
-                this.sessions.delete(threadId);
-                expiredCount++;
-            }
-        }
-
-        if (expiredCount > 0) {
-            console.log(`Cleaned up ${expiredCount} expired sessions`);
-        }
-    }
-
-    // Validate session exists and is active
-    validateSession(threadId, securityToken) {
-        const session = this.sessions.get(threadId);
-        if (!session || session.isExpired()) {
-            return false;
-        }
-
-        // Optional security token validation
-        if (securityToken && session.securityToken !== securityToken) {
-            console.error('Session security token mismatch');
-            return false;
-        }
-
-        return true;
-    }
-
-    // Get active session count
-    getActiveSessionCount() {
-        return Array.from(this.sessions.values()).filter(session =>
-            !session.isExpired()
-        ).length;
-    }
-
-    // Session management methods will be implemented in later tasks
 }
 
 // Main execution with secure error handling
@@ -1097,56 +1054,5 @@ MattermostBot.prototype.sendStartupNotification = async function() {
     });
 };
 
-class ClaudeCodeSession {
-    constructor(threadId) {
-        this.threadId = threadId;
-        this.session = new PersistentSession();
-        this.createdAt = Date.now();
-        this.lastActivity = this.createdAt;
-        this.maxIdleTime = 15 * 60 * 1000; // 15 minutes
-        this.isInitialized = false;
-    }
 
-    async sendToClaude(message) {
-        this.lastActivity = Date.now();
-
-        try {
-            // Initialize session if not already initialized
-            if (!this.isInitialized) {
-                console.log(`Initializing ClaudeCodeSession for thread ${this.threadId}`);
-                await this.session.initialize();
-                this.isInitialized = true;
-                console.log(`ClaudeCodeSession initialized for thread ${this.threadId}`);
-            }
-
-            console.log(`Sending message to Claude for thread ${this.threadId}: ${message.substring(0, 100)}...`);
-            const response = await this.session.sendMessage(message);
-            console.log(`Received response from Claude for thread ${this.threadId}: ${response.length} chars`);
-            return response;
-
-        } catch (error) {
-            console.error(`Error in ClaudeCodeSession for thread ${this.threadId}:`, error.message);
-            // Reset initialization flag on error
-            if (error.message.includes('process terminated') || error.message.includes('not alive')) {
-                this.isInitialized = false;
-            }
-            throw error;
-        }
-    }
-
-    isExpired() {
-        return Date.now() - this.lastActivity > this.maxIdleTime;
-    }
-
-    destroy() {
-        console.log(`Destroying ClaudeCodeSession for thread ${this.threadId}`);
-        if (this.session) {
-            this.session.destroy();
-            this.session = null;
-        }
-        this.isInitialized = false;
-        console.log(`ClaudeCodeSession destroyed for thread ${this.threadId}`);
-    }
-}
-
-module.exports = { MattermostBot, PersistentSession, ClaudeCodeSession };
+module.exports = { MattermostBot, PersistentSession };
