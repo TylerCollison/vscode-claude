@@ -294,8 +294,8 @@ class MattermostBot {
             }
         });
 
-        this.ws.on('close', () => {
-            console.log('WebSocket connection closed');
+        this.ws.on('close', (code, reason) => {
+            console.log(`WebSocket connection closed with code: ${code}, reason: ${reason || 'none'}`);
             this.attemptReconnect();
         });
 
@@ -666,21 +666,82 @@ async function main() {
         console.log('Mattermost bot service running successfully');
 
         // Keep the process alive
-        process.on('SIGINT', async () => {
+        const cleanupWithTimeout = async () => {
             console.log('Shutting down Mattermost bot service...');
-            if (bot.persistentSession) {
-                await bot.persistentSession.destroy();
-            }
-            process.exit(0);
-        });
 
-        process.on('SIGTERM', async () => {
-            console.log('Shutting down Mattermost bot service...');
-            if (bot.persistentSession) {
-                await bot.persistentSession.destroy();
+            const timeout = setTimeout(() => {
+                console.error('Cleanup timeout exceeded (10 seconds), forcing exit');
+                process.exit(1);
+            }, 10000); // 10 second timeout
+
+            try {
+                // Cleanup operations in correct order
+                // Close WebSocket connection first with timeout
+                if (bot.ws && bot.ws.readyState !== bot.ws.CLOSED) {
+                    console.log('Closing WebSocket connection...');
+
+                    const wsCloseTimeout = setTimeout(() => {
+                        console.warn('WebSocket close timeout exceeded, terminating connection');
+                        if (bot.ws && bot.ws.readyState !== bot.ws.CLOSED) {
+                            bot.ws.terminate();
+                        }
+                    }, 5000); // 5 second timeout for graceful closure
+
+                    try {
+                        bot.ws.close();
+
+                        // Wait for WebSocket to close gracefully or timeout
+                        await new Promise((resolve, reject) => {
+                            if (bot.ws.readyState === bot.ws.CLOSED) {
+                                clearTimeout(wsCloseTimeout);
+                                resolve();
+                            } else {
+                                const onClose = () => {
+                                    clearTimeout(wsCloseTimeout);
+                                    resolve();
+                                };
+
+                                const onError = (error) => {
+                                    clearTimeout(wsCloseTimeout);
+                                    reject(error);
+                                };
+
+                                bot.ws.once('close', onClose);
+                                bot.ws.once('error', onError);
+                            }
+                        });
+
+                        console.log('WebSocket connection closed successfully');
+                    } catch (error) {
+                        clearTimeout(wsCloseTimeout);
+                        console.error('Error closing WebSocket:', error);
+                        // Force terminate on error
+                        if (bot.ws && bot.ws.readyState !== bot.ws.CLOSED) {
+                            bot.ws.terminate();
+                        }
+                    }
+                } else if (bot.ws) {
+                    console.log('WebSocket already closed');
+                }
+
+                // Then cleanup persistent session
+                if (bot.persistentSession) {
+                    await bot.persistentSession.destroy();
+                    console.log('Persistent session destroyed');
+                }
+
+                clearTimeout(timeout);
+                console.log('Cleanup completed successfully');
+                process.exit(0);
+            } catch (error) {
+                clearTimeout(timeout);
+                console.error('Error during shutdown cleanup:', error);
+                process.exit(1);
             }
-            process.exit(0);
-        });
+        };
+
+        process.on('SIGINT', cleanupWithTimeout);
+        process.on('SIGTERM', cleanupWithTimeout);
 
     } catch (error) {
         console.error('Fatal error starting Mattermost bot service:', error.message);
@@ -987,14 +1048,22 @@ class PersistentSession {
     }
 
     async destroy() {
-        if (this.process) {
-            this.process.kill();
-            this.process = null;
+        try {
+            // Kill the Claude Code process
+            if (this.process) {
+                this.process.kill();
+                this.process = null;
+                console.log('Claude Code process terminated');
+            }
+
+            // Cleanup state
+            this.isAlive = false;
+            this.messageQueue = [];
+            console.log('PersistentSession destroyed');
+        } catch (error) {
+            console.error('Error destroying PersistentSession:', error);
+            throw error; // Re-throw to propagate error
         }
-        this.isAlive = false;
-        this.messageQueue = [];
-        // Remove unused messageCallbacks reference
-        console.log('PersistentSession destroyed');
     }
 }
 
