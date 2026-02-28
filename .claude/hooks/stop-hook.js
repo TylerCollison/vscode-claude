@@ -130,9 +130,46 @@ class StopHook {
     }
 
     async getChannelIdFromThread(threadId) {
-        // For now, assume threadId is the channel ID
-        // In a real implementation, we might need to resolve the channel from the thread
-        return threadId;
+        const mmAddress = process.env.MM_ADDRESS;
+        const mmToken = process.env.MM_TOKEN;
+
+        // Get post details to extract channel_id
+        const url = `${mmAddress}/api/v4/posts/${threadId}`;
+        const urlObj = new URL(url);
+        const protocol = urlObj.protocol === 'https:' ? https : http;
+
+        return new Promise((resolve, reject) => {
+            const request = protocol.request(urlObj, {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${mmToken}`,
+                    'Content-Type': 'application/json'
+                }
+            }, (response) => {
+                let data = '';
+                response.on('data', chunk => data += chunk);
+                response.on('end', () => {
+                    if (response.statusCode === 200) {
+                        try {
+                            const post = JSON.parse(data);
+                            resolve(post.channel_id);
+                        } catch (error) {
+                            reject(new Error('Failed to parse post response'));
+                        }
+                    } else {
+                        reject(new Error(`Failed to get post: HTTP ${response.statusCode}`));
+                    }
+                });
+            });
+
+            request.on('error', reject);
+            request.setTimeout(5000, () => {
+                request.destroy();
+                reject(new Error('Thread resolution timeout after 5 seconds'));
+            });
+
+            request.end();
+        });
     }
 }
 
