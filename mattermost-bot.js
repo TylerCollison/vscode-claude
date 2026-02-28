@@ -874,13 +874,108 @@ class PersistentSession {
     }
 
     async sendMessage(message) {
-        // Validate message parameter
-        if (typeof message !== 'string' || message.trim() === '') {
-            throw new Error('Message must be a non-empty string');
+        return new Promise((resolve, reject) => {
+            if (!this.checkAlive()) {
+                const error = new Error('Claude Code process is not alive');
+                console.error('Cannot send message:', error.message);
+                reject(error);
+                return;
+            }
+
+            const messageId = this.messageIdCounter++;
+
+            // Add message to queue
+            this.messageQueue.push({
+                id: messageId,
+                content: message,
+                resolve,
+                reject,
+                timestamp: Date.now()
+            });
+
+            console.log(`Queued message ${messageId} (queue size: ${this.messageQueue.length})`);
+
+            // Process queue if not already processing
+            if (!this.processing) {
+                this.processQueue();
+            }
+        });
+    }
+
+    async processQueue() {
+        if (this.processing || this.messageQueue.length === 0) {
+            return;
         }
 
-        // Implementation will be added in next task
-        throw new Error('sendMessage not implemented');
+        this.processing = true;
+        const message = this.messageQueue.shift();
+
+        console.log(`Processing message ${message.id} (${message.content.length} chars)`);
+
+        try {
+            // Clear buffers for new response
+            this.stdoutBuffer = '';
+            this.stderrBuffer = '';
+
+            // Send message to Claude Code
+            this.process.stdin.write(message.content + '\n');
+            console.log(`Sent message ${message.id} to Claude Code`);
+
+            // Wait for response with timeout
+            const response = await this.waitForResponse(30000); // 30 second timeout
+            console.log(`Received response for message ${message.id}: ${response.length} chars`);
+            message.resolve(response);
+
+        } catch (error) {
+            console.error(`Error processing message ${message.id}:`, error.message);
+            message.reject(error);
+        } finally {
+            this.processing = false;
+
+            // Process next message in queue
+            if (this.messageQueue.length > 0) {
+                setTimeout(() => this.processQueue(), 100);
+            }
+        }
+    }
+
+    waitForResponse(timeoutMs) {
+        return new Promise((resolve, reject) => {
+            const startTime = Date.now();
+            const timeout = setTimeout(() => {
+                const elapsed = Date.now() - startTime;
+                console.error(`Response timeout exceeded after ${elapsed}ms`);
+                reject(new Error('Response timeout exceeded'));
+            }, timeoutMs);
+
+            const checkResponse = () => {
+                // Look for complete response (Claude Code typically ends with specific markers)
+                if (this.stdoutBuffer.includes('\n') && this.stdoutBuffer.trim().length > 0) {
+                    clearTimeout(timeout);
+                    const response = this.stdoutBuffer.trim();
+                    this.stdoutBuffer = '';
+                    const elapsed = Date.now() - startTime;
+                    console.log(`Response received after ${elapsed}ms`);
+                    resolve(response);
+                    return;
+                }
+
+                // Check if process died
+                if (!this.checkAlive()) {
+                    clearTimeout(timeout);
+                    const elapsed = Date.now() - startTime;
+                    console.error(`Process terminated while waiting for response (${elapsed}ms)`);
+                    reject(new Error('Claude Code process terminated'));
+                    return;
+                }
+
+                // Continue checking
+                setTimeout(checkResponse, 100);
+            };
+
+            // Start checking
+            setTimeout(checkResponse, 500);
+        });
     }
 
     checkAlive() {
@@ -967,4 +1062,56 @@ MattermostBot.prototype.sendStartupNotification = async function() {
     });
 };
 
-module.exports = { MattermostBot, PersistentSession };
+class ClaudeCodeSession {
+    constructor(threadId) {
+        this.threadId = threadId;
+        this.session = new PersistentSession();
+        this.createdAt = Date.now();
+        this.lastActivity = this.createdAt;
+        this.maxIdleTime = 15 * 60 * 1000; // 15 minutes
+        this.isInitialized = false;
+    }
+
+    async sendToClaude(message) {
+        this.lastActivity = Date.now();
+
+        try {
+            // Initialize session if not already initialized
+            if (!this.isInitialized) {
+                console.log(`Initializing ClaudeCodeSession for thread ${this.threadId}`);
+                await this.session.initialize();
+                this.isInitialized = true;
+                console.log(`ClaudeCodeSession initialized for thread ${this.threadId}`);
+            }
+
+            console.log(`Sending message to Claude for thread ${this.threadId}: ${message.substring(0, 100)}...`);
+            const response = await this.session.sendMessage(message);
+            console.log(`Received response from Claude for thread ${this.threadId}: ${response.length} chars`);
+            return response;
+
+        } catch (error) {
+            console.error(`Error in ClaudeCodeSession for thread ${this.threadId}:`, error.message);
+            // Reset initialization flag on error
+            if (error.message.includes('process terminated') || error.message.includes('not alive')) {
+                this.isInitialized = false;
+            }
+            throw error;
+        }
+    }
+
+    isExpired() {
+        return Date.now() - this.lastActivity > this.maxIdleTime;
+    }
+
+    destroy() {
+        console.log(`Destroying ClaudeCodeSession for thread ${this.threadId}`);
+        if (this.session) {
+            this.session.destroy();
+            this.session = null;
+        }
+        this.isInitialized = false;
+        console.log(`ClaudeCodeSession destroyed for thread ${this.threadId}`);
+    }
+}
+
+module.exports = { MattermostBot, PersistentSession, ClaudeCodeSession };
