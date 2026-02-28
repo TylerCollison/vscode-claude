@@ -519,6 +519,38 @@ The thread ID storage system maintains full backward compatibility:
 - No breaking changes to current functionality
 - Both mechanisms can coexist seamlessly
 
+### Reply Waiting Feature
+
+The Stop Hook includes an optional reply waiting feature that can block session termination when users reply in the Mattermost thread.
+
+**How It Works:**
+1. When stop hook is triggered, it polls the Mattermost thread for new replies
+2. If a non-bot user reply is found within the timeout period, it returns a JSON block response
+3. If no reply is received, it proceeds with normal stop hook functionality
+
+**Configuration:**
+- `MM_REPLY_TIMEOUT_MS`: Timeout in milliseconds (default: 86400000 = 24 hours)
+- `MM_BOT_USER_ID`: Bot user ID for filtering replies (optional)
+
+**JSON Response Format (when reply found):**
+```json
+{
+    "decision": "block",
+    "reason": "User reply content from Mattermost"
+}
+```
+
+**Example Usage:**
+```bash
+# Enable reply waiting with 1-hour timeout
+export MM_REPLY_TIMEOUT_MS=3600000
+export MM_BOT_USER_ID=bot123
+```
+
+**Backward Compatibility:**
+- Feature disabled by default (no environment variables needed)
+- Existing functionality unchanged when feature not configured
+
 ## Bidirectional Mattermost Integration
 
 This image includes **bidirectional integration** with Mattermost using **WebSocket-based real-time communication**, allowing you to interact with Claude Code entirely through Mattermost threads.
