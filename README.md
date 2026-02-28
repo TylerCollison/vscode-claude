@@ -422,12 +422,30 @@ The Stop Hook executes when Claude Code finishes responding and:
 3. Posts the final Claude Code response as a reply to the specified Mattermost thread
 4. Provides exit codes for success/failure monitoring
 
+### Thread ID Storage System
+
+The system uses a **file-first approach** for storing and retrieving Mattermost thread IDs:
+
+**Storage Location:** `/tmp/mm_thread_id`
+
+**Workflow:**
+1. When `mattermost-initial-post.sh` successfully posts a notification to Mattermost, it automatically writes the thread ID (post ID) to `/tmp/mm_thread_id`
+2. The Stop Hook (`stop-hook.js`) attempts to read the thread ID from the file first
+3. If the file doesn't exist or cannot be read, it falls back to the `MM_THREAD_ID` environment variable
+4. This approach enables cross-process access while maintaining backward compatibility
+
+**File-First Approach Benefits:**
+- **Automatic**: No manual configuration needed for thread ID management
+- **Cross-process**: Different processes can access the thread ID independently
+- **Backward compatible**: Existing `MM_THREAD_ID` environment variable usage continues to work
+- **Reliable**: Gradual fallback mechanism ensures continuity
+
 ### Configuration
 
 **Required Environment Variables:**
-- `MM_THREAD_ID` - **Target Mattermost thread ID** - The thread where the final message should be posted
 - `MM_ADDRESS` - **Mattermost server URL** - Same as bidirectional integration
 - `MM_TOKEN` - **Bot authentication token** - Same as bidirectional integration
+- `MM_THREAD_ID` - **Target Mattermost thread ID** (fallback only) - Required if file storage fails
 
 **Hook Configuration:**
 The hook is automatically configured in `.claude/settings.json` and points to the stop-hook.js script:
@@ -455,22 +473,32 @@ docker run -d \
   --name=claude-dev \
   -e MM_ADDRESS=http://mattermost.example.com \
   -e MM_CHANNEL=claude-code \
-  -e MM_THREAD_ID=your-thread-id \
   -e MM_TOKEN=your-bot-token \
   -p 8443:8443 \
   tylercollison2089/vscode-claude
+```
+
+**Complete Workflow Example:**
+```bash
+# 1. Container starts
+# 2. mattermost-initial-post.sh posts notification and writes thread ID to /tmp/mm_thread_id
+# 3. Thread ID is automatically stored for cross-process access
+# 4. Claude Code session runs
+# 5. When session ends, stop-hook.js reads thread ID from file and posts final response
 ```
 
 ### Testing
 
 A test script is available to verify the hook functionality:
 ```bash
-# Set environment variables
+# Test with file storage (automatic workflow)
+./mattermost-initial-post.sh
+cat /tmp/mm_thread_id
+
+# Test with environment variable fallback (manual workflow)
 export MM_THREAD_ID="test-thread-id"
 export MM_ADDRESS="https://your-mattermost-server.com"
 export MM_TOKEN="your-test-token"
-
-# Run the test
 ./test-stop-hook.js
 ```
 
@@ -482,6 +510,14 @@ The hook includes comprehensive error handling:
 - Includes timeout protection for API calls
 - Provides meaningful error messages
 - Returns proper exit codes (0=success, 1=error)
+
+### Backward Compatibility
+
+The thread ID storage system maintains full backward compatibility:
+- Existing `MM_THREAD_ID` environment variable usage continues to work
+- Manual thread ID specification still supported
+- No breaking changes to current functionality
+- Both mechanisms can coexist seamlessly
 
 ## Bidirectional Mattermost Integration
 
