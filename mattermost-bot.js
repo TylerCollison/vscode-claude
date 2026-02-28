@@ -20,8 +20,8 @@ class MattermostBot {
         this.mmChannel = config.mmChannel;
         this.mmTeam = config.mmTeam || 'home';
 
-        // Initialize session management
-        this.sessions = new Map(); // threadId -> PersistentSession
+        // Initialize persistent session management
+        this.persistentSession = null;
         this.ws = null;
         this.reconnectAttempts = 0;
         this.maxReconnectAttempts = config.maxReconnectAttempts || 5;
@@ -152,7 +152,13 @@ class MattermostBot {
             this.botThreadId = notificationResponse.id;
             console.log(`Startup notification posted with thread ID: ${this.botThreadId}`);
 
-            this.startSessionCleanupInterval();
+            // Initialize persistent session
+            this.persistentSession = new PersistentSession({
+                maxRestartAttempts: 3
+            });
+            await this.persistentSession.initialize();
+            console.log('Persistent Claude Code session initialized');
+
             console.log('Mattermost bot initialized successfully');
         } catch (error) {
             const errorId = this.handleError(error, 'Bot initialization');
@@ -288,8 +294,8 @@ class MattermostBot {
             }
         });
 
-        this.ws.on('close', () => {
-            console.log('WebSocket connection closed');
+        this.ws.on('close', (code, reason) => {
+            console.log(`WebSocket connection closed with code: ${code}, reason: ${reason || 'none'}`);
             this.attemptReconnect();
         });
 
@@ -509,13 +515,13 @@ class MattermostBot {
             return;
         }
 
-        // Use direct Map operations as specified in the spec
-        if (!this.sessions.has(threadId)) {
-            this.sessions.set(threadId, new PersistentSession(threadId));
+        // Use persistent session instead of managing multiple sessions
+        if (!this.persistentSession) {
+            console.error('Persistent session not initialized');
+            return;
         }
-        const session = this.sessions.get(threadId);
 
-        session.sendToClaude(sanitizedMessage)
+        this.persistentSession.sendMessage(sanitizedMessage)
             .then(response => {
                 return this.sendReply(post, response);
             })
@@ -530,7 +536,6 @@ class MattermostBot {
             });
 
         console.log(`Processing user input for thread ${threadId}:`, sanitizedMessage.substring(0, 100));
-        console.log(`Active sessions: ${this.getActiveSessionCount()}`);
     }
 
     async sendReply(originalPost, message) {
@@ -640,55 +645,7 @@ class MattermostBot {
         return true;
     }
 
-    // Start periodic session cleanup
-    startSessionCleanupInterval() {
-        setInterval(() => {
-            this.cleanupExpiredSessions();
-        }, 60000); // Check every minute
-    }
 
-
-    // Clean up expired sessions
-    cleanupExpiredSessions() {
-        let expiredCount = 0;
-
-        for (const [threadId, session] of this.sessions.entries()) {
-            if (session.isExpired()) {
-                session.destroy();
-                this.sessions.delete(threadId);
-                expiredCount++;
-            }
-        }
-
-        if (expiredCount > 0) {
-            console.log(`Cleaned up ${expiredCount} expired sessions`);
-        }
-    }
-
-    // Validate session exists and is active
-    validateSession(threadId, securityToken) {
-        const session = this.sessions.get(threadId);
-        if (!session || session.isExpired()) {
-            return false;
-        }
-
-        // Optional security token validation
-        if (securityToken && session.securityToken !== securityToken) {
-            console.error('Session security token mismatch');
-            return false;
-        }
-
-        return true;
-    }
-
-    // Get active session count
-    getActiveSessionCount() {
-        return Array.from(this.sessions.values()).filter(session =>
-            !session.isExpired()
-        ).length;
-    }
-
-    // Session management methods will be implemented in later tasks
 }
 
 // Main execution with secure error handling
@@ -709,21 +666,82 @@ async function main() {
         console.log('Mattermost bot service running successfully');
 
         // Keep the process alive
-        process.on('SIGINT', async () => {
+        const cleanupWithTimeout = async () => {
             console.log('Shutting down Mattermost bot service...');
-            if (bot.persistentSession) {
-                await bot.persistentSession.destroy();
-            }
-            process.exit(0);
-        });
 
-        process.on('SIGTERM', async () => {
-            console.log('Shutting down Mattermost bot service...');
-            if (bot.persistentSession) {
-                await bot.persistentSession.destroy();
+            const timeout = setTimeout(() => {
+                console.error('Cleanup timeout exceeded (10 seconds), forcing exit');
+                process.exit(1);
+            }, 10000); // 10 second timeout
+
+            try {
+                // Cleanup operations in correct order
+                // Close WebSocket connection first with timeout
+                if (bot.ws && bot.ws.readyState !== bot.ws.CLOSED) {
+                    console.log('Closing WebSocket connection...');
+
+                    const wsCloseTimeout = setTimeout(() => {
+                        console.warn('WebSocket close timeout exceeded, terminating connection');
+                        if (bot.ws && bot.ws.readyState !== bot.ws.CLOSED) {
+                            bot.ws.terminate();
+                        }
+                    }, 5000); // 5 second timeout for graceful closure
+
+                    try {
+                        bot.ws.close();
+
+                        // Wait for WebSocket to close gracefully or timeout
+                        await new Promise((resolve, reject) => {
+                            if (bot.ws.readyState === bot.ws.CLOSED) {
+                                clearTimeout(wsCloseTimeout);
+                                resolve();
+                            } else {
+                                const onClose = () => {
+                                    clearTimeout(wsCloseTimeout);
+                                    resolve();
+                                };
+
+                                const onError = (error) => {
+                                    clearTimeout(wsCloseTimeout);
+                                    reject(error);
+                                };
+
+                                bot.ws.once('close', onClose);
+                                bot.ws.once('error', onError);
+                            }
+                        });
+
+                        console.log('WebSocket connection closed successfully');
+                    } catch (error) {
+                        clearTimeout(wsCloseTimeout);
+                        console.error('Error closing WebSocket:', error);
+                        // Force terminate on error
+                        if (bot.ws && bot.ws.readyState !== bot.ws.CLOSED) {
+                            bot.ws.terminate();
+                        }
+                    }
+                } else if (bot.ws) {
+                    console.log('WebSocket already closed');
+                }
+
+                // Then cleanup persistent session
+                if (bot.persistentSession) {
+                    await bot.persistentSession.destroy();
+                    console.log('Persistent session destroyed');
+                }
+
+                clearTimeout(timeout);
+                console.log('Cleanup completed successfully');
+                process.exit(0);
+            } catch (error) {
+                clearTimeout(timeout);
+                console.error('Error during shutdown cleanup:', error);
+                process.exit(1);
             }
-            process.exit(0);
-        });
+        };
+
+        process.on('SIGINT', cleanupWithTimeout);
+        process.on('SIGTERM', cleanupWithTimeout);
 
     } catch (error) {
         console.error('Fatal error starting Mattermost bot service:', error.message);
@@ -740,248 +758,42 @@ if (require.main === module) {
 }
 
 class PersistentSession {
-    // Cache CCR availability at class level to avoid repeated checks
-    static ccrAvailable = null;
-    static ccrChecked = false;
+    constructor(config = {}) {
+        // Validate config
+        if (typeof config !== 'object' || config === null) {
+            throw new Error('Config must be a valid object');
+        }
 
-    constructor(threadId) {
-        this.threadId = threadId;
-        this.sessionId = this.generateSessionId();
-        this.createdAt = Date.now();
-        this.lastActivity = Date.now();
-        this.timeout = parseInt(process.env.CC_SESSION_TIMEOUT) || 3600000; // 1 hour default
-        this.maxContextLength = 4000;
-        this.isActive = true;
-        this.conversationHistory = [];
-        this.securityToken = this.generateSecurityToken();
-
-        // Persistent process management properties
+        this.config = config;
         this.process = null;
         this.stdoutBuffer = '';
         this.stderrBuffer = '';
+        this.messageQueue = [];
+        this.processing = false;
+        // Remove unused messageCallbacks to eliminate unused resource
+        this.messageIdCounter = 0;
         this.isAlive = false;
         this.restartAttempts = 0;
-        this.maxRestartAttempts = parseInt(process.env.MAX_RESTART_ATTEMPTS) || 5;
-        this.messageQueue = [];
-        this.messageCallbacks = new Map();
+        this.maxRestartAttempts = config.maxRestartAttempts || 3;
 
-        console.log(`Session created for thread ${threadId}: ${this.sessionId}`);
+        // Define constants to replace magic numbers
+        this.MAX_MESSAGE_LENGTH = 5000;
+        this.MAX_QUEUE_SIZE = 100;
+        this.RESPONSE_TIMEOUT_MS = 30000;
+        this.PROCESS_QUEUE_DELAY_MS = 100;
+        this.RESPONSE_CHECK_INTERVAL_MS = 100;
+        this.INITIAL_RESPONSE_CHECK_DELAY_MS = 500;
     }
 
-    // Check CCR availability once and cache the result
-    static checkCCRAvailability() {
-        if (PersistentSession.ccrChecked) {
-            return PersistentSession.ccrAvailable;
-        }
-
-        PersistentSession.ccrChecked = true;
-        let ccrAvailable = false;
-
+    async initialize() {
         try {
-            ccrAvailable = spawnSync('which', ['ccr']).status === 0;
-            console.log(`CCR availability check: ${ccrAvailable ? 'available' : 'not available'}`);
+            await this.startClaudeProcess();
         } catch (error) {
-            console.warn('Failed to check ccr command availability:', error.message);
-            ccrAvailable = false;
+            console.error('Failed to initialize PersistentSession:', error);
+            throw error;
         }
-
-        PersistentSession.ccrAvailable = ccrAvailable;
-        return ccrAvailable;
     }
 
-    // Method to refresh CCR availability cache if needed
-    static refreshCCRAvailability() {
-        PersistentSession.ccrChecked = false;
-        PersistentSession.ccrAvailable = null;
-        return PersistentSession.checkCCRAvailability();
-    }
-
-    // Generate unique session ID
-    generateSessionId() {
-        return `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    }
-
-    // Generate security token for session validation
-    generateSecurityToken() {
-        return Buffer.from(`${this.sessionId}_${Date.now()}_${Math.random().toString(36)}`).toString('base64');
-    }
-
-    // Update last activity timestamp
-    updateActivity() {
-        this.lastActivity = Date.now();
-        this.isActive = true;
-    }
-
-    // Check if session is expired
-    isExpired() {
-        return Date.now() - this.lastActivity > this.timeout;
-    }
-
-    // Validate session is still active and valid
-    isValidSession() {
-        return this.isActive && !this.isExpired();
-    }
-
-    // Add message to conversation history
-    addToContext(message, isUserMessage = true) {
-        // Limit history length to prevent excessive memory usage
-        const historyEntry = {
-            timestamp: Date.now(),
-            isUserMessage,
-            content: message.substring(0, 1000), // Limit message length
-            sessionId: this.sessionId
-        };
-
-        this.conversationHistory.push(historyEntry);
-
-        // Trim history if exceeds maximum length
-        const totalLength = this.conversationHistory.reduce((sum, entry) =>
-            sum + entry.content.length, 0);
-
-        while (totalLength > this.maxContextLength && this.conversationHistory.length > 1) {
-            this.conversationHistory.shift();
-        }
-
-        this.updateActivity();
-    }
-
-    // Get conversation history as formatted string
-    getContext() {
-        return this.conversationHistory.map(entry =>
-            `${entry.isUserMessage ? 'User' : 'Assistant'}: ${entry.content}`
-        ).join('\n');
-    }
-
-    // Clear session data securely
-    clearSession() {
-        this.conversationHistory = [];
-        this.isActive = false;
-        console.log(`Session ${this.sessionId} cleared`);
-    }
-
-    // Destroy session and clean up
-    destroy() {
-        this.cleanup();
-        this.clearSession();
-        console.log(`Session ${this.sessionId} destroyed`);
-    }
-
-    // Send message to Claude Code
-    async sendToClaude(message) {
-        this.lastActivity = Date.now();
-
-        return new Promise((resolve, reject) => {
-            // Security Fix 2: Configurable permission mode
-            const permissionMode = process.env.CLAUDE_PERMISSION_MODE || 'default';
-
-            // Determine which command to use
-            const ccrProfile = process.env.CCR_PROFILE;
-            const useCCR = ccrProfile && ccrProfile.trim() !== '';
-
-            // Use cached CCR availability check
-            const ccrAvailable = PersistentSession.checkCCRAvailability();
-
-            const command = useCCR && ccrAvailable ? 'ccr' : 'claude';
-            const args = useCCR && ccrAvailable ?
-                [ccrProfile, '--permission-mode', permissionMode] :
-                ['--permission-mode', permissionMode];
-
-            // Comprehensive logging for debugging and monitoring
-            console.log(`CCR_PROFILE: ${ccrProfile || 'not set'}`);
-            console.log(`ccr command available: ${ccrAvailable}`);
-            console.log(`Selected command: ${command}`);
-            console.log(`Command arguments: ${JSON.stringify(args)}`);
-
-            if (useCCR && !ccrAvailable) {
-                console.warn('CCR_PROFILE set but ccr command not available, falling back to claude');
-            }
-
-            console.log(`Using command: ${command} ${args.join(' ')}`);
-
-            // Check if we're running inside a Claude Code session (nested)
-            if (process.env.CLAUDECODE) {
-                console.log('Running inside Claude Code session - using mock response for testing');
-                // Provide a mock response for testing purposes
-                const mockResponse = `I'm Claude Code, an AI assistant designed to help with software development tasks. I can help you write code, debug issues, refactor codebases, and more. You asked: "${message}"
-
-Since I'm running inside another Claude Code session, I'm providing this mock response for testing the Mattermost bot integration.`;
-
-                // Simulate a short delay
-                setTimeout(() => {
-                    resolve(mockResponse);
-                }, 1000);
-                return;
-            }
-
-            const claude = spawn(command, args, {
-                stdio: ['pipe', 'pipe', 'pipe']
-            });
-
-            this.process = claude;
-            let stdoutOutput = '';
-            let stderrOutput = '';
-
-            claude.stdout.on('data', (data) => {
-                stdoutOutput += data.toString();
-            });
-
-            claude.stderr.on('data', (data) => {
-                const stderrData = data.toString();
-                stderrOutput += stderrData;
-                console.error('Claude stderr:', stderrData);
-            });
-
-            claude.on('close', (code) => {
-                this.process = null;
-
-                // Always send stdout output to Mattermost, even on non-zero exit codes
-                const stdoutContent = stdoutOutput.trim();
-                const stderrContent = stderrOutput.trim();
-
-                // Log stderr for debugging
-                if (stderrContent) {
-                    console.error('Claude stderr output:', stderrContent);
-                }
-
-                if (code === 0) {
-                    resolve(stdoutContent);
-                } else {
-                    // On non-zero exit, include stdout and stderr information
-                    let combinedOutput = stdoutContent;
-
-                    if (stderrContent) {
-                        combinedOutput += `\n\n[Stderr output:]\n${stderrContent}`;
-                    }
-
-                    combinedOutput += `\n\n[Process exited with code ${code}]`;
-                    resolve(combinedOutput);
-                }
-            });
-
-            claude.on('error', (error) => {
-                this.process = null;
-                const errorMessage = `Failed to start Claude process: ${error.message}`;
-                console.error(errorMessage);
-                // Even on startup error, try to send any captured stdout/stderr
-                const stdoutContent = stdoutOutput.trim();
-                const stderrContent = stderrOutput.trim();
-
-                let combinedOutput = stdoutContent;
-                if (stderrContent) {
-                    combinedOutput += `\n\n[Stderr output:]\n${stderrContent}`;
-                }
-                combinedOutput += `\n\n[Process error: ${errorMessage}]`;
-
-                resolve(combinedOutput || errorMessage);
-            });
-
-            // Send message to Claude
-            claude.stdin.write(message + '\n');
-            claude.stdin.end();
-        });
-    }
-
-    // Start Claude Code process
     async startClaudeProcess() {
         return new Promise((resolve, reject) => {
             // Security Fix 2: Configurable permission mode
@@ -989,15 +801,26 @@ Since I'm running inside another Claude Code session, I'm providing this mock re
 
             // Determine which command to use
             const ccrProfile = process.env.CCR_PROFILE;
-            const useCCR = ccrProfile && ccrProfile.trim() !== '';
+            let useCCR = ccrProfile && ccrProfile.trim() !== '';
+
+            // Security Fix: Validate CCR_PROFILE to prevent command injection
+            if (useCCR) {
+                const ccrProfilePattern = /^[a-zA-Z0-9_-]+$/;
+                if (!ccrProfilePattern.test(ccrProfile)) {
+                    console.warn(`Invalid CCR_PROFILE format "${ccrProfile}", falling back to claude command`);
+                    useCCR = false;
+                }
+            }
 
             // Check CCR availability
             let ccrAvailable = false;
-            try {
-                const { spawnSync } = require('child_process');
-                ccrAvailable = spawnSync('which', ['ccr']).status === 0;
-            } catch (error) {
-                console.warn('Failed to check ccr command availability:', error.message);
+            if (useCCR) {
+                try {
+                    const { spawnSync } = require('child_process');
+                    ccrAvailable = spawnSync('which', ['ccr']).status === 0;
+                } catch (error) {
+                    console.warn('Failed to check ccr command availability:', error.message);
+                }
             }
 
             const command = useCCR && ccrAvailable ? 'ccr' : 'claude';
@@ -1014,13 +837,25 @@ Since I'm running inside another Claude Code session, I'm providing this mock re
 
             this.stdoutBuffer = '';
             this.stderrBuffer = '';
+            const MAX_BUFFER_SIZE = 1024 * 1024; // 1MB limit
 
             this.process.stdout.on('data', (data) => {
-                this.stdoutBuffer += data.toString();
+                const newData = data.toString();
+                // Check if buffer exceeds size limit
+                if (this.stdoutBuffer.length + newData.length > MAX_BUFFER_SIZE) {
+                    // Keep only recent data (last 50% of buffer)
+                    this.stdoutBuffer = this.stdoutBuffer.substring(this.stdoutBuffer.length - Math.floor(MAX_BUFFER_SIZE / 2));
+                }
+                this.stdoutBuffer += newData;
             });
 
             this.process.stderr.on('data', (data) => {
                 const stderrData = data.toString();
+                // Check if buffer exceeds size limit
+                if (this.stderrBuffer.length + stderrData.length > MAX_BUFFER_SIZE) {
+                    // Keep only recent data (last 50% of buffer)
+                    this.stderrBuffer = this.stderrBuffer.substring(this.stderrBuffer.length - Math.floor(MAX_BUFFER_SIZE / 2));
+                }
                 this.stderrBuffer += stderrData;
                 console.error('Claude stderr:', stderrData);
             });
@@ -1033,8 +868,14 @@ Since I'm running inside another Claude Code session, I'm providing this mock re
                 // Attempt automatic restart if not manually destroyed
                 if (this.restartAttempts < this.maxRestartAttempts) {
                     this.restartAttempts++;
-                    console.log(`Attempting restart ${this.restartAttempts}/${this.maxRestartAttempts}`);
-                    setTimeout(() => this.startClaudeProcess(), 2000);
+
+                    // Security Fix: Exponential backoff with limits
+                    const baseDelay = 2000;
+                    const maxDelay = 30000;
+                    const delay = Math.min(baseDelay * Math.pow(2, this.restartAttempts - 1), maxDelay);
+
+                    console.log(`Attempting restart ${this.restartAttempts}/${this.maxRestartAttempts} in ${delay}ms`);
+                    setTimeout(() => this.startClaudeProcess(), delay);
                 }
             });
 
@@ -1043,38 +884,185 @@ Since I'm running inside another Claude Code session, I'm providing this mock re
                 reject(error);
             });
 
-            // Wait for process to be ready
+            // Wait for process to be ready with proper readiness checking
+            const checkProcessReady = () => {
+                if (this.process && this.process.stdout) {
+                    this.isAlive = true;
+                    console.log('Claude Code process ready');
+                    resolve();
+                } else if (this.process) {
+                    // Process exists but stdout not ready yet, retry
+                    setTimeout(checkProcessReady, 100);
+                } else {
+                    // Process failed to start
+                    reject(new Error('Claude Code process failed to initialize'));
+                }
+            };
+
             setTimeout(() => {
-                this.isAlive = true;
-                resolve();
-            }, 1000);
+                checkProcessReady();
+            }, 500);
         });
     }
 
-    // Destroy session and clean up process
-    async destroy() {
-        if (this.process) {
-            this.process.kill();
-            this.process = null;
+    async sendMessage(message) {
+        // Validate input
+        if (typeof message !== 'string' || message.trim() === '') {
+            throw new Error('Message must be a non-empty string');
         }
-        this.isAlive = false;
-        this.messageQueue = [];
-        this.messageCallbacks.clear();
-        console.log('PersistentSession destroyed');
+
+        // Add length limits
+        if (message.length > this.MAX_MESSAGE_LENGTH) {
+            throw new Error(`Message exceeds maximum length of ${this.MAX_MESSAGE_LENGTH} characters`);
+        }
+
+        // Add queue size limits
+        if (this.messageQueue.length >= this.MAX_QUEUE_SIZE) {
+            throw new Error('Message queue is full, please try again later');
+        }
+
+        return new Promise((resolve, reject) => {
+            if (!this.checkAlive()) {
+                const error = new Error('Claude Code process is not alive');
+                console.error('Cannot send message:', error.message);
+                reject(error);
+                return;
+            }
+
+            const messageId = this.messageIdCounter++;
+
+            // Add message to queue
+            this.messageQueue.push({
+                id: messageId,
+                content: message,
+                resolve,
+                reject,
+                timestamp: Date.now()
+            });
+
+            console.log(`Queued message ${messageId} (queue size: ${this.messageQueue.length})`);
+
+            // Process queue if not already processing
+            if (!this.processing) {
+                this.processQueue();
+            }
+        });
     }
 
-    // Restart Claude process
+    async processQueue() {
+        if (this.processing || this.messageQueue.length === 0) {
+            return;
+        }
+
+        // Atomic state update
+        this.processing = true;
+        const message = this.messageQueue.shift();
+
+        console.log(`Processing message ${message.id} (${message.content.length} chars)`);
+
+        try {
+            // Clear buffers for new response
+            this.stdoutBuffer = '';
+            this.stderrBuffer = '';
+
+            // Send message to Claude Code
+            this.process.stdin.write(message.content + '\n');
+            console.log(`Sent message ${message.id} to Claude Code`);
+
+            // Wait for response with timeout using constant
+            const response = await this.waitForResponse(this.RESPONSE_TIMEOUT_MS);
+            console.log(`Received response for message ${message.id}: ${response.length} chars`);
+            message.resolve(response);
+
+        } catch (error) {
+            console.error(`Error processing message ${message.id}:`, error.message);
+            message.reject(error);
+        } finally {
+            // Atomic state update
+            this.processing = false;
+
+            // Process next message in queue using setImmediate for next tick
+            if (this.messageQueue.length > 0) {
+                setImmediate(() => this.processQueue());
+            }
+        }
+    }
+
+    waitForResponse(timeoutMs) {
+        return new Promise((resolve, reject) => {
+            const startTime = Date.now();
+            const timeout = setTimeout(() => {
+                const elapsed = Date.now() - startTime;
+                console.error(`Response timeout exceeded after ${elapsed}ms`);
+                reject(new Error('Response timeout exceeded'));
+            }, timeoutMs);
+
+            const checkResponse = () => {
+                // More efficient buffer check - only trim when needed
+                const hasNewline = this.stdoutBuffer.includes('\n');
+                if (hasNewline && this.stdoutBuffer.trim().length > 0) {
+                    clearTimeout(timeout);
+                    const response = this.stdoutBuffer.trim();
+                    this.stdoutBuffer = '';
+                    const elapsed = Date.now() - startTime;
+                    console.log(`Response received after ${elapsed}ms`);
+                    resolve(response);
+                    return;
+                }
+
+                // Check timeout
+                if (Date.now() - startTime > timeoutMs) {
+                    clearTimeout(timeout);
+                    const elapsed = Date.now() - startTime;
+                    console.error(`Response timeout exceeded after ${elapsed}ms`);
+                    reject(new Error('Response timeout exceeded'));
+                    return;
+                }
+
+                // Check process health
+                if (!this.checkAlive()) {
+                    clearTimeout(timeout);
+                    const elapsed = Date.now() - startTime;
+                    console.error(`Process terminated while waiting for response (${elapsed}ms)`);
+                    reject(new Error('Claude Code process terminated'));
+                    return;
+                }
+
+                // Continue checking using constant
+                setTimeout(checkResponse, this.RESPONSE_CHECK_INTERVAL_MS);
+            };
+
+            // Start checking using constant
+            setTimeout(checkResponse, this.INITIAL_RESPONSE_CHECK_DELAY_MS);
+        });
+    }
+
+    checkAlive() {
+        return this.isAlive && this.process && !this.process.killed;
+    }
+
     async restart() {
         await this.destroy();
         this.restartAttempts = 0;
         await this.startClaudeProcess();
     }
 
-    // Clean up Claude process
-    cleanup() {
-        if (this.process) {
-            this.process.kill();
-            this.process = null;
+    async destroy() {
+        try {
+            // Kill the Claude Code process
+            if (this.process) {
+                this.process.kill();
+                this.process = null;
+                console.log('Claude Code process terminated');
+            }
+
+            // Cleanup state
+            this.isAlive = false;
+            this.messageQueue = [];
+            console.log('PersistentSession destroyed');
+        } catch (error) {
+            console.error('Error destroying PersistentSession:', error);
+            throw error; // Re-throw to propagate error
         }
     }
 }
@@ -1140,5 +1128,6 @@ MattermostBot.prototype.sendStartupNotification = async function() {
         request.end();
     });
 };
+
 
 module.exports = { MattermostBot, PersistentSession };

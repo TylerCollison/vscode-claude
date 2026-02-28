@@ -45,7 +45,7 @@ class PersistentSession {
         // Implementation will be added in next task
     }
 
-    isAlive() {
+    checkAlive() {
         return this.isAlive && this.process && !this.process.killed;
     }
 
@@ -205,7 +205,7 @@ git commit -m "feat: implement Claude Code process management in PersistentSessi
 ```javascript
 async sendMessage(message) {
     return new Promise((resolve, reject) => {
-        if (!this.isAlive()) {
+        if (!this.checkAlive()) {
             reject(new Error('Claude Code process is not alive'));
             return;
         }
@@ -285,7 +285,7 @@ waitForResponse(timeoutMs) {
             }
 
             // Check if process died
-            if (!this.isAlive()) {
+            if (!this.checkAlive()) {
                 clearTimeout(timeout);
                 reject(new Error('Claude Code process terminated'));
                 return;
@@ -459,7 +459,7 @@ processUserInput(post) {
     }
 
     // Use persistent session for all messages
-    if (!this.persistentSession || !this.persistentSession.isAlive()) {
+    if (!this.persistentSession || !this.persistentSession.checkAlive()) {
         console.error('Persistent session not available');
         this.sendReply(post, 'Claude Code session is currently unavailable. Please try again later.')
             .catch(e => console.error('Failed to send error message:', e));
