@@ -746,11 +746,19 @@ class PersistentSession {
         this.stderrBuffer = '';
         this.messageQueue = [];
         this.processing = false;
-        this.messageCallbacks = new Map();
+        // Remove unused messageCallbacks to eliminate unused resource
         this.messageIdCounter = 0;
         this.isAlive = false;
         this.restartAttempts = 0;
         this.maxRestartAttempts = config.maxRestartAttempts || 3;
+
+        // Define constants to replace magic numbers
+        this.MAX_MESSAGE_LENGTH = 5000;
+        this.MAX_QUEUE_SIZE = 100;
+        this.RESPONSE_TIMEOUT_MS = 30000;
+        this.PROCESS_QUEUE_DELAY_MS = 100;
+        this.RESPONSE_CHECK_INTERVAL_MS = 100;
+        this.INITIAL_RESPONSE_CHECK_DELAY_MS = 500;
     }
 
     async initialize() {
@@ -874,6 +882,21 @@ class PersistentSession {
     }
 
     async sendMessage(message) {
+        // Validate input
+        if (typeof message !== 'string' || message.trim() === '') {
+            throw new Error('Message must be a non-empty string');
+        }
+
+        // Add length limits
+        if (message.length > this.MAX_MESSAGE_LENGTH) {
+            throw new Error(`Message exceeds maximum length of ${this.MAX_MESSAGE_LENGTH} characters`);
+        }
+
+        // Add queue size limits
+        if (this.messageQueue.length >= this.MAX_QUEUE_SIZE) {
+            throw new Error('Message queue is full, please try again later');
+        }
+
         return new Promise((resolve, reject) => {
             if (!this.checkAlive()) {
                 const error = new Error('Claude Code process is not alive');
@@ -907,6 +930,7 @@ class PersistentSession {
             return;
         }
 
+        // Atomic state update
         this.processing = true;
         const message = this.messageQueue.shift();
 
@@ -921,8 +945,8 @@ class PersistentSession {
             this.process.stdin.write(message.content + '\n');
             console.log(`Sent message ${message.id} to Claude Code`);
 
-            // Wait for response with timeout
-            const response = await this.waitForResponse(30000); // 30 second timeout
+            // Wait for response with timeout using constant
+            const response = await this.waitForResponse(this.RESPONSE_TIMEOUT_MS);
             console.log(`Received response for message ${message.id}: ${response.length} chars`);
             message.resolve(response);
 
@@ -930,11 +954,12 @@ class PersistentSession {
             console.error(`Error processing message ${message.id}:`, error.message);
             message.reject(error);
         } finally {
+            // Atomic state update
             this.processing = false;
 
-            // Process next message in queue
+            // Process next message in queue using setImmediate for next tick
             if (this.messageQueue.length > 0) {
-                setTimeout(() => this.processQueue(), 100);
+                setImmediate(() => this.processQueue());
             }
         }
     }
@@ -949,8 +974,9 @@ class PersistentSession {
             }, timeoutMs);
 
             const checkResponse = () => {
-                // Look for complete response (Claude Code typically ends with specific markers)
-                if (this.stdoutBuffer.includes('\n') && this.stdoutBuffer.trim().length > 0) {
+                // More efficient buffer check - only trim when needed
+                const hasNewline = this.stdoutBuffer.includes('\n');
+                if (hasNewline && this.stdoutBuffer.trim().length > 0) {
                     clearTimeout(timeout);
                     const response = this.stdoutBuffer.trim();
                     this.stdoutBuffer = '';
@@ -960,7 +986,16 @@ class PersistentSession {
                     return;
                 }
 
-                // Check if process died
+                // Check timeout
+                if (Date.now() - startTime > timeoutMs) {
+                    clearTimeout(timeout);
+                    const elapsed = Date.now() - startTime;
+                    console.error(`Response timeout exceeded after ${elapsed}ms`);
+                    reject(new Error('Response timeout exceeded'));
+                    return;
+                }
+
+                // Check process health
                 if (!this.checkAlive()) {
                     clearTimeout(timeout);
                     const elapsed = Date.now() - startTime;
@@ -969,12 +1004,12 @@ class PersistentSession {
                     return;
                 }
 
-                // Continue checking
-                setTimeout(checkResponse, 100);
+                // Continue checking using constant
+                setTimeout(checkResponse, this.RESPONSE_CHECK_INTERVAL_MS);
             };
 
-            // Start checking
-            setTimeout(checkResponse, 500);
+            // Start checking using constant
+            setTimeout(checkResponse, this.INITIAL_RESPONSE_CHECK_DELAY_MS);
         });
     }
 
@@ -995,7 +1030,7 @@ class PersistentSession {
         }
         this.isAlive = false;
         this.messageQueue = [];
-        this.messageCallbacks.clear();
+        // Remove unused messageCallbacks reference
         console.log('PersistentSession destroyed');
     }
 }
