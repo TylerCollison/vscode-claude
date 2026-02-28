@@ -4,6 +4,7 @@
 
 const https = require('https');
 const http = require('http');
+const fs = require('fs');
 
 class StopHook {
     constructor() {
@@ -11,11 +12,18 @@ class StopHook {
     }
 
     validateEnvironment() {
-        const requiredVars = ['MM_THREAD_ID', 'MM_ADDRESS', 'MM_TOKEN'];
+        const requiredVars = ['MM_ADDRESS', 'MM_TOKEN'];
         const missingVars = requiredVars.filter(varName => !process.env[varName]);
 
         if (missingVars.length > 0) {
             console.error(`Missing required environment variables: ${missingVars.join(', ')}`);
+            process.exit(1);
+        }
+
+        // Get thread ID using file-first approach
+        this.threadId = this.getThreadId();
+        if (!this.threadId) {
+            console.error('No thread ID available from file (/tmp/mm_thread_id) or environment variable (MM_THREAD_ID)');
             process.exit(1);
         }
 
@@ -29,6 +37,44 @@ class StopHook {
             console.error(`Invalid MM_ADDRESS format: ${process.env.MM_ADDRESS}`);
             process.exit(1);
         }
+    }
+
+    getThreadId() {
+        const filePath = '/tmp/mm_thread_id';
+        let threadId = null;
+        let source = null;
+
+        // File-first approach: Try to read from file first
+        if (fs.existsSync(filePath)) {
+            console.log('📝 Reading thread ID from file: /tmp/mm_thread_id');
+            try {
+                const content = fs.readFileSync(filePath, 'utf8').trim();
+                if (content) {
+                    threadId = content;
+                    source = 'file';
+                    console.log(`📝 Using thread ID from file: ${threadId}`);
+                } else {
+                    console.log('📝 File exists but is empty, falling back to environment variable');
+                }
+            } catch (error) {
+                console.log('📝 Error reading file, falling back to environment variable:', error.message);
+            }
+        }
+
+        // Environment variable fallback
+        if (!threadId && process.env.MM_THREAD_ID) {
+            console.log('📝 Using thread ID from environment variable: MM_THREAD_ID');
+            threadId = process.env.MM_THREAD_ID;
+            source = 'env';
+            console.log(`📝 Using thread ID from environment: ${threadId}`);
+        }
+
+        // Log which source was used
+        if (threadId && source) {
+            console.log(`📝 Thread ID source: ${source}`);
+        }
+
+        return threadId;
     }
 
     async run() {
@@ -84,12 +130,11 @@ class StopHook {
     async sendToMattermost(message) {
         const mmAddress = process.env.MM_ADDRESS;
         const mmToken = process.env.MM_TOKEN;
-        const threadId = process.env.MM_THREAD_ID;
 
         const payload = {
-            channel_id: await this.getChannelIdFromThread(threadId),
+            channel_id: await this.getChannelIdFromThread(this.threadId),
             message: message,
-            root_id: threadId
+            root_id: this.threadId
         };
 
         const url = `${mmAddress}/api/v4/posts`;
@@ -132,6 +177,8 @@ class StopHook {
     async getChannelIdFromThread(threadId) {
         const mmAddress = process.env.MM_ADDRESS;
         const mmToken = process.env.MM_TOKEN;
+
+        console.log(`📝 Resolving channel ID for thread: ${threadId}`);
 
         // Get post details to extract channel_id
         const url = `${mmAddress}/api/v4/posts/${threadId}`;
