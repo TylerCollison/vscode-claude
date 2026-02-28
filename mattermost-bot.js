@@ -777,10 +777,8 @@ class PersistentSession {
         this.maxRestartAttempts = config.maxRestartAttempts || 3;
 
         // Define constants to replace magic numbers
-        this.MAX_MESSAGE_LENGTH = 5000;
         this.MAX_QUEUE_SIZE = 100;
-        this.RESPONSE_TIMEOUT_MS = 30000;
-        this.PROCESS_QUEUE_DELAY_MS = 100;
+        this.RESPONSE_TIMEOUT_MS = 300000; // 5 minutes
         this.RESPONSE_CHECK_INTERVAL_MS = 100;
         this.INITIAL_RESPONSE_CHECK_DELAY_MS = 500;
     }
@@ -796,6 +794,61 @@ class PersistentSession {
 
     async startClaudeProcess() {
         return new Promise((resolve, reject) => {
+            // Check if running inside Claude Code (nested session)
+            // Only use mock mode if we're actually inside a problematic nested Claude Code session
+            // Check for specific environment variables that indicate nested session issues
+            if (process.env.CLAUDECODE === '1') {
+                console.warn('⚠️  Running inside Claude Code environment - cannot start nested Claude Code process');
+                console.warn('   This Mattermost bot cannot run Claude Code processes inside another Claude Code session');
+                console.warn('   Consider running this script outside of Claude Code, or use a mock/test mode');
+
+                // Create a mock process that simulates Claude Code behavior
+                this.isAlive = true;
+                this.process = {
+                    stdin: {
+                        write: (data) => {
+                            const message = data.toString().trim();
+                            console.log(`Mock Claude received: ${message}`);
+
+                            // Simulate Claude Code response after a short delay
+                            setTimeout(() => {
+                                this.stdoutBuffer += `Mock Claude response to "${message}": I'm running in test mode (nested session detected)\n`;
+                            }, 100);
+                        }
+                    },
+                    stdout: {
+                        on: (event, callback) => {
+                            if (event === 'data') {
+                                // Set up periodic checking for new stdout data
+                                const checkForData = () => {
+                                    if (this.stdoutBuffer.length > 0) {
+                                        callback(Buffer.from(this.stdoutBuffer));
+                                        this.stdoutBuffer = ''; // Clear after sending
+                                    } else {
+                                        setTimeout(checkForData, 50);
+                                    }
+                                };
+                                checkForData();
+                            }
+                        }
+                    },
+                    stderr: {
+                        on: (event, callback) => {
+                            // No stderr in mock mode
+                        }
+                    },
+                    kill: () => {
+                        this.isAlive = false;
+                        console.log('Mock Claude process terminated');
+                    },
+                    killed: false
+                };
+
+                console.log('Mock Claude Code process initialized (nested session mode)');
+                resolve();
+                return;
+            }
+
             // Security Fix 2: Configurable permission mode
             const permissionMode = process.env.CLAUDE_PERMISSION_MODE || 'default';
 
@@ -823,10 +876,13 @@ class PersistentSession {
                 }
             }
 
+            // Try CCR first, but fall back to claude if CCR doesn't work
             const command = useCCR && ccrAvailable ? 'ccr' : 'claude';
             const args = useCCR && ccrAvailable ?
                 [ccrProfile, '--permission-mode', permissionMode] :
-                ['--permission-mode', permissionMode];
+                ['--permission-mode', permissionMode, '--print'];
+
+            console.log(`Starting Claude Code process: ${command} ${args.join(' ')}`);
 
             console.log(`Starting Claude Code process: ${command} ${args.join(' ')}`);
 
@@ -841,6 +897,7 @@ class PersistentSession {
 
             this.process.stdout.on('data', (data) => {
                 const newData = data.toString();
+                console.log('CCR STDOUT:', JSON.stringify(newData));
                 // Check if buffer exceeds size limit
                 if (this.stdoutBuffer.length + newData.length > MAX_BUFFER_SIZE) {
                     // Keep only recent data (last 50% of buffer)
@@ -851,6 +908,7 @@ class PersistentSession {
 
             this.process.stderr.on('data', (data) => {
                 const stderrData = data.toString();
+                console.log('CCR STDERR:', JSON.stringify(stderrData));
                 // Check if buffer exceeds size limit
                 if (this.stderrBuffer.length + stderrData.length > MAX_BUFFER_SIZE) {
                     // Keep only recent data (last 50% of buffer)
@@ -862,6 +920,8 @@ class PersistentSession {
 
             this.process.on('close', (code) => {
                 console.log(`Claude Code process exited with code ${code}`);
+                console.log('Process stdout buffer at exit:', JSON.stringify(this.stdoutBuffer));
+                console.log('Process stderr buffer at exit:', JSON.stringify(this.stderrBuffer));
                 this.isAlive = false;
                 this.process = null;
 
@@ -909,11 +969,6 @@ class PersistentSession {
         // Validate input
         if (typeof message !== 'string' || message.trim() === '') {
             throw new Error('Message must be a non-empty string');
-        }
-
-        // Add length limits
-        if (message.length > this.MAX_MESSAGE_LENGTH) {
-            throw new Error(`Message exceeds maximum length of ${this.MAX_MESSAGE_LENGTH} characters`);
         }
 
         // Add queue size limits
@@ -966,8 +1021,9 @@ class PersistentSession {
             this.stderrBuffer = '';
 
             // Send message to Claude Code
-            this.process.stdin.write(message.content + '\n');
-            console.log(`Sent message ${message.id} to Claude Code`);
+            console.log('About to send message to CCR process');
+            const writeResult = this.process.stdin.write(message.content + '\n');
+            console.log(`Write result: ${writeResult}, Sent message ${message.id} to Claude Code`);
 
             // Wait for response with timeout using constant
             const response = await this.waitForResponse(this.RESPONSE_TIMEOUT_MS);

@@ -30,7 +30,7 @@ COPY combine-markdowns.sh /96-combine-markdowns
 COPY configure-ccr-settings.sh /97-configure-ccr-settings
 COPY configure-claude-permissions.sh /98-configure-claude-permissions
 COPY configure-claude-plugins.sh /99-configure-claude-plugins
-COPY start-mattermost-bot.sh /100-mattermost-bot
+COPY mattermost-initial-post.sh /100-mattermost-initial-post
 
 # Copy master startup script to cont-init.d (so it runs automatically)
 COPY master-startup.sh /etc/cont-init.d/90-master-startup
@@ -41,7 +41,7 @@ RUN chmod +x /95-git-repo-setup \
     /97-configure-ccr-settings \
     /98-configure-claude-permissions \
     /99-configure-claude-plugins \
-    /100-mattermost-bot \
+    /100-mattermost-initial-post \
     /etc/cont-init.d/90-master-startup
 
 # Copy Mattermost bot service

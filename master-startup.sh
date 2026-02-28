@@ -25,7 +25,7 @@ STARTUP_SCRIPTS=(
     "/97-configure-ccr-settings"
     "/98-configure-claude-permissions"
     "/99-configure-claude-plugins"
-    "/100-mattermost-bot"
+    "/100-mattermost-initial-post"
 )
 
 log "Starting master startup sequence..."
