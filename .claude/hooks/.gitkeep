@@ -1,0 +1,3 @@
+# Hook scripts directory
+# This file ensures git tracks the empty hooks directory
+# Hook scripts will be added to this directory
