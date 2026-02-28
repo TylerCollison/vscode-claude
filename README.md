@@ -410,6 +410,79 @@ services:
 - Should point to your Claude Code session URL
 - Examples: `https://your-domain.com:8443`, `http://192.168.1.100:8443`
 
+## Claude Code Stop Hook Integration
+
+This image includes a **Claude Code Stop Hook** that automatically sends the last assistant message to a Mattermost thread when a Claude Code session ends, providing a complete audit trail of AI-assisted development sessions.
+
+### How It Works
+
+The Stop Hook executes when Claude Code finishes responding and:
+1. Receives JSON input containing `last_assistant_message` via stdin
+2. Validates required environment variables and input format
+3. Posts the final Claude Code response as a reply to the specified Mattermost thread
+4. Provides exit codes for success/failure monitoring
+
+### Configuration
+
+**Required Environment Variables:**
+- `MM_THREAD_ID` - **Target Mattermost thread ID** - The thread where the final message should be posted
+- `MM_ADDRESS` - **Mattermost server URL** - Same as bidirectional integration
+- `MM_TOKEN` - **Bot authentication token** - Same as bidirectional integration
+
+**Hook Configuration:**
+The hook is automatically configured in `.claude/settings.json` and points to the stop-hook.js script:
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/stop-hook.js",
+            "description": "Mattermost Stop Hook: Sends last assistant message to Mattermost thread"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**Example Configuration:**
+```bash
+docker run -d \
+  --name=claude-dev \
+  -e MM_ADDRESS=http://mattermost.example.com \
+  -e MM_CHANNEL=claude-code \
+  -e MM_THREAD_ID=your-thread-id \
+  -e MM_TOKEN=your-bot-token \
+  -p 8443:8443 \
+  tylercollison2089/vscode-claude
+```
+
+### Testing
+
+A test script is available to verify the hook functionality:
+```bash
+# Set environment variables
+export MM_THREAD_ID="test-thread-id"
+export MM_ADDRESS="https://your-mattermost-server.com"
+export MM_TOKEN="your-test-token"
+
+# Run the test
+./test-stop-hook.js
+```
+
+### Error Handling
+
+The hook includes comprehensive error handling:
+- Validates all required environment variables
+- Implements input size limits (1MB maximum)
+- Includes timeout protection for API calls
+- Provides meaningful error messages
+- Returns proper exit codes (0=success, 1=error)
+
 ## Bidirectional Mattermost Integration
 
 This image includes **bidirectional integration** with Mattermost using **WebSocket-based real-time communication**, allowing you to interact with Claude Code entirely through Mattermost threads.
