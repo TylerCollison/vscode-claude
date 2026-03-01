@@ -1,19 +1,19 @@
 #!/usr/bin/with-contenv bash
 
-ccr restart
-mkdir -p /config/.claude-code-router/presets
-cp -r /ccr-presets/* /config/.claude-code-router/presets/
+mkdir -p /config/.config/claude-threads
+cp -r /claude-threads/* /config/.config/claude-threads/
 
-echo "Starting environment variable substitution for CCR presets..."
+echo "Starting environment variable substitution for Claude Threads settings..."
 
 # Use temporary files to track counts
-processed_file="/tmp/processed_count.$$"
-failed_file="/tmp/failed_count.$$"
+mkdir /tmp/threads
+processed_file="/tmp/threads/processed_count.$$"
+failed_file="/tmp/threads/failed_count.$$"
 echo "0" > "$processed_file"
 echo "0" > "$failed_file"
 
-# Recursively process all JSON files using envsubst
-find /config/.claude-code-router/presets -name "*.json" -type f | while read -r file; do
+# Recursively process all YAML files using envsubst
+find /config/.config/claude-threads/ -name "*.yaml" -type f | while read -r file; do
     # Create temporary file for processing
     temp_file="$(mktemp)"
 
@@ -60,5 +60,3 @@ fi
 
 # Grant open permissions for the config folder
 chmod -R 777 /config
-
-# This script runs as a pre-start hook, no need to exec commands

@@ -20,12 +20,14 @@ error_exit() {
 
 # List of scripts to execute in order
 STARTUP_SCRIPTS=(
-    "/95-git-repo-setup"
-    "/96-combine-markdowns"
-    "/97-configure-ccr-settings"
-    "/98-configure-claude-permissions"
-    "/99-configure-claude-plugins"
-    "/100-mattermost-initial-post"
+    "/93-git-repo-setup"
+    "/94-combine-markdowns"
+    "/95-configure-ccr-settings"
+    "/96-configure-claude-permissions"
+    "/97-configure-claude-plugins"
+    "/98-mattermost-initial-post"
+    "/99-configure-threads-settings"
+    "/100-start-claude-threads"
 )
 
 log "Starting master startup sequence..."
