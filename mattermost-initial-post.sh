@@ -25,6 +25,23 @@ log_warning() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - WARNING: $1" >&2
 }
 
+# Function to sanitize channel name for Mattermost
+# Mattermost requires: lowercase, alphanumeric and hyphens only
+sanitize_channel_name() {
+ local name="$1"
+ # Convert to lowercase
+ name=$(echo "$name" | tr '[:upper:]' '[:lower:]')
+ # Replace spaces and underscores with hyphens
+ name=$(echo "$name" | tr ' _' '-')
+ # Remove any characters that aren't alphanumeric or hyphens
+ name=$(echo "$name" | sed 's/[^a-z0-9-]//g')
+ # Remove leading/trailing hyphens
+ name=$(echo "$name" | sed 's/^-//;s/-$//')
+ # Collapse multiple hyphens into one
+ name=$(echo "$name" | sed 's/-\+/-/g')
+ echo "$name"
+}
+
 # Function to make secure API calls with timeout and retry logic
 make_api_call() {
     local url="$1"
