@@ -181,43 +181,75 @@ add_user_to_channel() {
 
 # Function to update channel header
 update_channel_header() {
-  local channel_id="$1"
-  local header="$2"
-  local mm_address="$3"
-  local mm_token="$4"
+ local channel_id="$1"
+ local header="$2"
+ local mm_address="$3"
+ local mm_token="$4"
 
-  log "Updating channel header..." >&2
+ log "Updating channel header..." >&2
 
-  # Build payload
-  local payload
-  if command -v jq >/dev/null 2>&1; then
-    payload=$(jq -n --arg header "$header" '{"header": $header}')
-  else
-    # Escape the header for JSON
-    local escaped_header
-    escaped_header=$(echo "$header" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g')
-    payload=$(printf '{"header": "%s"}' "$escaped_header")
-  fi
+ # Mattermost PUT /api/v4/channels/{channel_id} requires ALL fields: id, team_id, name, display_name, type, header, purpose
+ # First, get the current channel data to preserve existing values
+ log "Fetching current channel data..." >&2
+ local channel_data
+ channel_data=$(make_api_call "$mm_address/api/v4/channels/$channel_id" "GET" "" "$mm_token")
 
-  # Update channel header using PUT request
-  local response
-  response=$(curl -s -w "%{http_code}" \
-    -X PUT \
-    -H "Authorization: Bearer $mm_token" \
-    -H "Content-Type: application/json" \
-    -d "$payload" \
-    "$mm_address/api/v4/channels/$channel_id")
+ # Extract required fields
+ local team_id name display_name type purpose
+ if command -v jq >/dev/null 2>&1; then
+ team_id=$(echo "$channel_data" | jq -r '.team_id')
+ name=$(echo "$channel_data" | jq -r '.name')
+ display_name=$(echo "$channel_data" | jq -r '.display_name')
+ type=$(echo "$channel_data" | jq -r '.type')
+ purpose=$(echo "$channel_data" | jq -r '.purpose // ""')
+ else
+ team_id=$(echo "$channel_data" | grep -o '"team_id":"[^"]*"' | cut -d'"' -f4)
+ name=$(echo "$channel_data" | grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4)
+ display_name=$(echo "$channel_data" | grep -o '"display_name":"[^"]*"' | cut -d'"' -f4)
+ type=$(echo "$channel_data" | grep -o '"type":"[^"]*"' | head -1 | cut -d'"' -f4)
+ purpose=$(echo "$channel_data" | grep -o '"purpose":"[^"]*"' | head -1 | cut -d'"' -f4 || echo "")
+ fi
 
-  local http_code="${response: -3}"
+ # Build full payload with all required fields
+ local full_payload
+ if command -v jq >/dev/null 2>&1; then
+ full_payload=$(jq -n \
+ --arg id "$channel_id" \
+ --arg team_id "$team_id" \
+ --arg name "$name" \
+ --arg display_name "$display_name" \
+ --arg type "$type" \
+ --arg header "$header" \
+ --arg purpose "$purpose" \
+ '{"id": $id, "team_id": $team_id, "name": $name, "display_name": $display_name, "type": $type, "header": $header, "purpose": $purpose}')
+ else
+ # Escape the header for JSON
+ local escaped_header
+ escaped_header=$(echo "$header" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g')
+ local escaped_purpose
+ escaped_purpose=$(echo "$purpose" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g')
+ full_payload=$(printf '{"id": "%s", "team_id": "%s", "name": "%s", "display_name": "%s", "type": "%s", "header": "%s", "purpose": "%s"}' \
+ "$channel_id" "$team_id" "$name" "$display_name" "$type" "$escaped_header" "$escaped_purpose")
+ fi
 
-  case "$http_code" in
-    "200"|"201")
-      log "Channel header updated successfully" >&2
-      ;;
-    *)
-      log_warning "Failed to update channel header: HTTP $http_code" >&2
-      ;;
-  esac
+ local response
+ response=$(curl -s -w "%{http_code}" \
+ -X PUT \
+ -H "Authorization: Bearer $mm_token" \
+ -H "Content-Type: application/json" \
+ -d "$full_payload" \
+ "$mm_address/api/v4/channels/$channel_id")
+
+ local http_code="${response: -3}"
+
+ case "$http_code" in
+ "200")
+ log "Channel header updated successfully" >&2
+ ;;
+ *)
+ log_warning "Failed to update channel header: HTTP $http_code" >&2
+ ;;
+ esac
 }
 
 # Function to update config.yaml with the new channel ID
@@ -333,10 +365,6 @@ main() {
     error_exit "MM_TOKEN environment variable is required"
   fi
 
-  if [ -z "${PROMPT:-}" ]; then
-    error_exit "PROMPT environment variable is required"
-  fi
-
   if [ -z "${IDE_ADDRESS:-}" ]; then
     error_exit "IDE_ADDRESS environment variable is required"
   fi
@@ -369,7 +397,7 @@ main() {
 
   # Format channel header
   local header
-  header="Claude Code | Prompt: $PROMPT | IDE: $IDE_ADDRESS | Started: $(date)"
+  header="Claude Code | IDE: $IDE_ADDRESS | Started: $(date)"
   # Truncate if too long (Mattermost limit is around 1024 chars for headers)
   if [ ${#header} -gt 250 ]; then
     header="${header:0:247}..."

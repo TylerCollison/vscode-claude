@@ -25,7 +25,7 @@ STARTUP_SCRIPTS=(
     "/95-configure-ccr-settings"
     "/96-configure-claude-permissions"
     "/97-configure-claude-plugins"
-    "/98-mattermost-initial-post"
+    "/98-mattermost-create-channel"
     "/99-configure-threads-settings"
     "/100-start-claude-threads"
 )

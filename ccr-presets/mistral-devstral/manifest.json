@@ -1,0 +1,49 @@
+{
+  "name": "devstral",
+  "version": "1.0.0",
+  "description": "Mistral Devstral Configuration",
+  "author": "Tyler Collison",
+  "keywords": [
+    "mistral",
+    "devstral"
+  ],
+  "LOG": false,
+  "LOG_LEVEL": "debug",
+  "CLAUDE_PATH": "",
+  "HOST": "0.0.0.0",
+  "PORT": 3456,
+  "API_TIMEOUT_MS": "600000",
+  "PROXY_URL": "",
+  "transformers": [],
+  "Providers": [
+    {
+      "name": "mistral",
+      "api_base_url": "https://api.mistral.ai/v1/chat/completions",
+      "api_key": "${MISTRAL_API_KEY}",
+      "models": [
+        "devstral-latest",
+        "mistral-large-latest"
+      ]
+    }
+  ],
+  "StatusLine": {
+    "enabled": false,
+    "currentStyle": "default",
+    "default": {
+      "modules": []
+    },
+    "powerline": {
+      "modules": []
+    }
+  },
+  "Router": {
+    "default": "mistral,devstral-latest",
+    "background": "mistral,devstral-latest",
+    "think": "mistral,devstral-latest",
+    "longContext": "mistral,devstral-latest",
+    "longContextThreshold": 60000,
+    "webSearch": "mistral,devstral-latest",
+    "image": "mistral,mistral-large-latest"
+  },
+  "CUSTOM_ROUTER_PATH": ""
+}

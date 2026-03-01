@@ -5,6 +5,18 @@ cp -r /claude-threads/* /config/.config/claude-threads/
 
 echo "Starting environment variable substitution for Claude Threads settings..."
 
+# Set MM_CHANNEL_ID from file if not already set
+if [ -z "$MM_CHANNEL_ID" ]; then
+    if [ -f /tmp/mm_channel_id ]; then
+        MM_CHANNEL_ID=$(cat /tmp/mm_channel_id)
+        export MM_CHANNEL_ID
+        echo "MM_CHANNEL_ID set from /tmp/mm_channel_id"
+    else
+        echo "Error: MM_CHANNEL_ID is not set and /tmp/mm_channel_id does not exist" >&2
+        exit 1
+    fi
+fi
+
 # Use temporary files to track counts
 mkdir /tmp/threads
 processed_file="/tmp/threads/processed_count.$$"

@@ -33,7 +33,7 @@ COPY combine-markdowns.sh /94-combine-markdowns
 COPY configure-ccr-settings.sh /95-configure-ccr-settings
 COPY configure-claude-permissions.sh /96-configure-claude-permissions
 COPY configure-claude-plugins.sh /97-configure-claude-plugins
-COPY mattermost-initial-post.sh /98-mattermost-initial-post
+COPY mattermost-create-channel.sh /98-mattermost-create-channel
 COPY configure-threads-settings.sh /99-configure-threads-settings
 COPY start-claude-threads.sh /100-start-claude-threads
 
@@ -46,19 +46,10 @@ RUN chmod +x /93-git-repo-setup \
     /95-configure-ccr-settings \
     /96-configure-claude-permissions \
     /97-configure-claude-plugins \
-    /98-mattermost-initial-post \
+    /98-mattermost-create-channel \
     /99-configure-threads-settings \
     /100-start-claude-threads \
     /etc/cont-init.d/90-master-startup
-
-# Copy Mattermost bot service
-COPY mattermost-bot.js /mattermost-bot.js
-
-# Install Node.js dependencies for Mattermost bot securely
-RUN mkdir -p /app && npm install --prefix /app --production --no-audit --save-exact ws@8.14.2
-
-# Set NODE_PATH to ensure ws dependency can be found
-ENV NODE_PATH=/app/node_modules
 
 # Docker socket volume mount (to be used when running the container)
 # This allows Docker commands inside the container to communicate with host Docker daemon
