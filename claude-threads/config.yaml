@@ -1,0 +1,14 @@
+version: 2
+workingDir: /workspace
+chrome: true
+worktreeMode: 'off'
+platforms:
+  - id: mattermost
+    type: mattermost
+    displayName: Home
+    url: http://portainer.home.com:8081
+    token: wkansc9mcjfqtr4oubkh4kwmmw
+    channelId: ${MM_CHANNEL_ID}
+    botName: claude-code
+    allowedUsers: []
+    skipPermissions: true
