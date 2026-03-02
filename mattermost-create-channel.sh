@@ -95,47 +95,116 @@ get_team_id() {
   echo "$team_id"
 }
 
-# Function to create a new Mattermost channel
+# Function to get existing channel by name
+get_existing_channel() {
+    local team_id="$1"
+    local channel_name="$2"
+    local mm_address="$3"
+    local mm_token="$4"
+
+    log "Checking for existing channel '$channel_name'..." >&2
+
+    # Fetch channel by name using the team endpoint
+    local response
+    local http_code
+    response=$(curl -s -w "%{http_code}" --max-time 30 \
+        -H "Authorization: Bearer $mm_token" \
+        "$mm_address/api/v4/teams/$team_id/channels/name/$channel_name")
+
+    http_code="${response: -3}"
+    local response_body="${response%???}"
+
+    if [ "$http_code" = "200" ]; then
+        # Parse channel ID from response
+        local channel_id
+        if command -v jq >/dev/null 2>&1; then
+            channel_id=$(echo "$response_body" | jq -r '.id' 2>/dev/null || echo "")
+        else
+            channel_id=$(echo "$response_body" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+        fi
+
+        if [ -n "$channel_id" ]; then
+            log "Found existing channel with ID: $channel_id" >&2
+            echo "$channel_id"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+# Function to create a new Mattermost channel (or return existing one)
 create_mattermost_channel() {
-  local team_id="$1"
-  local channel_name="$2"
-  local display_name="$3"
-  local mm_address="$4"
-  local mm_token="$5"
+    local team_id="$1"
+    local channel_name="$2"
+    local display_name="$3"
+    local mm_address="$4"
+    local mm_token="$5"
 
-  log "Creating channel '$channel_name' (display: '$display_name')..." >&2
+    # First, check if channel already exists
+    local existing_channel_id
+    if existing_channel_id=$(get_existing_channel "$team_id" "$channel_name" "$mm_address" "$mm_token"); then
+        log "Using existing channel: $channel_name" >&2
+        echo "$existing_channel_id"
+        return 0
+    fi
 
-  # Build payload
-  local payload
-  if command -v jq >/dev/null 2>&1; then
-    payload=$(jq -n \
-      --arg team_id "$team_id" \
-      --arg name "$channel_name" \
-      --arg display_name "$display_name" \
-      '{"team_id": $team_id, "name": $name, "display_name": $display_name, "type": "O"}')
-  else
-    payload=$(printf '{"team_id": "%s", "name": "%s", "display_name": "%s", "type": "O"}' \
-      "$team_id" "$channel_name" "$display_name")
-  fi
+    log "Creating channel '$channel_name' (display: '$display_name')..." >&2
 
-  # Create channel
-  local response
-  response=$(make_api_call "$mm_address/api/v4/channels" "POST" "$payload" "$mm_token")
+    # Build payload
+    local payload
+    if command -v jq >/dev/null 2>&1; then
+        payload=$(jq -n \
+            --arg team_id "$team_id" \
+            --arg name "$channel_name" \
+            --arg display_name "$display_name" \
+            '{"team_id": $team_id, "name": $name, "display_name": $display_name, "type": "O"}')
+    else
+        payload=$(printf '{"team_id": "%s", "name": "%s", "display_name": "%s", "type": "O"}' \
+            "$team_id" "$channel_name" "$display_name")
+    fi
 
-  # Parse channel ID from response
-  local channel_id
-  if command -v jq >/dev/null 2>&1; then
-    channel_id=$(echo "$response" | jq -r '.id' 2>/dev/null || echo "")
-  else
-    channel_id=$(echo "$response" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
-  fi
+    # Create channel - handle 409 conflict explicitly
+    local response
+    local http_code
+    response=$(curl -s -w "%{http_code}" --max-time 30 \
+        -X POST \
+        -H "Authorization: Bearer $mm_token" \
+        -H "Content-Type: application/json" \
+        -d "$payload" \
+        "$mm_address/api/v4/channels")
 
-  if [ -z "$channel_id" ]; then
-    error_exit "Failed to create channel - no channel ID in response"
-  fi
+    http_code="${response: -3}"
+    local response_body="${response%???}"
 
-  log "Created channel with ID: $channel_id" >&2
-  echo "$channel_id"
+    # Parse channel ID from response
+    local channel_id
+    if command -v jq >/dev/null 2>&1; then
+        channel_id=$(echo "$response_body" | jq -r '.id' 2>/dev/null || echo "")
+    else
+        channel_id=$(echo "$response_body" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+    fi
+
+    case "$http_code" in
+        "200"|"201")
+            log "Created channel with ID: $channel_id" >&2
+            echo "$channel_id"
+            ;;
+        "409")
+            # Channel already exists - fetch it to get the ID
+            log "Channel already exists (HTTP 409), fetching existing channel..." >&2
+            local existing_id
+            if existing_id=$(get_existing_channel "$team_id" "$channel_name" "$mm_address" "$mm_token"); then
+                log "Using existing channel: $channel_name" >&2
+                echo "$existing_id"
+            else
+                error_exit "Failed to get existing channel after 409 response"
+            fi
+            ;;
+        *)
+            error_exit "Failed to create channel - HTTP $http_code"
+            ;;
+    esac
 }
 
 # Function to add a user to a channel
