@@ -1,5 +1,5 @@
 {
-  "name": "devstral",
+  "name": "mistral-devstral",
   "version": "1.0.0",
   "description": "Mistral Devstral Configuration",
   "author": "Tyler Collison",
@@ -19,11 +19,16 @@
     {
       "name": "mistral",
       "api_base_url": "https://api.mistral.ai/v1/chat/completions",
-      "api_key": "${MISTRAL_API_KEY}",
+      "api_key": "$MISTRAL_API_KEY",
       "models": [
         "devstral-latest",
         "mistral-large-latest"
-      ]
+      ],
+      "transformer": {
+        "use": [
+          "groq"
+        ]
+      }
     }
   ],
   "StatusLine": {
