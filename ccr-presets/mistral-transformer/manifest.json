@@ -1,0 +1,56 @@
+{
+  "name": "mistral-transformer",
+  "version": "1.0.0",
+  "description": "Mistral transformer configuration for Claude Code Router",
+  "author": "Tyler Collison",
+  "keywords": [
+    "mistral",
+    "transformer"
+  ],
+  "LOG": false,
+  "LOG_LEVEL": "debug",
+  "CLAUDE_PATH": "",
+  "HOST": "0.0.0.0",
+  "PORT": 3456,
+  "API_TIMEOUT_MS": "600000",
+  "PROXY_URL": "",
+  "transformers": ["mistral"],
+  "Providers": [
+    {
+      "name": "mistral",
+      "api_base_url": "https://api.mistral.ai/v1/chat/completions",
+      "api_key": "${MISTRAL_API_KEY}",
+      "models": [
+        "mistral-large-latest",
+        "mistral-small-latest",
+        "codestral-latest"
+      ],
+      "transformer": {
+        "use": [
+          "mistral"
+        ]
+      }
+    }
+  ],
+  "StatusLine": {
+    "enabled": false,
+    "currentStyle": "default",
+    "default": {
+      "modules": []
+    },
+    "powerline": {
+      "modules": []
+    }
+  },
+  "Router": {
+    "default": "mistral,mistral-large-latest",
+    "background": "mistral,mistral-small-latest",
+    "think": "mistral,mistral-large-latest",
+    "longContext": "mistral,mistral-large-latest",
+    "longContextThreshold": 60000,
+    "webSearch": "mistral,mistral-large-latest",
+    "image": "mistral,mistral-large-latest",
+    "code": "mistral,codestral-latest"
+  },
+  "CUSTOM_ROUTER_PATH": ""
+}
