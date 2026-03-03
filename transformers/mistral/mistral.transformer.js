@@ -71,25 +71,51 @@ export default class MistralTransformer {
    * @returns {Object} Transformed unified response
    */
   transformResponseIn(response, context) {
-    this.logger.debug('Transforming Mistral response to unified format', {
-      response: JSON.stringify(response, null, 2)
-    });
+    try {
+      this.logger.debug('Transforming Mistral response to unified format', {
+        response: JSON.stringify(response, null, 2),
+        context
+      });
 
-    if (!response || typeof response !== 'object') {
-      throw new Error('Invalid Mistral response format');
+      // Handle error responses first
+      if (this._isErrorResponse(response)) {
+        return this._transformErrorResponse(response, context);
+      }
+
+      // Validate response structure
+      this._validateResponseStructure(response);
+
+      const unifiedResponse = {
+        id: this._getResponseId(response),
+        object: 'chat.completion',
+        created: this._getCreatedTimestamp(response),
+        model: this._getValidatedModel(response.model),
+        usage: this._transformUsage(response.usage),
+        choices: this._transformChoices(response.choices)
+      };
+
+      // Add provider-specific metadata
+      unifiedResponse.provider = {
+        name: 'mistral',
+        type: 'api',
+        responseType: this._getResponseType(response)
+      };
+
+      // Handle streaming responses if needed
+      if (response.stream || context.stream) {
+        unifiedResponse.stream = true;
+      }
+
+      this.logger.debug('Transformed unified response', unifiedResponse);
+      return unifiedResponse;
+    } catch (error) {
+      this.logger.error('Response transformation failed', {
+        error: error.message,
+        response: JSON.stringify(response, null, 2),
+        stack: error.stack
+      });
+      throw error;
     }
-
-    const unifiedResponse = {
-      id: response.id || `mistral-${Date.now()}`,
-      object: 'chat.completion',
-      created: response.created || Math.floor(Date.now() / 1000),
-      model: response.model || 'unknown',
-      usage: this._transformUsage(response.usage),
-      choices: this._transformChoices(response.choices)
-    };
-
-    this.logger.debug('Transformed unified response', unifiedResponse);
-    return unifiedResponse;
   }
 
   /**
@@ -383,19 +409,164 @@ export default class MistralTransformer {
    * @private
    */
   _transformUsage(usage) {
-    if (!usage) {
-      return {
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        total_tokens: 0
-      };
+    const defaultUsage = {
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0
+    };
+
+    if (!usage || typeof usage !== 'object') {
+      return defaultUsage;
     }
 
     return {
-      prompt_tokens: usage.prompt_tokens || 0,
-      completion_tokens: usage.completion_tokens || 0,
-      total_tokens: usage.total_tokens || 0
+      prompt_tokens: this._validateTokenCount(usage.prompt_tokens),
+      completion_tokens: this._validateTokenCount(usage.completion_tokens),
+      total_tokens: this._validateTokenCount(usage.total_tokens)
     };
+  }
+
+  /**
+   * Validate and normalize token count
+   * @private
+   */
+  _validateTokenCount(count) {
+    if (count === undefined || count === null) {
+      return 0;
+    }
+    const numericCount = Number(count);
+    return isNaN(numericCount) || numericCount < 0 ? 0 : Math.floor(numericCount);
+  }
+
+  /**
+   * Check if response is an error response
+   * @private
+   */
+  _isErrorResponse(response) {
+    if (!response || typeof response !== 'object') {
+      return false;
+    }
+
+    return (
+      response.error ||
+      response.status_code ||
+      (response.status && response.status >= 400) ||
+      response.type === 'error' ||
+      (response.message && typeof response.message === 'string' && response.message.includes('error'))
+    );
+  }
+
+  /**
+   * Transform error response to unified format
+   * @private
+   */
+  _transformErrorResponse(response, context) {
+    const errorCode = response.status_code || response.status || 500;
+    const errorMessage = response.error?.message || response.message || response.error || 'Unknown error';
+
+    return {
+      id: response.id || `error-${Date.now()}`,
+      object: 'error',
+      created: response.created || Math.floor(Date.now() / 1000),
+      model: response.model || 'unknown',
+      error: {
+        code: errorCode,
+        message: errorMessage,
+        type: response.error?.type || 'api_error',
+        param: response.error?.param,
+        status: errorCode
+      },
+      provider: {
+        name: 'mistral',
+        type: 'api',
+        responseType: 'error'
+      }
+    };
+  }
+
+  /**
+   * Validate response structure
+   * @private
+   */
+  _validateResponseStructure(response) {
+    if (!response || typeof response !== 'object') {
+      throw new Error('Invalid Mistral response: must be an object');
+    }
+
+    // For successful responses, validate required structure
+    if (!this._isErrorResponse(response)) {
+      // Check for valid choices array
+      if (!response.choices || !Array.isArray(response.choices)) {
+        throw new Error('Invalid Mistral response: missing or invalid choices array');
+      }
+
+      // Validate each choice
+      response.choices.forEach((choice, index) => {
+        if (!choice || typeof choice !== 'object') {
+          throw new Error(`Invalid choice at index ${index}: must be an object`);
+        }
+
+        // Validate message structure
+        if (!choice.message || typeof choice.message !== 'object') {
+          throw new Error(`Invalid message in choice ${index}: must be an object`);
+        }
+
+        if (!choice.message.role || typeof choice.message.role !== 'string') {
+          throw new Error(`Invalid role in choice ${index}: must be a string`);
+        }
+
+        if (choice.message.content === undefined && !choice.message.tool_calls) {
+          throw new Error(`Invalid content in choice ${index}: must have content or tool_calls`);
+        }
+      });
+    }
+  }
+
+  /**
+   * Get validated response ID
+   * @private
+   */
+  _getResponseId(response) {
+    if (response.id && typeof response.id === 'string') {
+      return response.id;
+    }
+    return `mistral-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+  }
+
+  /**
+   * Get created timestamp
+   * @private
+   */
+  _getCreatedTimestamp(response) {
+    if (response.created && typeof response.created === 'number') {
+      return response.created;
+    }
+    return Math.floor(Date.now() / 1000);
+  }
+
+  /**
+   * Get validated model name
+   * @private
+   */
+  _getValidatedModel(model) {
+    if (model && typeof model === 'string' && model.trim()) {
+      return model.trim();
+    }
+    return 'unknown';
+  }
+
+  /**
+   * Get response type
+   * @private
+   */
+  _getResponseType(response) {
+    if (this._isErrorResponse(response)) {
+      return 'error';
+    }
+    if (response.stream || response.choices?.[0]?.finish_reason === 'length') {
+      return 'streaming';
+    }
+    return 'completion';
   }
 
   /**
@@ -414,15 +585,111 @@ export default class MistralTransformer {
       }];
     }
 
-    return choices.map((choice, index) => ({
-      index: choice.index || index,
-      message: {
-        role: choice.message?.role || 'assistant',
-        content: choice.message?.content || '',
-        tool_calls: choice.message?.tool_calls
-      },
-      finish_reason: choice.finish_reason || 'stop'
-    }));
+    return choices.map((choice, index) => {
+      const indexValue = choice.index !== undefined ? choice.index : index;
+
+      return {
+        index: indexValue,
+        message: this._transformChoiceMessage(choice.message, indexValue),
+        finish_reason: this._validateFinishReason(choice.finish_reason),
+        logprobs: choice.logprobs
+      };
+    });
+  }
+
+  /**
+   * Transform choice message with validation
+   * @private
+   */
+  _transformChoiceMessage(message, index) {
+    if (!message || typeof message !== 'object') {
+      this.logger.warn(`Invalid message in choice ${index}, using default message`);
+      return {
+        role: 'assistant',
+        content: ''
+      };
+    }
+
+    const transformedMessage = {
+      role: this._validateMessageRole(message.role),
+      content: this._validateMessageContent(message.content)
+    };
+
+    // Handle tool calls if present
+    if (message.tool_calls && Array.isArray(message.tool_calls)) {
+      transformedMessage.tool_calls = this._transformToolCalls(message.tool_calls, index);
+    }
+
+    return transformedMessage;
+  }
+
+  /**
+   * Validate and normalize message role
+   * @private
+   */
+  _validateMessageRole(role) {
+    const validRoles = ['user', 'assistant', 'system', 'tool'];
+    if (role && validRoles.includes(role)) {
+      return role;
+    }
+    return 'assistant';
+  }
+
+  /**
+   * Validate and normalize message content
+   * @private
+   */
+  _validateMessageContent(content) {
+    if (content === null || content === undefined) {
+      return '';
+    }
+    if (typeof content === 'string') {
+      return content;
+    }
+    return String(content);
+  }
+
+  /**
+   * Transform tool calls with validation
+   * @private
+   */
+  _transformToolCalls(toolCalls, choiceIndex) {
+    return toolCalls.map((toolCall, index) => {
+      if (!toolCall || typeof toolCall !== 'object') {
+        this.logger.warn(`Invalid tool call at choice ${choiceIndex}, index ${index}`);
+        return {
+          id: `call_${Date.now()}_${choiceIndex}_${index}`,
+          type: 'function',
+          function: {
+            name: 'unknown',
+            arguments: '{}'
+          }
+        };
+      }
+
+      return {
+        id: toolCall.id || `call_${Date.now()}_${choiceIndex}_${index}`,
+        type: toolCall.type || 'function',
+        function: {
+          name: toolCall.function?.name || 'unknown',
+          arguments: typeof toolCall.function?.arguments === 'string'
+            ? toolCall.function.arguments
+            : JSON.stringify(toolCall.function?.arguments || {})
+        }
+      };
+    });
+  }
+
+  /**
+   * Validate finish reason
+   * @private
+   */
+  _validateFinishReason(reason) {
+    const validReasons = ['stop', 'length', 'tool_calls', 'content_filter', 'null'];
+    if (reason && validReasons.includes(reason)) {
+      return reason;
+    }
+    return 'stop';
   }
 
   /**
