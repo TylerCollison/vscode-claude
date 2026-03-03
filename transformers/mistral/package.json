@@ -1,0 +1,7 @@
+{
+  "name": "mistral-transformer",
+  "version": "1.0.0",
+  "description": "Mistral API transformer for Claude Code Router",
+  "main": "mistral.transformer.js",
+  "type": "module"
+}
