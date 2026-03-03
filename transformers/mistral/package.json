@@ -1,0 +1,41 @@
+{
+  "name": "mistral-transformer",
+  "version": "1.2.0",
+  "description": "Mistral API transformer for Claude Code Router with comprehensive advanced features support",
+  "main": "mistral.transformer.js",
+  "type": "module",
+  "keywords": [
+    "mistral",
+    "ai",
+    "transformer",
+    "claude-code-router",
+    "api",
+    "advanced-features",
+    "error-handling",
+    "logging",
+    "performance"
+  ],
+  "author": "Claude Code Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/anthropic/claude-code-router"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "files": [
+    "mistral.transformer.js",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test integration.test.js",
+    "test:basic": "node test-basic.js",
+    "test:response": "node test-response-transformation.js",
+    "test:422": "node test-transformation-422.js",
+    "test:advanced": "node test-advanced.js",
+    "test:ccr": "node test-ccr-integration.js",
+    "test:422-resolved": "node test-422-resolved.js",
+    "test:all": "npm run test:basic && npm run test:response && npm run test:422 && npm run test:advanced && npm run test:ccr && npm run test:422-resolved"
+  }
+}
