@@ -505,8 +505,15 @@ export default class MistralTransformer {
         throw new Error(`Invalid message role at index ${index}: must be a string`);
       }
 
-      if (message.content === undefined || (typeof message.content !== 'string' && message.content !== null)) {
-        throw new Error(`Invalid message content at index ${index}: must be string or null`);
+      if (message.content === undefined) {
+        throw new Error(`Invalid message content at index ${index}: must be defined`);
+      }
+
+      // Allow string, null, array, or object content (Claude Code Router format)
+      const validContentTypes = ['string', 'object', 'null'];
+      const contentType = typeof message.content;
+      if (!validContentTypes.includes(contentType) && message.content !== null) {
+        throw new Error(`Invalid message content at index ${index}: must be string, null, array, or object`);
       }
     });
   }
@@ -758,7 +765,7 @@ export default class MistralTransformer {
       try {
         const mistralMessage = {
           role: this._mapRole(message.role),
-          content: message.content !== undefined && message.content !== null ? String(message.content) : ''
+          content: this._extractTextContent(message.content)
         };
 
         // Handle tool calls in messages
@@ -802,6 +809,48 @@ export default class MistralTransformer {
         throw error;
       }
     });
+  }
+
+  /**
+   * Extract text content from Claude Code Router's complex message format
+   * Handles both simple strings and complex content arrays
+   * @private
+   */
+  _extractTextContent(content) {
+    if (content === null || content === undefined) {
+      return '';
+    }
+
+    // Handle simple string content
+    if (typeof content === 'string') {
+      return content;
+    }
+
+    // Handle complex content array (Claude Code Router format)
+    if (Array.isArray(content)) {
+      // Extract text from all text blocks
+      const textParts = content
+        .filter(block => block.type === 'text' && block.text)
+        .map(block => block.text)
+        .filter(text => text && text.trim());
+
+      return textParts.join('\n') || '';
+    }
+
+    // Handle object format (fallback)
+    if (typeof content === 'object') {
+      // Try to extract text property
+      if (content.text) {
+        return String(content.text);
+      }
+      // Try to extract from content array if present
+      if (content.content && Array.isArray(content.content)) {
+        return this._extractTextContent(content.content);
+      }
+    }
+
+    // Final fallback
+    return String(content);
   }
 
   /**
@@ -1438,13 +1487,7 @@ export default class MistralTransformer {
    * @private
    */
   _validateMessageContent(content) {
-    if (content === null || content === undefined) {
-      return '';
-    }
-    if (typeof content === 'string') {
-      return content;
-    }
-    return String(content);
+    return this._extractTextContent(content);
   }
 
   /**
