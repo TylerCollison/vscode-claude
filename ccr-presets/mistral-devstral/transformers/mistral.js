@@ -1,8 +1,9 @@
 // Mistral Transformer for Claude Code Router
 // Transforms unified Claude Code Router requests to Mistral API format
 
-export default class MistralTransformer {
+module.exports = class MistralTransformer {
   constructor(options = {}, logger = console) {
+    this.name = 'mistral';
     this.options = options;
     this.logger = this._setupLogger(logger);
 
@@ -234,7 +235,7 @@ export default class MistralTransformer {
 
       // Create base Mistral request with validated fields only
       const mistralRequest = {
-        model: this._getValidatedModel(request, provider),
+        model: request.model,
         messages: this._transformMessages(request.messages),
         temperature: this._validateParameter(request.temperature, this.temperature, 'temperature', 0, 2),
         top_p: this._validateParameter(request.topP, this.topP, 'top_p', 0, 1),
@@ -325,7 +326,7 @@ export default class MistralTransformer {
         id: this._getResponseId(response),
         object: 'chat.completion',
         created: this._getCreatedTimestamp(response),
-        model: this._getValidatedModel(response.model),
+        model: response.model,
         usage: this._transformUsage(response.usage),
         choices: this._transformChoices(response.choices)
       };
@@ -446,39 +447,6 @@ export default class MistralTransformer {
     }
 
     return features;
-  }
-
-  /**
-   * Get appropriate Mistral model based on request and provider
-   * @private
-   */
-  _getMistralModel(request, provider) {
-    // Use specified model or fallback to provider default
-    const model = request.model ||
-                  (provider.models && provider.models[0]) ||
-                  'devstral-latest';
-
-    return model;
-  }
-
-  /**
-   * Get validated Mistral model with safety checks
-   * @private
-   */
-  _getValidatedModel(request, provider) {
-    const model = this._getMistralModel(request, provider);
-
-    // Validate model name format
-    if (!model || typeof model !== 'string') {
-      throw new Error('Invalid model parameter: must be a non-empty string');
-    }
-
-    // Basic validation for model names
-    if (!/^[a-zA-Z0-9-_]+$/.test(model)) {
-      throw new Error(`Invalid model name format: ${model}`);
-    }
-
-    return model;
   }
 
   /**
@@ -1177,7 +1145,7 @@ export default class MistralTransformer {
       id: `chunk-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
       index: choice.index || 0,
       created: this._getCreatedTimestamp(choice),
-      model: this._getValidatedModel(choice.model || context.model),
+      model: choice.model || context.model,
       provider: {
         name: 'mistral',
         type: 'api',
@@ -1389,17 +1357,6 @@ export default class MistralTransformer {
       return response.created;
     }
     return Math.floor(Date.now() / 1000);
-  }
-
-  /**
-   * Get validated model name
-   * @private
-   */
-  _getValidatedModel(model) {
-    if (model && typeof model === 'string' && model.trim()) {
-      return model.trim();
-    }
-    return 'unknown';
   }
 
   /**

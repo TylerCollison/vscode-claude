@@ -1,11 +1,11 @@
 {
-  "name": "mistral-devstral",
+  "name": "mistral-mistral-large",
   "version": "1.0.0",
-  "description": "Mistral Devstral Configuration",
+  "description": "Mistral Large Configuration",
   "author": "Tyler Collison",
   "keywords": [
     "mistral",
-    "devstral"
+    "mistral-large"
   ],
   "LOG": false,
   "LOG_LEVEL": "debug",
@@ -26,7 +26,6 @@
       "api_base_url": "https://api.mistral.ai/v1/chat/completions",
       "api_key": "$MISTRAL_API_KEY",
       "models": [
-        "devstral-latest",
         "mistral-large-latest"
       ],
       "transformer": {
@@ -47,12 +46,12 @@
     }
   },
   "Router": {
-    "default": "mistral,devstral-latest",
-    "background": "mistral,devstral-latest",
-    "think": "mistral,devstral-latest",
-    "longContext": "mistral,devstral-latest",
+    "default": "mistral,mistral-large-latest",
+    "background": "mistral,mistral-large-latest",
+    "think": "mistral,mistral-large-latest",
+    "longContext": "mistral,mistral-large-latest",
     "longContextThreshold": 60000,
-    "webSearch": "mistral,devstral-latest",
+    "webSearch": "mistral,mistral-large-latest",
     "image": "mistral,mistral-large-latest"
   },
   "CUSTOM_ROUTER_PATH": ""
