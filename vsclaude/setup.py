@@ -7,10 +7,5 @@ setup(
     install_requires=[
         "docker>=6.0.0",
     ],
-    entry_points={
-        "console_scripts": [
-            "vsclaude=vsclaude.cli:main",
-        ],
-    },
     python_requires=">=3.8",
 )
