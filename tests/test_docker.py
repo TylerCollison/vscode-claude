@@ -1,5 +1,448 @@
+"""Comprehensive tests for Docker client functionality."""
+
+import pytest
+from unittest.mock import Mock, patch, MagicMock
+from vsclaude.vsclaude.docker import (
+    DockerClient,
+    DockerSecurityError,
+    DockerConnectionError,
+    DockerContainerError,
+    DockerClientInterface,
+    MockDockerClient,
+    create_docker_client
+)
+
+
 def test_docker_client_initialization():
     """Test Docker client can be initialized"""
     from vsclaude.vsclaude.docker import DockerClient
     client = DockerClient()
     assert client.client is not None
+
+
+class TestDockerSecurityError:
+    """Test security error handling."""
+
+    def test_security_error_creation(self):
+        """Test DockerSecurityError can be created with message."""
+        error = DockerSecurityError("Test security error")
+        assert str(error) == "Test security error"
+
+
+class TestDockerConnectionError:
+    """Test connection error handling."""
+
+    def test_connection_error_creation(self):
+        """Test DockerConnectionError can be created with message."""
+        error = DockerConnectionError("Test connection error")
+        assert str(error) == "Test connection error"
+
+
+class TestDockerContainerError:
+    """Test container error handling."""
+
+    def test_container_error_creation(self):
+        """Test DockerContainerError can be created with message."""
+        error = DockerContainerError("Test container error")
+        assert str(error) == "Test container error"
+
+
+class TestMockDockerClient:
+    """Test mock Docker client functionality."""
+
+    def test_mock_client_implements_interface(self):
+        """Test MockDockerClient implements DockerClientInterface."""
+        client = MockDockerClient()
+        assert isinstance(client, DockerClientInterface)
+
+    def test_mock_client_is_container_running_true(self):
+        """Test mock client returns True for running container."""
+        client = MockDockerClient()
+        assert client.is_container_running("test-container-1") is True
+
+    def test_mock_client_is_container_running_false(self):
+        """Test mock client returns False for stopped container."""
+        client = MockDockerClient()
+        assert client.is_container_running("test-container-2") is False
+
+    def test_mock_client_is_container_running_not_found(self):
+        """Test mock client returns False for non-existent container."""
+        client = MockDockerClient()
+        assert client.is_container_running("non-existent-container") is False
+
+    def test_mock_client_get_container_info_found(self):
+        """Test mock client returns container info for existing container."""
+        client = MockDockerClient()
+        info = client.get_container_info("test-container-1")
+        assert info is not None
+        assert info['name'] == "test-container-1"
+        assert info['status'] == "running"
+
+    def test_mock_client_get_container_info_not_found(self):
+        """Test mock client returns None for non-existent container."""
+        client = MockDockerClient()
+        info = client.get_container_info("non-existent-container")
+        assert info is None
+
+    def test_mock_client_list_containers_running_only(self):
+        """Test mock client lists running containers."""
+        client = MockDockerClient()
+        containers = client.list_containers(all_containers=False)
+        assert len(containers) == 2  # Only running containers
+        assert all(c['status'] == 'running' for c in containers)
+
+    def test_mock_client_list_containers_all(self):
+        """Test mock client lists all containers."""
+        client = MockDockerClient()
+        containers = client.list_containers(all_containers=True)
+        assert len(containers) == 3  # All containers
+
+    def test_mock_client_start_container_not_running(self):
+        """Test mock client can start a stopped container."""
+        client = MockDockerClient()
+        result = client.start_container("test-container-2")
+        assert result is True
+        assert client.is_container_running("test-container-2") is True
+
+    def test_mock_client_start_container_already_running(self):
+        """Test mock client returns False when container already running."""
+        client = MockDockerClient()
+        result = client.start_container("test-container-1")
+        assert result is False
+
+    def test_mock_client_stop_container_running(self):
+        """Test mock client can stop a running container."""
+        client = MockDockerClient()
+        result = client.stop_container("test-container-1")
+        assert result is True
+        assert client.is_container_running("test-container-1") is False
+
+    def test_mock_client_stop_container_already_stopped(self):
+        """Test mock client returns False when container already stopped."""
+        client = MockDockerClient()
+        result = client.stop_container("test-container-2")
+        assert result is False
+
+
+class TestDockerClientSecurity:
+    """Test Docker client security features."""
+
+    @patch('docker.from_env')
+    def test_docker_client_initialization(self, mock_docker):
+        """Test Docker client can be initialized."""
+        mock_client = Mock()
+        mock_client.ping.return_value = True
+        mock_docker.return_value = mock_client
+
+        client = DockerClient()
+        assert client.client is not None
+
+    @patch('docker.from_env')
+    def test_docker_client_validation_connection_error(self, mock_docker):
+        """Test Docker client initialization fails with connection error."""
+        import docker.errors
+        mock_docker.side_effect = docker.errors.DockerException("Connection failed")
+
+        with pytest.raises(DockerConnectionError) as exc_info:
+            DockerClient()
+        assert "Connection failed" in str(exc_info.value)
+
+    @patch('docker.from_env')
+    def test_container_name_validation_valid_names(self, mock_docker):
+        """Test valid container names pass validation."""
+        mock_client = Mock()
+        mock_client.ping.return_value = True
+        mock_client.containers.get.return_value = Mock(status="running")
+        mock_docker.return_value = mock_client
+
+        client = DockerClient()
+        # These should not raise DockerSecurityError
+        client.is_container_running("valid-container")
+        client.is_container_running("container123")
+        client.is_container_running("container_name")
+        client.is_container_running("container.name")
+
+    @patch('docker.from_env')
+    def test_container_name_validation_invalid_names(self, mock_docker):
+        """Test invalid container names raise DockerSecurityError."""
+        mock_client = Mock()
+        mock_client.ping.return_value = True
+        mock_docker.return_value = mock_client
+
+        client = DockerClient()
+
+        invalid_names = [
+            "",  # Empty
+            "../container",  # Path traversal
+            ";rm -rf /",  # Command injection
+            "container|name",  # Pipe
+            "container&name",  # Background
+            "container`name",  # Backtick
+            "$(rm -rf /)",  # Command substitution
+            "container/name",  # Invalid character
+            "container\\name",  # Escape character
+            "container name",  # Space
+            "container\nname",  # Newline
+            "a" * 256,  # Too long
+        ]
+
+        for invalid_name in invalid_names:
+            with pytest.raises(DockerSecurityError):
+                client.is_container_running(invalid_name)
+
+
+class TestDockerClientFunctionality:
+    """Test Docker client functionality with mocking."""
+
+    @patch('docker.from_env')
+    def test_is_container_running_true(self, mock_docker):
+        """Test is_container_running returns True for running container."""
+        mock_client = Mock()
+        mock_client.ping.return_value = True
+        mock_docker.return_value = mock_client
+
+        mock_container = Mock()
+        mock_container.status = "running"
+        mock_client.containers.get.return_value = mock_container
+
+        client = DockerClient()
+        result = client.is_container_running("test-container")
+        assert result is True
+
+    @patch('docker.from_env')
+    def test_is_container_running_false(self, mock_docker):
+        """Test is_container_running returns False for stopped container."""
+        mock_client = Mock()
+        mock_client.ping.return_value = True
+        mock_docker.return_value = mock_client
+
+        mock_container = Mock()
+        mock_container.status = "stopped"
+        mock_client.containers.get.return_value = mock_container
+
+        client = DockerClient()
+        result = client.is_container_running("test-container")
+        assert result is False
+
+    @patch('docker.from_env')
+    def test_is_container_running_not_found(self, mock_docker):
+        """Test is_container_running returns False for non-existent container."""
+        mock_client = Mock()
+        mock_client.ping.return_value = True
+        mock_docker.return_value = mock_client
+
+        import docker.errors
+        mock_client.containers.get.side_effect = docker.errors.NotFound("Container not found")
+
+        client = DockerClient()
+        result = client.is_container_running("non-existent-container")
+        assert result is False
+
+    @patch('docker.from_env')
+    def test_get_container_info(self, mock_docker):
+        """Test get_container_info returns container details."""
+        mock_client = Mock()
+        mock_client.ping.return_value = True
+        mock_docker.return_value = mock_client
+
+        mock_container = Mock()
+        mock_container.id = "container-id"
+        mock_container.name = "test-container"
+        mock_container.status = "running"
+        mock_image = Mock()
+        mock_image.tags = ["nginx:latest"]
+        mock_container.image = mock_image
+        mock_container.attrs = {
+            'Created': '2024-01-01T00:00:00Z',
+            'NetworkSettings': {'Ports': {'80/tcp': [{'HostPort': '8080'}]}}
+        }
+        mock_client.containers.get.return_value = mock_container
+
+        client = DockerClient()
+        info = client.get_container_info("test-container")
+
+        assert info is not None
+        assert info['id'] == "container-id"
+        assert info['name'] == "test-container"
+        assert info['status'] == "running"
+        assert info['image'] == "nginx:latest"
+
+    @patch('docker.from_env')
+    def test_list_containers(self, mock_docker):
+        """Test list_containers returns container list."""
+        mock_client = Mock()
+        mock_client.ping.return_value = True
+        mock_docker.return_value = mock_client
+
+        mock_container = Mock()
+        mock_container.id = "container-id"
+        mock_container.name = "test-container"
+        mock_container.status = "running"
+        mock_image = Mock()
+        mock_image.tags = ["nginx:latest"]
+        mock_container.image = mock_image
+
+        mock_client.containers.list.return_value = [mock_container]
+
+        client = DockerClient()
+        containers = client.list_containers()
+
+        assert len(containers) == 1
+        assert containers[0]['id'] == "container-id"
+        assert containers[0]['name'] == "test-container"
+        assert containers[0]['status'] == "running"
+        assert containers[0]['image'] == "nginx:latest"
+
+    @patch('docker.from_env')
+    def test_start_container(self, mock_docker):
+        """Test start_container starts a stopped container."""
+        mock_client = Mock()
+        mock_client.ping.return_value = True
+        mock_docker.return_value = mock_client
+
+        mock_container = Mock()
+        mock_container.status = "stopped"
+        mock_container.start.return_value = None
+        mock_client.containers.get.return_value = mock_container
+
+        client = DockerClient()
+        result = client.start_container("test-container")
+
+        assert result is True
+        mock_container.start.assert_called_once()
+
+    @patch('docker.from_env')
+    def test_start_container_already_running(self, mock_docker):
+        """Test start_container returns False for running container."""
+        mock_client = Mock()
+        mock_client.ping.return_value = True
+        mock_docker.return_value = mock_client
+
+        mock_container = Mock()
+        mock_container.status = "running"
+        mock_client.containers.get.return_value = mock_container
+
+        client = DockerClient()
+        result = client.start_container("test-container")
+
+        assert result is False
+        mock_container.start.assert_not_called()
+
+    @patch('docker.from_env')
+    def test_stop_container(self, mock_docker):
+        """Test stop_container stops a running container."""
+        mock_client = Mock()
+        mock_client.ping.return_value = True
+        mock_docker.return_value = mock_client
+
+        mock_container = Mock()
+        mock_container.status = "running"
+        mock_container.stop.return_value = None
+        mock_client.containers.get.return_value = mock_container
+
+        client = DockerClient()
+        result = client.stop_container("test-container")
+
+        assert result is True
+        mock_container.stop.assert_called_once()
+
+    @patch('docker.from_env')
+    def test_stop_container_already_stopped(self, mock_docker):
+        """Test stop_container returns False for stopped container."""
+        mock_client = Mock()
+        mock_client.ping.return_value = True
+        mock_docker.return_value = mock_client
+
+        mock_container = Mock()
+        mock_container.status = "stopped"
+        mock_client.containers.get.return_value = mock_container
+
+        client = DockerClient()
+        result = client.stop_container("test-container")
+
+        assert result is False
+        mock_container.stop.assert_not_called()
+
+
+class TestDockerClientErrorHandling:
+    """Test Docker client error handling."""
+
+    @patch('docker.from_env')
+    def test_container_operation_api_error_retry(self, mock_docker):
+        """Test API errors are retried."""
+        mock_client = Mock()
+        mock_client.ping.return_value = True
+        mock_docker.return_value = mock_client
+
+        import docker.errors
+        # First call raises API error, second succeeds
+        mock_client.containers.get.side_effect = [
+            docker.errors.APIError("API error"),
+            Mock(status="running")
+        ]
+
+        client = DockerClient()
+        # Set lower retries for faster test
+        client._max_retries = 2
+        result = client.is_container_running("test-container")
+
+        assert result is True
+        assert mock_client.containers.get.call_count == 2
+
+    @patch('docker.from_env')
+    def test_container_operation_api_error_exhausted(self, mock_docker):
+        """Test API errors exhausted raise DockerContainerError."""
+        mock_client = Mock()
+        mock_client.ping.return_value = True
+        mock_docker.return_value = mock_client
+
+        mock_client.containers.get.side_effect = Exception("Persistent API error")
+
+        client = DockerClient()
+        # Set low retries for faster test
+        client._max_retries = 1
+
+        with pytest.raises(DockerContainerError):
+            client.is_container_running("test-container")
+
+    @patch('docker.from_env')
+    def test_container_not_found_error(self, mock_docker):
+        """Test container not found raises DockerContainerError for start/stop."""
+        mock_client = Mock()
+        mock_client.ping.return_value = True
+        mock_docker.return_value = mock_client
+
+        import docker.errors
+        mock_client.containers.get.side_effect = docker.errors.NotFound("Container not found")
+
+        client = DockerClient()
+
+        with pytest.raises(DockerContainerError):
+            client.start_container("non-existent-container")
+
+        with pytest.raises(DockerContainerError):
+            client.stop_container("non-existent-container")
+
+
+class TestFactoryFunction:
+    """Test Docker client factory function."""
+
+    @patch('docker.from_env')
+    def test_create_docker_client(self, mock_docker):
+        """Test factory function creates Docker client."""
+        mock_client = Mock()
+        mock_client.ping.return_value = True
+        mock_docker.return_value = mock_client
+
+        client = create_docker_client(max_retries=5)
+        assert client._max_retries == 5
+
+    @patch('docker.from_env')
+    def test_create_docker_client_default_retries(self, mock_docker):
+        """Test factory function uses default retries."""
+        mock_client = Mock()
+        mock_client.ping.return_value = True
+        mock_docker.return_value = mock_client
+
+        client = create_docker_client()
+        assert client._max_retries == 3
