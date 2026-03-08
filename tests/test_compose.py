@@ -1,0 +1,275 @@
+import pytest
+from vsclaude.vsclaude.compose import generate, _validate_instance_name, _validate_port, _validate_restart_policy
+
+
+def test_generate_basic_config():
+    """Test generating basic docker-compose configuration"""
+    config = generate("test-instance", 8443, {})
+
+    assert "services" in config
+    assert "volumes" in config
+    assert "vscode-claude" in config["services"]
+
+    service = config["services"]["vscode-claude"]
+    assert service["image"] == "tylercollison2089/vscode-claude:latest"
+    assert service["container_name"] == "vsclaude-test-instance"
+    assert service["ports"] == ["8443:8443"]
+    assert service["restart"] == "unless-stopped"
+
+    # Check environment variables
+    env_vars = {item.split('=')[0]: item.split('=')[1] for item in service["environment"]}
+    assert env_vars["IDE_ADDRESS"] == "http://localhost:8443"
+    assert env_vars["PASSWORD"] == "password"
+    assert env_vars["CCR_PROFILE"] == "default"
+
+    # Check volumes
+    volumes = config["volumes"]
+    assert "test-instance-config" in volumes
+    assert "test-instance-workspace" in volumes
+
+
+def test_generate_with_custom_parameters():
+    """Test generating configuration with custom parameters"""
+    environment_vars = {
+        "PASSWORD": "custom-password",
+        "CCR_PROFILE": "custom-profile",
+        "EXTRA_VAR": "extra-value"
+    }
+
+    config = generate(
+        instance_name="custom-instance",
+        port=9000,
+        environment_vars=environment_vars,
+        image_tag="v1.0.0",
+        container_port=8080,
+        additional_ports=["3000:3000", "5000:5000"],
+        restart_policy="always",
+        include_docker_sock=False
+    )
+
+    service = config["services"]["vscode-claude"]
+    assert service["image"] == "tylercollison2089/vscode-claude:v1.0.0"
+    assert service["ports"] == ["9000:8080", "3000:3000", "5000:5000"]
+    assert service["restart"] == "always"
+
+    # Check environment variable merging
+    env_vars = {item.split('=')[0]: item.split('=')[1] for item in service["environment"]}
+    assert env_vars["IDE_ADDRESS"] == "http://localhost:9000"
+    assert env_vars["PASSWORD"] == "custom-password"  # Custom value should override
+    assert env_vars["CCR_PROFILE"] == "custom-profile"  # Custom value should override
+    assert env_vars["EXTRA_VAR"] == "extra-value"
+
+    # Check volumes (Docker socket should be excluded)
+    volumes = service["volumes"]
+    assert "/var/run/docker.sock:/var/run/docker.sock" not in volumes
+    assert "custom-instance-config:/config" in volumes
+    assert "custom-instance-workspace:/workspace" in volumes
+
+
+def test_generate_with_none_environment_vars():
+    """Test generating configuration with None environment_vars"""
+    config = generate("test-instance", 8443, None)
+    service = config["services"]["vscode-claude"]
+
+    env_vars = {item.split('=')[0]: item.split('=')[1] for item in service["environment"]}
+    assert env_vars["IDE_ADDRESS"] == "http://localhost:8443"
+    assert env_vars["PASSWORD"] == "password"
+    assert env_vars["CCR_PROFILE"] == "default"
+
+
+def test_generate_with_empty_environment_vars():
+    """Test generating configuration with empty environment_vars"""
+    config = generate("test-instance", 8443, {})
+    service = config["services"]["vscode-claude"]
+
+    env_vars = {item.split('=')[0]: item.split('=')[1] for item in service["environment"]}
+    assert len(env_vars) == 3  # Only default variables
+
+
+def test_environment_variable_merging():
+    """Test that environment variables merge correctly"""
+    # Override default variables
+    env_vars = {"PASSWORD": "new-password", "CCR_PROFILE": "custom"}
+    config = generate("test-instance", 8443, env_vars)
+    service = config["services"]["vscode-claude"]
+
+    env_vars_dict = {item.split('=')[0]: item.split('=')[1] for item in service["environment"]}
+    assert env_vars_dict["PASSWORD"] == "new-password"
+    assert env_vars_dict["CCR_PROFILE"] == "custom"
+    assert env_vars_dict["IDE_ADDRESS"] == "http://localhost:8443"
+
+
+def test_volume_configuration():
+    """Test volume configuration"""
+    config = generate("test-instance", 8443, {})
+    service = config["services"]["vscode-claude"]
+
+    # Should include Docker socket by default
+    volumes = service["volumes"]
+    assert "/var/run/docker.sock:/var/run/docker.sock" in volumes
+    assert "test-instance-config:/config" in volumes
+    assert "test-instance-workspace:/workspace" in volumes
+
+    # Without Docker socket
+    config = generate("test-instance", 8443, {}, include_docker_sock=False)
+    service = config["services"]["vscode-claude"]
+    volumes = service["volumes"]
+    assert "/var/run/docker.sock:/var/run/docker.sock" not in volumes
+
+
+def test_port_mappings():
+    """Test various port mapping configurations"""
+    # Default configuration
+    config = generate("test-instance", 8080, {})
+    service = config["services"]["vscode-claude"]
+    assert service["ports"] == ["8080:8443"]
+
+    # Custom container port
+    config = generate("test-instance", 8080, {}, container_port=3000)
+    service = config["services"]["vscode-claude"]
+    assert service["ports"] == ["8080:3000"]
+
+    # Additional ports
+    config = generate("test-instance", 8080, {}, additional_ports=["9000:9000", "5000:5000"])
+    service = config["services"]["vscode-claude"]
+    assert service["ports"] == ["8080:8443", "9000:9000", "5000:5000"]
+
+
+def test_image_configuration():
+    """Test image tag configuration"""
+    config = generate("test-instance", 8443, {}, image_tag="v1.2.3")
+    service = config["services"]["vscode-claude"]
+    assert service["image"] == "tylercollison2089/vscode-claude:v1.2.3"
+
+
+def test_container_name_format():
+    """Test container name formatting"""
+    config = generate("my-instance", 8443, {})
+    service = config["services"]["vscode-claude"]
+    assert service["container_name"] == "vsclaude-my-instance"
+
+    config = generate("instance_1", 8443, {})
+    service = config["services"]["vscode-claude"]
+    assert service["container_name"] == "vsclaude-instance_1"
+
+
+def test_restart_policy_configuration():
+    """Test restart policy configuration"""
+    for policy in ["no", "always", "on-failure", "unless-stopped"]:
+        config = generate("test-instance", 8443, {}, restart_policy=policy)
+        service = config["services"]["vscode-claude"]
+        assert service["restart"] == policy
+
+
+def test_validate_instance_name():
+    """Test instance name validation"""
+    # Valid names
+    _validate_instance_name("valid-name")
+    _validate_instance_name("valid_name")
+    _validate_instance_name("valid123")
+    _validate_instance_name("a")
+
+    # Invalid names
+    with pytest.raises(ValueError, match="instance_name must be a string"):
+        _validate_instance_name(None)
+
+    with pytest.raises(ValueError, match="instance_name cannot be empty"):
+        _validate_instance_name("")
+
+    with pytest.raises(ValueError, match="instance_name can only contain"):
+        _validate_instance_name("invalid name")
+
+    with pytest.raises(ValueError, match="instance_name can only contain"):
+        _validate_instance_name("invalid@name")
+
+    with pytest.raises(ValueError, match="instance_name cannot start or end with a hyphen"):
+        _validate_instance_name("-invalid")
+
+    with pytest.raises(ValueError, match="instance_name cannot start or end with a hyphen"):
+        _validate_instance_name("invalid-")
+
+
+def test_validate_port():
+    """Test port validation"""
+    # Valid ports
+    _validate_port(1)
+    _validate_port(8080)
+    _validate_port(65535)
+
+    # Invalid ports
+    with pytest.raises(ValueError, match="port must be an integer"):
+        _validate_port("8080")
+
+    with pytest.raises(ValueError, match="port must be between 1 and 65535"):
+        _validate_port(0)
+
+    with pytest.raises(ValueError, match="port must be between 1 and 65535"):
+        _validate_port(65536)
+
+    with pytest.raises(ValueError, match="port must be between 1 and 65535"):
+        _validate_port(-1)
+
+
+def test_validate_restart_policy():
+    """Test restart policy validation"""
+    # Valid policies
+    _validate_restart_policy("no")
+    _validate_restart_policy("always")
+    _validate_restart_policy("on-failure")
+    _validate_restart_policy("unless-stopped")
+
+    # Invalid policy
+    with pytest.raises(ValueError, match="restart_policy must be one of"):
+        _validate_restart_policy("invalid")
+
+
+def test_integration_style_tests():
+    """Test more complex integration-style scenarios"""
+    # Complex environment setup
+    complex_env = {
+        "PASSWORD": "very-long-password-with-special-chars!@#$%",
+        "CCR_PROFILE": "production",
+        "LOG_LEVEL": "debug",
+        "CUSTOM_SETTING": "custom-value"
+    }
+
+    config = generate(
+        instance_name="production-instance",
+        port=443,
+        environment_vars=complex_env,
+        image_tag="stable",
+        container_port=443,
+        additional_ports=["80:80", "22:22"],
+        restart_policy="always"
+    )
+
+    service = config["services"]["vscode-claude"]
+    assert service["image"] == "tylercollison2089/vscode-claude:stable"
+    assert service["ports"] == ["443:443", "80:80", "22:22"]
+    assert service["restart"] == "always"
+
+    # Verify environment variables
+    env_vars = {item.split('=')[0]: item.split('=')[1] for item in service["environment"]}
+    assert env_vars["PASSWORD"] == "very-long-password-with-special-chars!@#$%"
+    assert env_vars["CCR_PROFILE"] == "production"
+    assert env_vars["LOG_LEVEL"] == "debug"
+    assert env_vars["CUSTOM_SETTING"] == "custom-value"
+    assert env_vars["IDE_ADDRESS"] == "http://localhost:443"
+
+
+def test_edge_cases():
+    """Test edge cases and boundary conditions"""
+    # Minimum valid port
+    config = generate("edge-case", 1, {})
+    service = config["services"]["vscode-claude"]
+    assert service["ports"] == ["1:8443"]
+
+    # Maximum valid port
+    config = generate("edge-case", 65535, {})
+    service = config["services"]["vscode-claude"]
+    assert service["ports"] == ["65535:8443"]
+
+    # Very long instance name (within valid chars)
+    config = generate("a" * 50, 8443, {})
+    service = config["services"]["vscode-claude"]
+    assert service["container_name"] == f"vsclaude-{'a' * 50}"
