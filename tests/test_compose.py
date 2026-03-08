@@ -294,3 +294,57 @@ def test_generate_with_custom_volumes():
     assert "test-instance-config" in config["volumes"]
     assert "test-instance-workspace" in config["volumes"]
     assert "test-instance-data" in config["volumes"]
+
+
+def test_generate_backward_compatibility():
+    """Test that default behavior remains unchanged (backward compatibility)"""
+    config = generate("test-instance", 8443, {})
+    service = config["services"]["vscode-claude"]
+
+    # Should include default volumes
+    volumes = service["volumes"]
+    assert "test-instance-config:/config" in volumes
+    assert "test-instance-workspace:/workspace" in volumes
+    assert "/var/run/docker.sock:/var/run/docker.sock" in volumes
+
+    # Check volume definitions
+    assert "test-instance-config" in config["volumes"]
+    assert "test-instance-workspace" in config["volumes"]
+
+
+def test_generate_with_empty_custom_volumes():
+    """Test generating configuration with empty custom volumes list"""
+    config = generate(
+        instance_name="test-instance",
+        port=8443,
+        environment_vars={},
+        enabled_volumes=[]
+    )
+
+    service = config["services"]["vscode-claude"]
+    volumes = service["volumes"]
+
+    # Should only include Docker socket when enabled_volumes is empty
+    assert len(volumes) == 1
+    assert "/var/run/docker.sock:/var/run/docker.sock" in volumes
+
+    # No volume definitions should be created
+    assert config["volumes"] == {}
+
+
+def test_generate_with_none_custom_volumes():
+    """Test generating configuration with None custom volumes"""
+    config = generate(
+        instance_name="test-instance",
+        port=8443,
+        environment_vars={},
+        enabled_volumes=None
+    )
+
+    service = config["services"]["vscode-claude"]
+    volumes = service["volumes"]
+
+    # Should include default volumes when enabled_volumes is None
+    assert "test-instance-config:/config" in volumes
+    assert "test-instance-workspace:/workspace" in volumes
+    assert "/var/run/docker.sock:/var/run/docker.sock" in volumes
