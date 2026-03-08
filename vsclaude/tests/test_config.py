@@ -24,3 +24,21 @@ def test_get_global_environment():
     # This test should fail initially since get_global_environment method doesn't exist
     environment = manager.get_global_environment()
     assert isinstance(environment, dict)
+
+
+def test_get_enabled_volumes():
+    """Test getting enabled volumes from global config"""
+    from vsclaude.config import ConfigManager
+    manager = ConfigManager()
+    volumes = manager.get_enabled_volumes()
+    assert isinstance(volumes, list)
+    assert volumes == []
+
+
+def test_get_include_docker_sock():
+    """Test getting Docker socket preference"""
+    from vsclaude.config import ConfigManager
+    manager = ConfigManager()
+    include_docker_sock = manager.get_include_docker_sock()
+    assert isinstance(include_docker_sock, bool)
+    assert include_docker_sock == True
