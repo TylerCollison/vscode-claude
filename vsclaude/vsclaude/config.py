@@ -21,3 +21,8 @@ class ConfigManager:
             "ide_address_template": "http://{host}:{port}",
             "environment": {}
         }
+
+    def get_global_environment(self):
+        """Get environment variables from global config"""
+        config = self.load_global_config()
+        return config.get("environment", {})
