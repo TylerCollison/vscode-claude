@@ -33,12 +33,12 @@ class ConfigManager:
         template = config.get("ide_address_template", "http://localhost:{port}")
         return template.format(host="localhost", port=port)
 
-    def get_enabled_volumes(self):
+    def get_enabled_volumes(self) -> list:
         """Get enabled volumes from global config"""
         config = self.load_global_config()
         return config.get("enabled_volumes", [])
 
-    def get_include_docker_sock(self):
+    def get_include_docker_sock(self) -> bool:
         """Get Docker socket mount preference from global config"""
         config = self.load_global_config()
         return config.get("include_docker_sock", True)
