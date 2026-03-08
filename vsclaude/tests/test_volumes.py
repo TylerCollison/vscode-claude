@@ -1,6 +1,10 @@
 import pytest
-from vsclaude.vsclaude.compose import generate
-from vsclaude.vsclaude.config import ConfigManager
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+from vsclaude.compose import generate
+from vsclaude.config import ConfigManager
 
 
 def test_empty_volumes_result_in_no_mounts():

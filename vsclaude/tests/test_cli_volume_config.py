@@ -7,6 +7,10 @@ def test_cli_includes_volume_config():
     sys.modules['docker'] = MagicMock()
     sys.modules['docker.errors'] = MagicMock()
 
+    # Add parent directory to Python path
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
     from vsclaude.cli import start_command
 
     # Mock the config to return custom volumes

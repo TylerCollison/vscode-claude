@@ -1,13 +1,13 @@
 def test_environment_variable_passthrough():
     """Test that any environment variable is passed through"""
-    from vsclaude.compose import generate
+    from vsclaude.vsclaude.compose import generate
     environment_vars = {
         "PASSWORD": "mypassword",
         "CCR_PROFILE": "custom",
         "CUSTOM_VAR": "custom_value",
         "UNKNOWN_VAR": "unknown_value"
     }
-    config = generate("test", 8443, environment_vars)
+    config = generate("test", 8443, environment_vars, enabled_volumes=["/config", "/workspace"])
     service_env = config["services"]["vscode-claude"]["environment"]
 
     # Check that all variables are present
@@ -25,7 +25,7 @@ def test_cli_environment_variable_parsing():
     import os
     # Add the parent directory to Python path to import cli module
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from vsclaude.cli import start_command
+    from vsclaude.vsclaude.cli import start_command
 
     # Mock args with environment variables
     args = Mock()
@@ -37,10 +37,11 @@ def test_cli_environment_variable_parsing():
     # Mock dependencies to avoid actual Docker operations
     from unittest.mock import patch, MagicMock
 
-    with patch('vsclaude.config.ConfigManager') as MockConfigManager, \
-         patch('vsclaude.ports.PortManager') as MockPortManager, \
-         patch('vsclaude.instances.InstanceManager') as MockInstanceManager, \
-         patch('vsclaude.compose.generate') as mock_generate:
+    with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager, \
+         patch('vsclaude.vsclaude.ports.PortManager') as MockPortManager, \
+         patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager, \
+         patch('vsclaude.vsclaude.compose.generate') as mock_generate, \
+         patch('vsclaude.vsclaude.cli.docker.errors') as mock_docker_errors:
 
         # Configure mocks
         mock_config = MagicMock()
