@@ -23,12 +23,20 @@ def start_command(args):
     else:
         port = global_config["port_range"]["min"]
 
+    # Collect environment variables from command line
+    environment_vars = {}
+    if hasattr(args, 'env') and args.env:
+        for env_var in args.env:
+            if '=' in env_var:
+                key, value = env_var.split('=', 1)
+                environment_vars[key] = value
+
     instance_manager = InstanceManager()
     instance_config = instance_manager.create_instance_config(
-        args.name, port, environment={}
+        args.name, port, environment=environment_vars
     )
 
-    compose_config = generate(args.name, port, {})
+    compose_config = generate(args.name, port, environment_vars)
 
     print(f"Instance '{args.name}' configured on port {port}")
     print(f"Access at: http://localhost:{port}")
@@ -85,6 +93,7 @@ def main():
     start_parser.add_argument("name", help="Instance name")
     start_parser.add_argument("--port-auto", action="store_true", help="Auto-allocate port")
     start_parser.add_argument("--port", type=int, help="Specific port number")
+    start_parser.add_argument("--env", action="append", help="Environment variable (key=value)")
 
     # Status command
     status_parser = subparsers.add_parser("status", help="Show instance status")
