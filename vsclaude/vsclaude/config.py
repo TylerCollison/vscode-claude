@@ -19,7 +19,9 @@ class ConfigManager:
             "port_range": {"min": 8000, "max": 9000},
             "default_profile": "default",
             "ide_address_template": "http://{host}:{port}",
-            "environment": {}
+            "environment": {},
+            "enabled_volumes": [],
+            "include_docker_sock": True
         }
 
     def get_global_environment(self):

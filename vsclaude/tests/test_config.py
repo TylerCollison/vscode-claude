@@ -55,3 +55,15 @@ def test_validate_volume_paths():
     # Invalid paths
     assert manager.validate_volume_paths(["config", "workspace"]) == False
     assert manager.validate_volume_paths([""]) == False
+
+
+def test_default_config_includes_volume_settings():
+    """Test that default config includes volume settings"""
+    from vsclaude.vsclaude.config import ConfigManager
+    manager = ConfigManager()
+    config = manager._default_global_config()
+    assert "enabled_volumes" in config
+    assert isinstance(config["enabled_volumes"], list)
+    assert config["enabled_volumes"] == []
+    assert "include_docker_sock" in config
+    assert config["include_docker_sock"] == True
