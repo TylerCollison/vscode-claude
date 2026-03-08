@@ -26,3 +26,9 @@ class ConfigManager:
         """Get environment variables from global config"""
         config = self.load_global_config()
         return config.get("environment", {})
+
+    def format_ide_address(self, port):
+        """Format IDE address using the configured template"""
+        config = self.load_global_config()
+        template = config.get("ide_address_template", "http://localhost:{port}")
+        return template.format(host="localhost", port=port)
