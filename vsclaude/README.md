@@ -125,6 +125,28 @@ vsclaude start my-project --port 8443 --env DEFAULT_THEME=light --env API_KEY="c
 vsclaude start my-project --env INSTANCE_ONLY_VAR="value"
 ```
 
+### MM_CHANNEL Auto-population
+
+vsclaude automatically populates the `MM_CHANNEL` environment variable with the instance name, unless overridden by higher priority settings:
+
+**Priority Order (Highest to Lowest):**
+1. `--env MM_CHANNEL=value` (user override via CLI)
+2. Global config `MM_CHANNEL` setting
+3. Instance name auto-population (fallback)
+
+**Examples:**
+
+```bash
+# Auto-population: MM_CHANNEL="my-project"
+vsclaude start my-project
+
+# User override: MM_CHANNEL="custom-channel"
+vsclaude start my-project --env MM_CHANNEL=custom-channel
+
+# Global config: MM_CHANNEL="global-channel" (if set in global-config.json)
+vsclaude start my-project
+```
+
 ### Instance-Specific Configurations
 
 Each vsclaude instance creates its own configuration in:
