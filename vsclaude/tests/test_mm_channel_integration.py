@@ -8,7 +8,7 @@ sys.modules['docker'] = MagicMock()
 sys.modules['docker.errors'] = MagicMock()
 
 # Add the parent directory to Python path to import cli module
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'vsclaude'))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from vsclaude.cli import start_command
 
 class TestMMChannelIntegration(unittest.TestCase):
