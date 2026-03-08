@@ -43,7 +43,8 @@ When vsclaude first runs, it creates a default configuration file:
 {
     "port_range": {"min": 8000, "max": 9000},
     "default_profile": "default",
-    "ide_address_template": "http://localhost:{port}"
+    "ide_address_template": "http://localhost:{port}",
+    "environment": {}
 }
 ```
 
@@ -64,6 +65,65 @@ code ~/.vsclaude/global-config.json
 - **port_range**: Defines the range of ports available for auto-allocation
 - **default_profile**: Sets the default profile name for new instances
 - **ide_address_template**: Template for generating IDE access URLs (uses `{port}` placeholder)
+- **environment**: Global environment variables applied to all instances
+
+### Global Environment Configuration
+
+vsclaude supports global environment variables that are automatically applied to all instances. These variables can be overridden by instance-specific settings.
+
+**Example global-config.json with environment field:**
+
+```json
+{
+    "port_range": {"min": 8000, "max": 9000},
+    "default_profile": "default",
+    "ide_address_template": "http://localhost:{port}",
+    "environment": {
+        "GLOBAL_API_KEY": "shared-secret-key",
+        "DEFAULT_THEME": "dark",
+        "SHARED_CONFIG": "global-setting",
+        "COMMON_VAR": "applied-to-all-instances"
+    }
+}
+```
+
+### Environment Variable Priority
+
+vsclaude merges environment variables with the following priority (instance-specific overrides global):
+
+1. **Global Environment**: Variables defined in `environment` field of global config
+2. **Instance Environment**: Variables passed via `--env` flag when starting an instance
+3. **Merging**: Instance variables override global settings with same names
+
+**Example Override Behavior:**
+
+```bash
+# When global config has:
+# {"environment": {"GLOBAL_VAR": "global", "SHARED": "global-version"}}
+
+# Command:
+vsclaude start test --env SHARED=instance-version --env INSTANCE_ONLY=instance-value
+
+# Resulting environment:
+{
+    "GLOBAL_VAR": "global",           # From global (no override)
+    "SHARED": "instance-version",     # From instance (overrides global)
+    "INSTANCE_ONLY": "instance-value"  # Instance-only variable
+}
+```
+
+**Usage Examples:**
+
+```bash
+# Start instance with global environment only
+vsclaude start my-project --port-auto
+
+# Start instance overriding specific global variables
+vsclaude start my-project --port 8443 --env DEFAULT_THEME=light --env API_KEY="custom-key"
+
+# Start instance with additional instance-specific variables
+vsclaude start my-project --env INSTANCE_ONLY_VAR="value"
+```
 
 ### Instance-Specific Configurations
 
