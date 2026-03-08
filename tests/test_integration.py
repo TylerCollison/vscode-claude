@@ -1,8 +1,8 @@
 def test_full_workflow():
     """Test complete vsclaude workflow"""
-    from cli import main
-    from vsclaude.config import ConfigManager
-    from vsclaude.instances import InstanceManager
+    from vsclaude.cli import main
+    from vsclaude.vsclaude.config import ConfigManager
+    from vsclaude.vsclaude.instances import InstanceManager
 
     # Test that all components work together
     config_manager = ConfigManager()
