@@ -10,7 +10,8 @@ def generate(
     container_port: int = 8443,
     additional_ports: Optional[List[str]] = None,
     restart_policy: str = "unless-stopped",
-    include_docker_sock: bool = True
+    include_docker_sock: bool = True,
+    enabled_volumes: Optional[List[str]] = None
 ) -> Dict[str, Any]:
     """
     Generate Docker Compose configuration for VSClaude instance.
@@ -24,6 +25,7 @@ def generate(
         additional_ports: Optional list of additional port mappings
         restart_policy: Container restart policy (default: "unless-stopped")
         include_docker_sock: Whether to mount Docker socket (default: True)
+        enabled_volumes: Optional list of container volume paths to mount (default: None)
 
     Returns:
         Dictionary containing the Docker Compose configuration
@@ -53,13 +55,22 @@ def generate(
     ports = [f"{port}:{container_port}"]
     ports.extend(additional_ports)
 
-    # Build volumes
-    volumes = [
-        f"{instance_name}-config:/config",
-        f"{instance_name}-workspace:/workspace"
-    ]
+    # Build volumes dynamically
+    volumes = []
+    enabled_volumes = enabled_volumes or ["/config", "/workspace"]  # Default volumes for backward compatibility
+
+    for volume_path in enabled_volumes:
+        volume_name = f"{instance_name}-{volume_path.split('/')[-1]}"
+        volumes.append(f"{volume_name}:{volume_path}")
+
     if include_docker_sock:
         volumes.insert(0, "/var/run/docker.sock:/var/run/docker.sock")
+
+    # Build volume definitions
+    volume_definitions = {}
+    for volume_path in enabled_volumes:
+        volume_name = f"{instance_name}-{volume_path.split('/')[-1]}"
+        volume_definitions[volume_name] = {}
 
     compose_config = {
         "services": {
@@ -72,10 +83,7 @@ def generate(
                 "restart": restart_policy
             }
         },
-        "volumes": {
-            f"{instance_name}-config": {},
-            f"{instance_name}-workspace": {}
-        }
+        "volumes": volume_definitions
     }
 
     return compose_config

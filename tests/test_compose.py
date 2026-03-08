@@ -273,3 +273,24 @@ def test_edge_cases():
     config = generate("a" * 50, 8443, {})
     service = config["services"]["vscode-claude"]
     assert service["container_name"] == f"vsclaude-{'a' * 50}"
+
+
+def test_generate_with_custom_volumes():
+    """Test generating configuration with custom volume paths"""
+    config = generate(
+        instance_name="test-instance",
+        port=8443,
+        environment_vars={},
+        enabled_volumes=["/config", "/workspace", "/data"]
+    )
+
+    service = config["services"]["vscode-claude"]
+    volumes = service["volumes"]
+    assert "test-instance-config:/config" in volumes
+    assert "test-instance-workspace:/workspace" in volumes
+    assert "test-instance-data:/data" in volumes
+
+    # Check volume definitions
+    assert "test-instance-config" in config["volumes"]
+    assert "test-instance-workspace" in config["volumes"]
+    assert "test-instance-data" in config["volumes"]
