@@ -122,6 +122,7 @@ def main():
     start_parser.add_argument("--port-auto", action="store_true", help="Auto-allocate port")
     start_parser.add_argument("--port", type=int, help="Specific port number")
     start_parser.add_argument("--env", action="append", help="Environment variable (key=value)")
+    start_parser.add_argument("--env-append", action="append", help="Environment variable to append to global config (key=value)")
 
     # Status command
     status_parser = subparsers.add_parser("status", help="Show instance status")
