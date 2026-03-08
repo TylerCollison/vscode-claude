@@ -42,3 +42,9 @@ class ConfigManager:
         """Get Docker socket mount preference from global config"""
         config = self.load_global_config()
         return config.get("include_docker_sock", True)
+
+    def validate_volume_paths(self, paths):
+        """Validate that all volume paths start with /"""
+        if not isinstance(paths, list):
+            return False
+        return all(path.startswith('/') for path in paths)
