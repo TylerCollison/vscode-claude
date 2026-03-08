@@ -35,6 +35,12 @@ def start_command(args):
     global_environment = config_manager.get_global_environment()
     merged_environment = {**global_environment, **environment_vars}
 
+    # Auto-populate MM_CHANNEL with instance name, respecting priority
+    if 'MM_CHANNEL' not in environment_vars:  # Not overridden by user
+        if 'MM_CHANNEL' not in global_environment:  # Not set globally
+            merged_environment['MM_CHANNEL'] = args.name  # Auto-populate
+        # Else: use global config value (already merged)
+
     instance_manager = InstanceManager()
     instance_config = instance_manager.create_instance_config(
         args.name, port, environment=merged_environment
