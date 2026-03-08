@@ -4,3 +4,10 @@ def test_start_command_integration():
     # Mock the components and test the integration
     # This will fail until we implement the integration
     assert callable(start_command)
+
+
+def test_status_command():
+    """Test status command functionality"""
+    from vsclaude.cli import status_command
+    # Mock components and test status command
+    assert callable(status_command)
