@@ -178,7 +178,78 @@ def test_mixed_env_and_env_append():
         assert environment_arg["PATH"] == "/override/bin"
         assert environment_arg["THEME"] == "light"
 
+def test_env_append_fallback():
+    """Test env-append falls back to set behavior when global doesn't exist"""
+    from unittest.mock import patch, MagicMock, Mock
+    import sys
+
+    # Mock docker module to avoid import errors
+    sys.modules['docker'] = MagicMock()
+    sys.modules['docker.errors'] = MagicMock()
+
+    # Add parent directory to Python path
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    from vsclaude.cli import start_command
+
+    # Mock args with env_append for non-existent global variable
+    args = Mock()
+    args.name = "test-instance"
+    args.port_auto = False
+    args.port = 8080
+    args.env = []
+    args.env_append = ["NEW_VAR=new_value"]
+
+    # Mock dependencies using full module paths
+    with patch('vsclaude.config.ConfigManager') as MockConfigManager, \
+         patch('vsclaude.ports.PortManager') as MockPortManager, \
+         patch('vsclaude.instances.InstanceManager') as MockInstanceManager, \
+         patch('vsclaude.compose.generate') as mock_generate:
+
+        # Configure global config without NEW_VAR
+        mock_config_manager = Mock()
+        mock_config_manager.load_global_config.return_value = {
+            "port_range": {"min": 8080, "max": 9000},
+            "environment": {"EXISTING_VAR": "existing"}
+        }
+        mock_config_manager.get_global_environment.return_value = {"EXISTING_VAR": "existing"}
+        mock_config_manager.get_enabled_volumes.return_value = []
+        mock_config_manager.get_include_docker_sock.return_value = False
+        mock_config_manager.format_ide_address.return_value = "http://localhost:8080"
+        MockConfigManager.return_value = mock_config_manager
+
+        # Configure instance manager mock
+        mock_instance_manager = Mock()
+        mock_instance_manager.create_instance_config.return_value = {"name": "test-instance", "port": 8080}
+        MockInstanceManager.return_value = mock_instance_manager
+
+        # Configure port manager mock
+        mock_port_manager = Mock()
+        mock_port_manager.find_available_port.return_value = 8080
+        MockPortManager.return_value = mock_port_manager
+
+        # Configure compose generate mock
+        mock_generate.return_value = {"services": {"claude": {"environment": {}}}}
+
+        # Call start_command
+        result = start_command(args)
+
+        # Verify that create_instance_config was called with correctly merged environment
+        call_args = mock_instance_manager.create_instance_config.call_args
+        assert call_args is not None
+
+        # Get the environment passed to create_instance_config
+        environment_arg = call_args.kwargs.get('environment', {})
+
+        # NEW_VAR should be set as new variable since it doesn't exist globally
+        assert environment_arg["NEW_VAR"] == "new_value"
+
+        # EXISTING_VAR should be preserved from global config
+        assert environment_arg["EXISTING_VAR"] == "existing"
+
 if __name__ == "__main__":
     test_cli_env_append_argument()
     test_env_append_functionality()
     test_mixed_env_and_env_append()
+    test_env_append_fallback()
