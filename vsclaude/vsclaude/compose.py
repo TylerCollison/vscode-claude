@@ -57,7 +57,8 @@ def generate(
 
     # Build volumes dynamically
     volumes = []
-    enabled_volumes = enabled_volumes or ["/config", "/workspace"]  # Default volumes for backward compatibility
+    if enabled_volumes is None:
+        enabled_volumes = ["/config", "/workspace"]  # Default volumes for backward compatibility
 
     for volume_path in enabled_volumes:
         volume_name = f"{instance_name}-{volume_path.split('/')[-1]}"
