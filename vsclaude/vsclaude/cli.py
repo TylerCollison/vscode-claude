@@ -31,15 +31,22 @@ def start_command(args):
                 key, value = env_var.split('=', 1)
                 environment_vars[key] = value
 
+    # Merge global environment with instance-specific environment
+    global_environment = config_manager.get_global_environment()
+    merged_environment = {**global_environment, **environment_vars}
+
     instance_manager = InstanceManager()
     instance_config = instance_manager.create_instance_config(
-        args.name, port, environment=environment_vars
+        args.name, port, environment=merged_environment
     )
 
-    compose_config = generate(args.name, port, environment_vars)
+    compose_config = generate(args.name, port, merged_environment)
+
+    # Get IDE address using template
+    ide_address = config_manager.format_ide_address(port)
 
     print(f"Instance '{args.name}' configured on port {port}")
-    print(f"Access at: http://localhost:{port}")
+    print(f"Access at: {ide_address}")
 
     return instance_config
 
@@ -47,10 +54,12 @@ def start_command(args):
 def status_command(args):
     from vsclaude.instances import InstanceManager
     from vsclaude.docker import DockerClient
+    from vsclaude.config import ConfigManager
     import json
 
     instance_manager = InstanceManager()
     docker_client = DockerClient()
+    config_manager = ConfigManager()
 
     instances_dir = instance_manager.instances_dir
 
@@ -67,7 +76,10 @@ def status_command(args):
 
                 container_name = f"vsclaude-{config['name']}"
                 status = "RUNNING" if docker_client.is_container_running(container_name) else "STOPPED"
-                print(f"{config['name']}: {status} - http://localhost:{config['port']}")
+
+                # Get IDE address using template
+                ide_address = config_manager.format_ide_address(config['port'])
+                print(f"{config['name']}: {status} - {ide_address}")
 
 
 def stop_command(args):

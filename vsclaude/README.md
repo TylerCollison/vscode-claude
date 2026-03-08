@@ -24,3 +24,50 @@ vsclaude status
 # Stop instance
 vsclaude stop my-project
 ```
+
+## Configuration
+
+vsclaude stores its configuration files in the user's home directory.
+
+### Configuration Files Location
+
+**Primary Configuration Directory:** `~/.vsclaude/`
+
+**Main Configuration File:** `~/.vsclaude/global-config.json`
+
+### Default Configuration
+
+When vsclaude first runs, it creates a default configuration file:
+
+```json
+{
+    "port_range": {"min": 8000, "max": 9000},
+    "default_profile": "default",
+    "ide_address_template": "http://localhost:{port}"
+}
+```
+
+### Editing Configuration
+
+Users can edit the configuration file directly:
+
+```bash
+# Edit global configuration
+nano ~/.vsclaude/global-config.json
+
+# Or use any text editor
+code ~/.vsclaude/global-config.json
+```
+
+### Configuration Options
+
+- **port_range**: Defines the range of ports available for auto-allocation
+- **default_profile**: Sets the default profile name for new instances
+- **ide_address_template**: Template for generating IDE access URLs (uses `{port}` placeholder)
+
+### Instance-Specific Configurations
+
+Each vsclaude instance creates its own configuration in:
+`~/.vsclaude/{instance-name}/config.json`
+
+These files contain instance-specific settings like port numbers, environment variables, and instance metadata.

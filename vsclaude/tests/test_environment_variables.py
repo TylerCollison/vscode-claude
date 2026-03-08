@@ -25,7 +25,7 @@ def test_cli_environment_variable_parsing():
     import os
     # Add the parent directory to Python path to import cli module
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from cli import start_command
+    from vsclaude.cli import start_command
 
     # Mock args with environment variables
     args = Mock()
