@@ -1,5 +1,6 @@
 import argparse
 import json
+import docker.errors
 
 def start_command(args):
     from vsclaude.config import ConfigManager
@@ -61,6 +62,20 @@ def status_command(args):
                 print(f"{config['name']}: {status} - http://localhost:{config['port']}")
 
 
+def stop_command(args):
+    from vsclaude.docker import DockerClient
+
+    docker_client = DockerClient()
+    container_name = f"vsclaude-{args.name}"
+
+    try:
+        container = docker_client.client.containers.get(container_name)
+        container.stop()
+        print(f"Stopped instance '{args.name}'")
+    except docker.errors.NotFound:
+        print(f"Instance '{args.name}' not found")
+
+
 def main():
     parser = argparse.ArgumentParser(description="VS Code + Claude Docker Management")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
@@ -74,11 +89,17 @@ def main():
     # Status command
     status_parser = subparsers.add_parser("status", help="Show instance status")
 
+    # Stop command
+    stop_parser = subparsers.add_parser("stop", help="Stop an instance")
+    stop_parser.add_argument("name", help="Instance name")
+
     args = parser.parse_args()
 
     if args.command == "start":
         start_command(args)
     elif args.command == "status":
         status_command(args)
+    elif args.command == "stop":
+        stop_command(args)
     else:
         parser.print_help()
