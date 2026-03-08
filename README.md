@@ -132,6 +132,22 @@ This container supports extensive configuration through environment variables.
 |----------|-------------|
 | `KNOWLEDGE_REPOS` | Git repos with markdown files (format: `URL[:branch]:file1,file2;...`) |
 
+### Volume Configuration
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `enabled_volumes` | Array of container paths to mount as persistent volumes | `[]` |
+| `include_docker_sock` | Whether to mount Docker socket | `true` |
+
+**Example:**
+```json
+{
+  "enabled_volumes": ["/config", "/workspace", "/data"],
+  "include_docker_sock": false
+}
+```
+
+This creates named volumes: `{instance_name}-config`, `{instance_name}-workspace`, `{instance_name}-data`
+
 ## Security Best Practices
 
 ### Sensitive Environment Variables
