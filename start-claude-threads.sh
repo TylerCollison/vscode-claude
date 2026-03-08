@@ -11,10 +11,10 @@ fi
 echo "Setting up Claude Threads server..."
 
 # Use a Claude Code Router profile if set
-if [[ -v CCR_THREADS_PROFILE ]]; then
+if [[ -v CCR_PROFILE ]]; then
     # Copy the Claude Code Router Threads profile to the config for environment activation
     echo "Applying Claude Code Router Threads Profile"
-    cp /config/.claude-code-router/presets/${CCR_THREADS_PROFILE}/manifest.json /config/.claude-code-router/config.json
+    cp /config/.claude-code-router/presets/${CCR_PROFILE}/manifest.json /config/.claude-code-router/config.json
 
     # Restart Claude Code Router to apply configuration update
     ccr restart

@@ -110,7 +110,7 @@ This container supports extensive configuration through environment variables.
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `ENABLE_THREADS` | Enable Claude Threads server | `false` |
-| `CCR_THREADS_PROFILE` | CCR profile to use with Threads | - |
+| `CCR_PROFILE` | CCR profile to use with Threads | - |
 | `MM_ADDRESS` | Mattermost server URL | - |
 | `MM_TOKEN` | Mattermost bot authentication token | - |
 | `MM_CHANNEL` | Target channel name | - |
@@ -245,7 +245,7 @@ environment:
  - MM_CHANNEL=claude-code
  - MM_TEAM=engineering
  - MM_BOT_NAME=Claude AI
- - CCR_THREADS_PROFILE=default # Optional: use CCR profile
+ - CCR_PROFILE=default # Optional: use CCR profile
 ```
 
 **Features:**
