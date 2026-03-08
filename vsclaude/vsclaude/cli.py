@@ -46,7 +46,17 @@ def start_command(args):
         args.name, port, environment=merged_environment
     )
 
-    compose_config = generate(args.name, port, merged_environment)
+    # Get volume configuration from global config
+    enabled_volumes = config_manager.get_enabled_volumes()
+    include_docker_sock = config_manager.get_include_docker_sock()
+
+    compose_config = generate(
+        args.name,
+        port,
+        merged_environment,
+        enabled_volumes=enabled_volumes,
+        include_docker_sock=include_docker_sock
+    )
 
     # Get IDE address using template
     ide_address = config_manager.format_ide_address(port)
