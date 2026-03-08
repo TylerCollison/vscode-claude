@@ -5,13 +5,22 @@ A Python tool for managing VS Code + Claude Docker containers with automated por
 ## Installation
 
 ```bash
-pip install -e .
+./install.sh
+source venv/bin/activate
 ```
 
-## Usage
+## Usage Examples
 
 ```bash
+# Start instance with auto port allocation
 vsclaude start my-project --port-auto
+
+# Start with custom environment variables
+vsclaude start my-project --port 8443 --env PASSWORD=secret --env CUSTOM_VAR=value
+
+# Check status (shows full IDE links)
 vsclaude status
+
+# Stop instance
 vsclaude stop my-project
 ```
