@@ -160,6 +160,33 @@ def stop_command(args):
         print(f"Instance '{args.name}' not found")
 
 
+def delete_command(args):
+    from vsclaude.instances import InstanceManager
+
+    instance_manager = InstanceManager()
+
+    try:
+        result = instance_manager.delete_instance(args.name)
+
+        # Build status message
+        messages = []
+        if result["container_stopped"]:
+            messages.append("stopped container")
+        if result["container_removed"]:
+            messages.append("removed container")
+        if result["config_deleted"]:
+            messages.append("deleted configuration")
+
+        if messages:
+            status = " and ".join(messages)
+            print(f"Deleted instance '{args.name}': {status}")
+        else:
+            print(f"Instance '{args.name}' not found or already deleted")
+
+    except Exception as e:
+        print(f"Error deleting instance '{args.name}': {e}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="VS Code + Claude Docker Management")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
@@ -179,6 +206,10 @@ def main():
     stop_parser = subparsers.add_parser("stop", help="Stop an instance")
     stop_parser.add_argument("name", help="Instance name")
 
+    # Delete command
+    delete_parser = subparsers.add_parser("delete", help="Delete an instance (container and config)")
+    delete_parser.add_argument("name", help="Instance name")
+
     args = parser.parse_args()
 
     if args.command == "start":
@@ -187,5 +218,7 @@ def main():
         status_command(args)
     elif args.command == "stop":
         stop_command(args)
+    elif args.command == "delete":
+        delete_command(args)
     else:
         parser.print_help()

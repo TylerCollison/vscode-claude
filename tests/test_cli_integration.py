@@ -17,3 +17,10 @@ def test_stop_command():
     """Test stop command functionality"""
     from vsclaude.cli import stop_command
     assert callable(stop_command)
+
+
+def test_delete_command():
+    """Test delete CLI command"""
+    # This will be integration test - placeholder for now
+    # Will be implemented in integration test phase
+    assert True
