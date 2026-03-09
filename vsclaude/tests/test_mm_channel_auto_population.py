@@ -9,7 +9,7 @@ sys.modules['docker.errors'] = MagicMock()
 
 # Add the parent directory to Python path to import cli module
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from vsclaude.cli import start_command
+from vsclaude.vsclaude.cli import start_command
 
 
 class TestMMChannelAutoPopulation(unittest.TestCase):
@@ -23,10 +23,10 @@ class TestMMChannelAutoPopulation(unittest.TestCase):
         args.env = []  # No MM_CHANNEL override
         args.env_append = []  # Add env_append attribute
 
-        with patch('vsclaude.config.ConfigManager') as MockConfigManager, \
-             patch('vsclaude.ports.PortManager') as MockPortManager, \
-             patch('vsclaude.instances.InstanceManager') as MockInstanceManager, \
-             patch('vsclaude.compose.generate') as mock_generate:
+        with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager, \
+             patch('vsclaude.vsclaude.ports.PortManager') as MockPortManager, \
+             patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager, \
+             patch('vsclaude.vsclaude.compose.generate') as mock_generate:
 
             # Configure mocks
             mock_config = MagicMock()
@@ -68,10 +68,10 @@ class TestMMChannelAutoPopulation(unittest.TestCase):
         args.env = ["MM_CHANNEL=custom-channel"]  # CLI override
         args.env_append = []
 
-        with patch('vsclaude.config.ConfigManager') as MockConfigManager, \
-             patch('vsclaude.ports.PortManager') as MockPortManager, \
-             patch('vsclaude.instances.InstanceManager') as MockInstanceManager, \
-             patch('vsclaude.compose.generate') as mock_generate:
+        with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager, \
+             patch('vsclaude.vsclaude.ports.PortManager') as MockPortManager, \
+             patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager, \
+             patch('vsclaude.vsclaude.compose.generate') as mock_generate:
 
             # Configure mocks
             mock_config = MagicMock()
@@ -112,10 +112,10 @@ class TestMMChannelAutoPopulation(unittest.TestCase):
         args.env = []  # No CLI override
         args.env_append = []
 
-        with patch('vsclaude.config.ConfigManager') as MockConfigManager, \
-             patch('vsclaude.ports.PortManager') as MockPortManager, \
-             patch('vsclaude.instances.InstanceManager') as MockInstanceManager, \
-             patch('vsclaude.compose.generate') as mock_generate:
+        with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager, \
+             patch('vsclaude.vsclaude.ports.PortManager') as MockPortManager, \
+             patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager, \
+             patch('vsclaude.vsclaude.compose.generate') as mock_generate:
 
             # Configure mocks - global config has MM_CHANNEL set
             mock_config = MagicMock()
@@ -158,10 +158,10 @@ class TestMMChannelAutoPopulation(unittest.TestCase):
         args.env = ["MM_CHANNEL=cli-channel"]  # CLI override
         args.env_append = []
 
-        with patch('vsclaude.config.ConfigManager') as MockConfigManager, \
-             patch('vsclaude.ports.PortManager') as MockPortManager, \
-             patch('vsclaude.instances.InstanceManager') as MockInstanceManager, \
-             patch('vsclaude.compose.generate') as mock_generate:
+        with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager, \
+             patch('vsclaude.vsclaude.ports.PortManager') as MockPortManager, \
+             patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager, \
+             patch('vsclaude.vsclaude.compose.generate') as mock_generate:
 
             # Configure mocks - global config also has MM_CHANNEL
             mock_config = MagicMock()

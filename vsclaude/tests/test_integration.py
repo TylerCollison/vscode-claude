@@ -6,7 +6,15 @@ from unittest.mock import Mock, patch, MagicMock
 
 def test_cli_with_global_environment():
     """Test CLI workflow with global environment settings"""
-    from vsclaude.cli import start_command
+    import sys
+
+    # Mock docker module before importing cli
+    mock_docker_module = type('MockDocker', (), {})
+    mock_docker_module.errors = type('MockDockerErrors', (), {})
+    sys.modules['docker'] = mock_docker_module
+    sys.modules['docker.errors'] = mock_docker_module.errors
+
+    from vsclaude.vsclaude.cli import start_command
 
     # Create a temporary directory for global config
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -38,10 +46,10 @@ def test_cli_with_global_environment():
         args.env_append = []
 
         # Mock dependencies
-        with patch('vsclaude.config.ConfigManager') as MockConfigManager, \
-             patch('vsclaude.ports.PortManager') as MockPortManager, \
-             patch('vsclaude.instances.InstanceManager') as MockInstanceManager, \
-             patch('vsclaude.compose.generate') as mock_generate:
+        with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager, \
+             patch('vsclaude.vsclaude.ports.PortManager') as MockPortManager, \
+             patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager, \
+             patch('vsclaude.vsclaude.compose.generate') as mock_generate:
 
             # Configure config manager mock to use our temp directory
             mock_config = MagicMock()
@@ -80,7 +88,15 @@ def test_cli_with_global_environment():
 
 def test_cli_instance_overrides_global():
     """Test CLI instance environment overrides global settings"""
-    from vsclaude.cli import start_command
+    import sys
+
+    # Mock docker module before importing cli
+    mock_docker_module = type('MockDocker', (), {})
+    mock_docker_module.errors = type('MockDockerErrors', (), {})
+    sys.modules['docker'] = mock_docker_module
+    sys.modules['docker.errors'] = mock_docker_module.errors
+
+    from vsclaude.vsclaude.cli import start_command
 
     # Create a temporary directory for global config
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -112,10 +128,10 @@ def test_cli_instance_overrides_global():
         args.env_append = []
 
         # Mock dependencies
-        with patch('vsclaude.config.ConfigManager') as MockConfigManager, \
-             patch('vsclaude.ports.PortManager') as MockPortManager, \
-             patch('vsclaude.instances.InstanceManager') as MockInstanceManager, \
-             patch('vsclaude.compose.generate') as mock_generate:
+        with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager, \
+             patch('vsclaude.vsclaude.ports.PortManager') as MockPortManager, \
+             patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager, \
+             patch('vsclaude.vsclaude.compose.generate') as mock_generate:
 
             # Configure config manager mock to use our temp directory
             mock_config = MagicMock()
@@ -155,7 +171,15 @@ def test_cli_instance_overrides_global():
 
 def test_cli_merges_global_and_instance_environments():
     """Test that CLI merges global environment with instance-specific environment"""
-    from vsclaude.cli import start_command
+    import sys
+
+    # Mock docker module before importing cli
+    mock_docker_module = type('MockDocker', (), {})
+    mock_docker_module.errors = type('MockDockerErrors', (), {})
+    sys.modules['docker'] = mock_docker_module
+    sys.modules['docker.errors'] = mock_docker_module.errors
+
+    from vsclaude.vsclaude.cli import start_command
 
     # Create a temporary directory for global config
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -187,10 +211,10 @@ def test_cli_merges_global_and_instance_environments():
         args.env_append = []
 
         # Mock dependencies
-        with patch('vsclaude.config.ConfigManager') as MockConfigManager, \
-             patch('vsclaude.ports.PortManager') as MockPortManager, \
-             patch('vsclaude.instances.InstanceManager') as MockInstanceManager, \
-             patch('vsclaude.compose.generate') as mock_generate:
+        with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager, \
+             patch('vsclaude.vsclaude.ports.PortManager') as MockPortManager, \
+             patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager, \
+             patch('vsclaude.vsclaude.compose.generate') as mock_generate:
 
             # Configure config manager mock to use our temp directory
             mock_config = MagicMock()

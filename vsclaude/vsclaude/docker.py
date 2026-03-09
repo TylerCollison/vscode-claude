@@ -112,6 +112,10 @@ class DockerClient(DockerClientInterface):
             DockerSecurityError: If security constraints cannot be verified
         """
         self._max_retries = self.MAX_RETRY_ATTEMPTS
+
+        if docker is None:
+            raise DockerConnectionError("Docker module not available - cannot initialize Docker client")
+
         try:
             self.client = docker.from_env()
             # Verify Docker daemon is running and accessible

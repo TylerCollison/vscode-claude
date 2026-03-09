@@ -14,7 +14,7 @@ def test_cli_env_append_argument():
     import os
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-    from vsclaude.cli import main
+    from vsclaude.vsclaude.cli import main
     import argparse
 
     # Create parser identical to the one in main()
@@ -44,7 +44,7 @@ def test_env_append_functionality():
     import os
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-    from vsclaude.cli import start_command
+    from vsclaude.vsclaude.cli import start_command
 
     # Create mock arguments
     args = Mock()
@@ -55,10 +55,10 @@ def test_env_append_functionality():
     args.env_append = ["PATH=/custom/bin", "CUSTOM_VAR=appended_value"]
 
     # Mock dependencies using full module paths
-    with patch('vsclaude.config.ConfigManager') as MockConfigManager, \
-         patch('vsclaude.ports.PortManager') as MockPortManager, \
-         patch('vsclaude.instances.InstanceManager') as MockInstanceManager, \
-         patch('vsclaude.compose.generate') as mock_generate:
+    with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager, \
+         patch('vsclaude.vsclaude.ports.PortManager') as MockPortManager, \
+         patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager, \
+         patch('vsclaude.vsclaude.compose.generate') as mock_generate:
 
         # Configure config manager mock
         mock_config_manager = Mock()
@@ -120,7 +120,7 @@ def test_mixed_env_and_env_append():
     import os
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-    from vsclaude.cli import start_command
+    from vsclaude.vsclaude.cli import start_command
 
     # Mock args with both env and env_append
     args = Mock()
@@ -131,10 +131,10 @@ def test_mixed_env_and_env_append():
     args.env_append = ["PATH=/append/bin"]  # Try to append
 
     # Mock dependencies using full module paths
-    with patch('vsclaude.config.ConfigManager') as MockConfigManager, \
-         patch('vsclaude.ports.PortManager') as MockPortManager, \
-         patch('vsclaude.instances.InstanceManager') as MockInstanceManager, \
-         patch('vsclaude.compose.generate') as mock_generate:
+    with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager, \
+         patch('vsclaude.vsclaude.ports.PortManager') as MockPortManager, \
+         patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager, \
+         patch('vsclaude.vsclaude.compose.generate') as mock_generate:
 
         # Configure global config with existing PATH
         mock_config_manager = Mock()
@@ -191,7 +191,7 @@ def test_env_append_fallback():
     import os
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-    from vsclaude.cli import start_command
+    from vsclaude.vsclaude.cli import start_command
 
     # Mock args with env_append for non-existent global variable
     args = Mock()
@@ -202,10 +202,10 @@ def test_env_append_fallback():
     args.env_append = ["NEW_VAR=new_value"]
 
     # Mock dependencies using full module paths
-    with patch('vsclaude.config.ConfigManager') as MockConfigManager, \
-         patch('vsclaude.ports.PortManager') as MockPortManager, \
-         patch('vsclaude.instances.InstanceManager') as MockInstanceManager, \
-         patch('vsclaude.compose.generate') as mock_generate:
+    with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager, \
+         patch('vsclaude.vsclaude.ports.PortManager') as MockPortManager, \
+         patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager, \
+         patch('vsclaude.vsclaude.compose.generate') as mock_generate:
 
         # Configure global config without NEW_VAR
         mock_config_manager = Mock()
@@ -261,7 +261,7 @@ def test_mm_channel_priority_with_env_append():
     import os
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-    from vsclaude.cli import start_command
+    from vsclaude.vsclaude.cli import start_command
 
     # Scenario 1: Basic auto-population (no overrides)
     args = Mock()
@@ -272,10 +272,10 @@ def test_mm_channel_priority_with_env_append():
     args.env_append = []
 
     # Mock dependencies
-    with patch('vsclaude.config.ConfigManager') as MockConfigManager, \
-         patch('vsclaude.ports.PortManager') as MockPortManager, \
-         patch('vsclaude.instances.InstanceManager') as MockInstanceManager, \
-         patch('vsclaude.compose.generate') as mock_generate:
+    with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager, \
+         patch('vsclaude.vsclaude.ports.PortManager') as MockPortManager, \
+         patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager, \
+         patch('vsclaude.vsclaude.compose.generate') as mock_generate:
 
         # Configure global config without MM_CHANNEL
         mock_config_manager = Mock()
@@ -330,7 +330,7 @@ def test_mm_channel_cli_override_priority():
     import os
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-    from vsclaude.cli import start_command
+    from vsclaude.vsclaude.cli import start_command
 
     # Mock args with CLI MM_CHANNEL override
     args = Mock()
@@ -341,10 +341,10 @@ def test_mm_channel_cli_override_priority():
     args.env_append = []
 
     # Mock dependencies
-    with patch('vsclaude.config.ConfigManager') as MockConfigManager, \
-         patch('vsclaude.ports.PortManager') as MockPortManager, \
-         patch('vsclaude.instances.InstanceManager') as MockInstanceManager, \
-         patch('vsclaude.compose.generate') as mock_generate:
+    with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager, \
+         patch('vsclaude.vsclaude.ports.PortManager') as MockPortManager, \
+         patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager, \
+         patch('vsclaude.vsclaude.compose.generate') as mock_generate:
 
         # Configure global config without MM_CHANNEL
         mock_config_manager = Mock()
@@ -398,7 +398,7 @@ def test_mm_channel_global_config_priority():
     import os
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-    from vsclaude.cli import start_command
+    from vsclaude.vsclaude.cli import start_command
 
     # Mock args without MM_CHANNEL override
     args = Mock()
@@ -409,10 +409,10 @@ def test_mm_channel_global_config_priority():
     args.env_append = []
 
     # Mock dependencies
-    with patch('vsclaude.config.ConfigManager') as MockConfigManager, \
-         patch('vsclaude.ports.PortManager') as MockPortManager, \
-         patch('vsclaude.instances.InstanceManager') as MockInstanceManager, \
-         patch('vsclaude.compose.generate') as mock_generate:
+    with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager, \
+         patch('vsclaude.vsclaude.ports.PortManager') as MockPortManager, \
+         patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager, \
+         patch('vsclaude.vsclaude.compose.generate') as mock_generate:
 
         # Configure global config WITH MM_CHANNEL set
         mock_config_manager = Mock()
@@ -466,7 +466,7 @@ def test_mm_channel_with_env_append_isolation():
     import os
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-    from vsclaude.cli import start_command
+    from vsclaude.vsclaude.cli import start_command
 
     # Mock args with env-append for other variables but not MM_CHANNEL
     args = Mock()
@@ -477,10 +477,10 @@ def test_mm_channel_with_env_append_isolation():
     args.env_append = ["PATH=/custom/bin", "CUSTOM_VAR=custom_value"]
 
     # Mock dependencies
-    with patch('vsclaude.config.ConfigManager') as MockConfigManager, \
-         patch('vsclaude.ports.PortManager') as MockPortManager, \
-         patch('vsclaude.instances.InstanceManager') as MockInstanceManager, \
-         patch('vsclaude.compose.generate') as mock_generate:
+    with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager, \
+         patch('vsclaude.vsclaude.ports.PortManager') as MockPortManager, \
+         patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager, \
+         patch('vsclaude.vsclaude.compose.generate') as mock_generate:
 
         # Configure global config with PATH but without MM_CHANNEL
         mock_config_manager = Mock()
@@ -536,7 +536,7 @@ def test_mm_channel_priority_with_cli_and_env_append():
     import os
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-    from vsclaude.cli import start_command
+    from vsclaude.vsclaude.cli import start_command
 
     # Mock args with CLI MM_CHANNEL override AND env-append
     args = Mock()
@@ -547,10 +547,10 @@ def test_mm_channel_priority_with_cli_and_env_append():
     args.env_append = ["PATH=/custom/bin"]
 
     # Mock dependencies
-    with patch('vsclaude.config.ConfigManager') as MockConfigManager, \
-         patch('vsclaude.ports.PortManager') as MockPortManager, \
-         patch('vsclaude.instances.InstanceManager') as MockInstanceManager, \
-         patch('vsclaude.compose.generate') as mock_generate:
+    with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager, \
+         patch('vsclaude.vsclaude.ports.PortManager') as MockPortManager, \
+         patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager, \
+         patch('vsclaude.vsclaude.compose.generate') as mock_generate:
 
         # Configure global config WITH MM_CHANNEL set and PATH
         mock_config_manager = Mock()

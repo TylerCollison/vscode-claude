@@ -3,10 +3,10 @@ import json
 import docker.errors
 
 def start_command(args):
-    from vsclaude.config import ConfigManager
-    from vsclaude.ports import PortManager
-    from vsclaude.instances import InstanceManager
-    from vsclaude.compose import generate
+    from vsclaude.vsclaude.config import ConfigManager
+    from vsclaude.vsclaude.ports import PortManager
+    from vsclaude.vsclaude.instances import InstanceManager
+    from vsclaude.vsclaude.compose import generate
 
     config_manager = ConfigManager()
     global_config = config_manager.load_global_config()
@@ -118,7 +118,7 @@ def status_command(args):
 
 
 def stop_command(args):
-    from vsclaude.docker import DockerClient
+    from vsclaude.vsclaude.docker import DockerClient
 
     docker_client = DockerClient()
     container_name = f"vsclaude-{args.name}"

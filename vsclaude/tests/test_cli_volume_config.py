@@ -11,10 +11,10 @@ def test_cli_includes_volume_config():
     import os
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-    from vsclaude.cli import start_command
+    from vsclaude.vsclaude.cli import start_command
 
     # Mock the config to return custom volumes
-    with patch('vsclaude.config.ConfigManager') as MockConfigManager:
+    with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager:
         mock_manager = MockConfigManager.return_value
         mock_manager.load_global_config.return_value = {
             "port_range": {"min": 8000, "max": 9000},
@@ -27,8 +27,8 @@ def test_cli_includes_volume_config():
         mock_manager.format_ide_address.return_value = "http://localhost:8443"
 
         # Test that generate is called with correct volume parameters
-        with patch('vsclaude.compose.generate') as mock_generate:
-            with patch('vsclaude.instances.InstanceManager') as MockInstanceManager:
+        with patch('vsclaude.vsclaude.compose.generate') as mock_generate:
+            with patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager:
                 mock_instance_manager = MockInstanceManager.return_value
                 mock_instance_manager.create_instance_config.return_value = {}
 
