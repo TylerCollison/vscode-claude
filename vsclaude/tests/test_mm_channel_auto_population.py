@@ -21,6 +21,7 @@ class TestMMChannelAutoPopulation(unittest.TestCase):
         args.port_auto = False
         args.port = None
         args.env = []  # No MM_CHANNEL override
+        args.env_append = []  # Add env_append attribute
 
         with patch('vsclaude.config.ConfigManager') as MockConfigManager, \
              patch('vsclaude.ports.PortManager') as MockPortManager, \
@@ -65,6 +66,7 @@ class TestMMChannelAutoPopulation(unittest.TestCase):
         args.port_auto = False
         args.port = None
         args.env = ["MM_CHANNEL=custom-channel"]  # CLI override
+        args.env_append = []
 
         with patch('vsclaude.config.ConfigManager') as MockConfigManager, \
              patch('vsclaude.ports.PortManager') as MockPortManager, \
@@ -108,6 +110,7 @@ class TestMMChannelAutoPopulation(unittest.TestCase):
         args.port_auto = False
         args.port = None
         args.env = []  # No CLI override
+        args.env_append = []
 
         with patch('vsclaude.config.ConfigManager') as MockConfigManager, \
              patch('vsclaude.ports.PortManager') as MockPortManager, \
@@ -153,6 +156,7 @@ class TestMMChannelAutoPopulation(unittest.TestCase):
         args.port_auto = False
         args.port = None
         args.env = ["MM_CHANNEL=cli-channel"]  # CLI override
+        args.env_append = []
 
         with patch('vsclaude.config.ConfigManager') as MockConfigManager, \
              patch('vsclaude.ports.PortManager') as MockPortManager, \

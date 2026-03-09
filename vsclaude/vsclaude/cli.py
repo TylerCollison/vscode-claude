@@ -31,8 +31,27 @@ def start_command(args):
                 key, value = env_var.split('=', 1)
                 environment_vars[key] = value
 
-    # Merge global environment with instance-specific environment
+    # Process --env-append variables
+    append_environment_vars = {}
+    if hasattr(args, 'env_append') and args.env_append:
+        for env_var in args.env_append:
+            if '=' in env_var:
+                key, value = env_var.split('=', 1)
+                append_environment_vars[key] = value
+
+    # Get global environment
     global_environment = config_manager.get_global_environment()
+
+    # Apply append logic
+    for key, append_value in append_environment_vars.items():
+        if key in global_environment:
+            # Append to existing global value
+            global_environment[key] = global_environment[key] + append_value
+        else:
+            # Set as new variable if not in global config
+            global_environment[key] = append_value
+
+    # Then apply override logic (existing behavior)
     merged_environment = {**global_environment, **environment_vars}
 
     # Auto-populate MM_CHANNEL with instance name, respecting priority

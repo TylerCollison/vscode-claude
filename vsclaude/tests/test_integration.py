@@ -35,6 +35,7 @@ def test_cli_with_global_environment():
         args.port_auto = False
         args.port = None
         args.env = []  # Empty list - no instance env vars
+        args.env_append = []
 
         # Mock dependencies
         with patch('vsclaude.config.ConfigManager') as MockConfigManager, \
@@ -69,11 +70,12 @@ def test_cli_with_global_environment():
             # Extract environment from call arguments
             env_vars = call_args[0][2]
 
-            # Verify only global environment variables are present
+            # Verify only global environment variables are present plus MM_CHANNEL auto-population
             assert env_vars["GLOBAL_VAR_1"] == "global_value_1"
             assert env_vars["GLOBAL_VAR_2"] == "global_value_2"
             assert env_vars["SHARED_SETTING"] == "global_setting"
-            assert len(env_vars) == 3  # Should only have the 3 global variables
+            assert env_vars["MM_CHANNEL"] == "test-instance"  # Auto-populated from instance name
+            assert len(env_vars) == 4  # Should have the 3 global variables + MM_CHANNEL
 
 
 def test_cli_instance_overrides_global():
@@ -107,6 +109,7 @@ def test_cli_instance_overrides_global():
         args.port_auto = False
         args.port = None
         args.env = ["SHARED_VAR=instance_version", "INSTANCE_ONLY=instance_value"]
+        args.env_append = []
 
         # Mock dependencies
         with patch('vsclaude.config.ConfigManager') as MockConfigManager, \
@@ -146,7 +149,8 @@ def test_cli_instance_overrides_global():
             assert env_vars["INSTANCE_ONLY"] == "instance_value"  # Instance-only variable added
             assert env_vars["SHARED_VAR"] == "instance_version"  # Instance overrides global
             assert env_vars["ANOTHER_GLOBAL"] == "global_only"  # Another global variable remains
-            assert len(env_vars) == 4  # Should have all variables
+            assert env_vars["MM_CHANNEL"] == "test-instance"  # Auto-populated from instance name
+            assert len(env_vars) == 5  # Should have all variables + MM_CHANNEL
 
 
 def test_cli_merges_global_and_instance_environments():
@@ -180,6 +184,7 @@ def test_cli_merges_global_and_instance_environments():
         args.port_auto = False
         args.port = None
         args.env = ["INSTANCE_VAR=instance_value", "SHARED_VAR=instance_version"]
+        args.env_append = []
 
         # Mock dependencies
         with patch('vsclaude.config.ConfigManager') as MockConfigManager, \
