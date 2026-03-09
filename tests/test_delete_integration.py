@@ -80,8 +80,16 @@ class TestDeleteIntegration:
         instance_manager.create_instance_config(instance_name, 9090)
         assert instance_manager.instance_exists(instance_name) is True
 
-        # Mock Docker client that returns False for container operations
-        with patch('vsclaude.vsclaude.docker.DockerClient', MockDockerClient):
+        # Mock Docker client that simulates container not existing
+        with patch('vsclaude.vsclaude.docker.DockerClient') as mock_class:
+            mock_instance = Mock()
+            # Container doesn't exist initially
+            mock_instance.is_container_running.return_value = False
+            # When stop is called, it should return False because container wasn't running
+            mock_instance.stop_container.return_value = False
+            mock_instance.remove_container.return_value = False
+            mock_class.return_value = mock_instance
+
             result = instance_manager.delete_instance(instance_name)
 
         # Should succeed with config deletion
@@ -216,8 +224,10 @@ class TestDeleteIntegration:
 
         with patch('vsclaude.vsclaude.docker.DockerClient') as mock_class:
             mock_instance = Mock()
+            # Container doesn't exist initially
             mock_instance.is_container_running.return_value = False
-            mock_instance.stop_container.return_value = False
+            # Stop should not be called since container isn't running
+            mock_instance.stop_container.side_effect = AssertionError("stop_container should not be called")
             mock_instance.remove_container.return_value = False
             mock_class.return_value = mock_instance
 
@@ -226,7 +236,9 @@ class TestDeleteIntegration:
             # Verify DockerClient methods were called with correct container name
             expected_container_name = f"vsclaude-{instance_name}"
             mock_instance.is_container_running.assert_called_once_with(expected_container_name)
-            mock_instance.stop_container.assert_called_once_with(expected_container_name)
+            # stop_container should NOT be called since is_container_running returned False
+            mock_instance.stop_container.assert_not_called()
+            # remove_container should still be called for cleanup
             mock_instance.remove_container.assert_called_once_with(expected_container_name)
 
         assert result["config_deleted"] is True
