@@ -16,6 +16,10 @@ def test_env_append_integration():
     sys.modules['docker'] = mock_docker_module
     sys.modules['docker.errors'] = mock_docker_module.errors
 
+    # Add parent directory to Python path
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
     from vsclaude.vsclaude.cli import start_command
 
     # Create temporary global config
@@ -95,6 +99,10 @@ def test_env_append_fallback_integration():
     sys.modules['docker'] = mock_docker_module
     sys.modules['docker.errors'] = mock_docker_module.errors
 
+    # Add parent directory to Python path
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
     from vsclaude.vsclaude.cli import start_command
 
     # Create temporary global config
@@ -170,6 +178,10 @@ def test_env_append_complex_scenario_integration():
     mock_docker_module.errors = type('MockDockerErrors', (), {})
     sys.modules['docker'] = mock_docker_module
     sys.modules['docker.errors'] = mock_docker_module.errors
+
+    # Add parent directory to Python path
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
     from vsclaude.vsclaude.cli import start_command
 
