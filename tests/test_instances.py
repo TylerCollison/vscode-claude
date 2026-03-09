@@ -522,8 +522,10 @@ class TestInstanceManager:
         assert instance_manager.instance_exists(instance_name) == True
 
         # Test deletion using MockDockerClient
-        result = instance_manager.delete_instance(instance_name)
-        assert result["container_stopped"] == True
-        assert result["container_removed"] == True
-        assert result["config_deleted"] == True
-        assert instance_manager.instance_exists(instance_name) == False
+        from vsclaude.vsclaude.docker import MockDockerClient
+        with patch('vsclaude.vsclaude.docker.DockerClient', MockDockerClient):
+            result = instance_manager.delete_instance(instance_name)
+            assert result["container_stopped"] == True
+            assert result["container_removed"] == True
+            assert result["config_deleted"] == True
+            assert instance_manager.instance_exists(instance_name) == False
