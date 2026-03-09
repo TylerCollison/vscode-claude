@@ -55,6 +55,20 @@ class TestMockDockerClient:
         client = MockDockerClient()
         assert isinstance(client, DockerClientInterface)
 
+    def test_mock_client_remove_container_success(self):
+        """Test mock client can remove a container."""
+        client = MockDockerClient()
+        assert "test-container-1" in client.mock_containers
+        result = client.remove_container("test-container-1")
+        assert result is True
+        assert "test-container-1" not in client.mock_containers
+
+    def test_mock_client_remove_container_not_found(self):
+        """Test mock client returns False for non-existent container."""
+        client = MockDockerClient()
+        result = client.remove_container("non-existent-container")
+        assert result is False
+
     def test_mock_client_is_container_running_true(self):
         """Test mock client returns True for running container."""
         client = MockDockerClient()
@@ -446,3 +460,10 @@ class TestFactoryFunction:
 
         client = create_docker_client()
         assert client._max_retries == 3
+
+
+def test_remove_container_success():
+    """Test successful container removal"""
+    client = MockDockerClient()
+    assert client.remove_container("test-container-1") == True
+    assert "test-container-1" not in client.mock_containers

@@ -86,6 +86,18 @@ class DockerClientInterface(ABC):
         """
         pass
 
+    @abstractmethod
+    def remove_container(self, container_name: str) -> bool:
+        """Remove a Docker container.
+
+        Args:
+            container_name: The name of the container to remove
+
+        Returns:
+            bool: True if container was removed successfully, False if not found
+        """
+        pass
+
 
 class DockerClient(DockerClientInterface):
     """A secure Docker client for managing container operations.
@@ -367,6 +379,40 @@ class DockerClient(DockerClientInterface):
             except Exception as e:
                 raise DockerContainerError(f"Unexpected error stopping container: {e}") from e
 
+    def remove_container(self, container_name: str) -> bool:
+        """Remove a Docker container.
+
+        Args:
+            container_name: The name of the container to remove
+
+        Returns:
+            bool: True if container was removed successfully, False if not found
+
+        Raises:
+            DockerSecurityError: If container name validation fails
+            DockerConnectionError: If Docker daemon communication fails
+            DockerContainerError: If container operation encounters an error
+        """
+        self._validate_container_name(container_name)
+
+        for attempt in range(self._max_retries):
+            try:
+                container = self.client.containers.get(container_name)
+                container.remove()
+                return True
+            except docker.errors.NotFound:
+                return False
+            except docker.errors.APIError as e:
+                if attempt == self._max_retries - 1:
+                    raise DockerContainerError(
+                        f"Failed to remove container after {self._max_retries} attempts: {e}"
+                    ) from e
+                continue
+            except docker.errors.DockerException as e:
+                raise DockerConnectionError(f"Docker communication error: {e}") from e
+            except Exception as e:
+                raise DockerContainerError(f"Unexpected error removing container: {e}") from e
+
 
 def create_docker_client(max_retries: int = 3) -> DockerClient:
     """Factory function to create a Docker client with configurable retries.
@@ -485,3 +531,17 @@ class MockDockerClient(DockerClientInterface):
             self.mock_containers[container_name]['status'] = 'stopped'
             return True
         return False
+
+    def remove_container(self, container_name: str) -> bool:
+        """Mock implementation of container removal.
+
+        Args:
+            container_name: The name of the container to remove
+
+        Returns:
+            bool: True if container was removed successfully, False if not found
+        """
+        if container_name not in self.mock_containers:
+            return False
+        del self.mock_containers[container_name]
+        return True
