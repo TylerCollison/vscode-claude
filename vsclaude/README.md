@@ -125,6 +125,29 @@ vsclaude start my-project --port 8443 --env DEFAULT_THEME=light --env API_KEY="c
 vsclaude start my-project --env INSTANCE_ONLY_VAR="value"
 ```
 
+### Environment Variable Append Behavior
+
+vsclaude now supports `--env-append` for appending to existing global environment variables instead of overriding them.
+
+**Priority Order (Highest to Lowest):**
+1. **Override Environment**: Variables from `--env` (override everything)
+2. **Append Environment**: Variables from `--env-append` (appended to global if exists)
+3. **Global Environment**: Variables from global config
+4. **Auto-population**: MM_CHANNEL auto-population (fallback)
+
+**Examples:**
+
+```bash
+# Append to existing global PATH
+vsclaude start my-project --env-append PATH=/custom/bin
+
+# Mixed usage: override THEME, append to PATH
+vsclaude start my-project --env THEME=light --env-append PATH=/custom/bin
+
+# Fallback: set new variable when global doesn't exist
+vsclaude start my-project --env-append NEW_VAR=value
+```
+
 ### MM_CHANNEL Auto-population
 
 vsclaude automatically populates the `MM_CHANNEL` environment variable with the instance name, unless overridden by higher priority settings:
