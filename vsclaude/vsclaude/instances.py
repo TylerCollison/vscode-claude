@@ -487,8 +487,11 @@ class InstanceManager:
 
         Raises:
             InstanceValidationError: If instance name is invalid
+            InstanceSecurityError: If instance path is unsafe
+            FileNotFoundError: If instance does not exist
         """
-        from vsclaude.vsclaude.docker import MockDockerClient
+        # Validate input first
+        self._validate_instance_name(name)
 
         result = {
             "container_stopped": False,
@@ -497,7 +500,9 @@ class InstanceManager:
         }
 
         try:
-            docker_client = MockDockerClient()
+            # Use real DockerClient for production operations
+            from vsclaude.vsclaude.docker import DockerClient
+            docker_client = DockerClient()
             container_name = f"vsclaude-{name}"
 
             # Stop container if running
@@ -506,26 +511,36 @@ class InstanceManager:
                     docker_client.stop_container(container_name)
                     result["container_stopped"] = True
             except Exception:
-                pass  # Best effort - continue with deletion
+                # Best effort - container might not exist or Docker might not be available
+                pass  # Continue with deletion
 
             # Delete configuration
             try:
                 self.delete_instance_config(name)
                 result["config_deleted"] = True
-            except Exception:
-                pass  # Best effort - continue with container removal
+            except (FileNotFoundError, InstanceValidationError, InstanceSecurityError):
+                # Configuration deletion failed, but continue with container removal
+                pass
 
             # Remove container
             try:
                 if docker_client.remove_container(container_name):
                     result["container_removed"] = True
             except Exception:
-                pass  # Best effort - report partial success
+                # Best effort - container might not exist
+                pass  # Report partial success
 
             return result
 
-        except Exception as e:
-            # Return partial results if any operation succeeded
+        except Exception:
+            # Return partial results if Docker client initialization fails
+            # but still attempt configuration deletion
+            try:
+                self.delete_instance_config(name)
+                result["config_deleted"] = True
+            except Exception:
+                pass  # Best effort cleanup
+
             return result
 
     def list_instances(self) -> List[str]:
