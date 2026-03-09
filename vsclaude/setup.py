@@ -6,6 +6,7 @@ setup(
     packages=find_packages(),
     install_requires=[
         "docker>=6.0.0",
+        "pyyaml>=6.0.0",
     ],
     python_requires=">=3.8",
     entry_points={

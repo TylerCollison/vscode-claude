@@ -46,7 +46,6 @@ def generate(
     # Build environment variables
     environment = {
         "IDE_ADDRESS": f"http://localhost:{port}",
-        "PASSWORD": "password",  # Default, can be overridden
         "CCR_PROFILE": "default"  # Default, can be overridden
     }
     environment.update(environment_vars)
