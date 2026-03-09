@@ -5,7 +5,7 @@ using MockDockerClient for testing Docker operations.
 """
 
 import pytest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 from pathlib import Path
 from vsclaude.vsclaude.instances import InstanceManager
 from vsclaude.vsclaude.docker import MockDockerClient
