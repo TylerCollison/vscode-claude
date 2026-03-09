@@ -510,3 +510,20 @@ class TestInstanceManager:
         # List (should be empty)
         instances = instance_manager.list_instances()
         assert instances == []
+
+    # Instance transactional delete tests
+
+    def test_delete_instance_transactional(self, instance_manager):
+        """Test transactional instance deletion."""
+        instance_name = "test-delete-instance"
+
+        # Create test instance
+        instance_manager.create_instance_config(instance_name, 8080)
+        assert instance_manager.instance_exists(instance_name) == True
+
+        # Test deletion using MockDockerClient
+        result = instance_manager.delete_instance(instance_name)
+        assert result["container_stopped"] == True
+        assert result["container_removed"] == True
+        assert result["config_deleted"] == True
+        assert instance_manager.instance_exists(instance_name) == False

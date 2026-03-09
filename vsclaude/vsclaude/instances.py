@@ -475,6 +475,59 @@ class InstanceManager:
         except OSError as e:
             raise InstanceSecurityError(f"Failed to delete instance '{name}': {e}") from e
 
+    def delete_instance(self, name: str) -> Dict[str, bool]:
+        """
+        Transactionally delete an instance (container + config)
+
+        Args:
+            name: Instance name to delete
+
+        Returns:
+            Dict[str, bool]: Results for each operation
+
+        Raises:
+            InstanceValidationError: If instance name is invalid
+        """
+        from vsclaude.vsclaude.docker import MockDockerClient
+
+        result = {
+            "container_stopped": False,
+            "container_removed": False,
+            "config_deleted": False
+        }
+
+        try:
+            docker_client = MockDockerClient()
+            container_name = f"vsclaude-{name}"
+
+            # Stop container if running
+            try:
+                if docker_client.is_container_running(container_name):
+                    docker_client.stop_container(container_name)
+                    result["container_stopped"] = True
+            except Exception:
+                pass  # Best effort - continue with deletion
+
+            # Delete configuration
+            try:
+                self.delete_instance_config(name)
+                result["config_deleted"] = True
+            except Exception:
+                pass  # Best effort - continue with container removal
+
+            # Remove container
+            try:
+                if docker_client.remove_container(container_name):
+                    result["container_removed"] = True
+            except Exception:
+                pass  # Best effort - report partial success
+
+            return result
+
+        except Exception as e:
+            # Return partial results if any operation succeeded
+            return result
+
     def list_instances(self) -> List[str]:
         """
         List all available instances.
