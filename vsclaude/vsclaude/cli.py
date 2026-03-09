@@ -1,12 +1,13 @@
 import argparse
 import json
 import docker.errors
+import yaml
 
 def start_command(args):
-    from vsclaude.vsclaude.config import ConfigManager
-    from vsclaude.vsclaude.ports import PortManager
-    from vsclaude.vsclaude.instances import InstanceManager
-    from vsclaude.vsclaude.compose import generate
+    from vsclaude.config import ConfigManager
+    from vsclaude.ports import PortManager
+    from vsclaude.instances import InstanceManager
+    from vsclaude.compose import generate
 
     config_manager = ConfigManager()
     global_config = config_manager.load_global_config()
@@ -77,6 +78,34 @@ def start_command(args):
         include_docker_sock=include_docker_sock
     )
 
+    # Start the container using Docker SDK
+    from vsclaude.docker import DockerClient
+
+    docker_client = DockerClient()
+    container_name = f"vsclaude-{args.name}"
+
+    # Create container from compose configuration
+    try:
+        # Extract service configuration
+        service_config = compose_config["services"]["vscode-claude"]
+
+        # Create container
+        container = docker_client.client.containers.create(
+            image=service_config["image"],
+            name=container_name,
+            ports={service_config["ports"][0].split(":")[1]: service_config["ports"][0].split(":")[0]},
+            environment={env.split("=", 1)[0]: env.split("=", 1)[1] for env in service_config["environment"]},
+            volumes=service_config["volumes"],
+            detach=True
+        )
+
+        # Start container
+        container.start()
+        print(f"Container '{container_name}' started successfully")
+
+    except Exception as e:
+        print(f"Failed to start container: {e}")
+
     # Get IDE address using template
     ide_address = config_manager.format_ide_address(port)
 
@@ -118,7 +147,7 @@ def status_command(args):
 
 
 def stop_command(args):
-    from vsclaude.vsclaude.docker import DockerClient
+    from vsclaude.docker import DockerClient
 
     docker_client = DockerClient()
     container_name = f"vsclaude-{args.name}"
