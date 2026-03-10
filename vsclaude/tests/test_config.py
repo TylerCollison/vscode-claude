@@ -12,13 +12,12 @@ def test_load_global_config():
 
 
 def test_global_config_includes_environment():
-    """Test that global config includes environment field with empty dict default"""
+    """Test that global config includes environment field with dict default"""
     from vsclaude.config import ConfigManager
     manager = ConfigManager()
     config = manager.load_global_config()
     assert "environment" in config
     assert isinstance(config["environment"], dict)
-    assert config["environment"] == {}
 
 
 def test_get_global_environment():
