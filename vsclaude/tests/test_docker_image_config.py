@@ -12,8 +12,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'vsclaude'))
 
 def test_config_manager_default_image():
     """Test ConfigManager default image configuration"""
-    from vsclaude.config import ConfigManager
-    from vsclaude.compose import generate
+    from vsclaude.vsclaude.config import ConfigManager
+    from vsclaude.vsclaude.compose import generate
 
     # Use temporary directory to avoid conflicts
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -45,7 +45,7 @@ def test_config_manager_default_image():
 
 def test_compose_generate_with_custom_image():
     """Test compose.generate() with custom image parameters"""
-    from vsclaude.compose import generate
+    from vsclaude.vsclaude.compose import generate
 
     # Test full image string
     config = generate(
@@ -97,7 +97,7 @@ def test_cli_image_flag_integration():
     mock_yaml = MagicMock()
     sys.modules['yaml'] = mock_yaml
 
-    from vsclaude.cli import start_command
+    from vsclaude.vsclaude.cli import start_command
 
     # Test argument parsing
     parser = argparse.ArgumentParser()
@@ -171,7 +171,7 @@ def test_cli_image_flag_integration():
 
 def test_backward_compatibility():
     """Test that existing functionality continues to work"""
-    from vsclaude.compose import generate
+    from vsclaude.vsclaude.compose import generate
 
     # Test default behavior (no image_name parameter)
     config = generate(
@@ -234,8 +234,8 @@ def test_image_parsing_logic():
 
 def test_end_to_end_flow():
     """Test complete end-to-end flow"""
-    from vsclaude.config import ConfigManager
-    from vsclaude.compose import generate
+    from vsclaude.vsclaude.config import ConfigManager
+    from vsclaude.vsclaude.compose import generate
     import tempfile
 
     # Use temporary directory
