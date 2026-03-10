@@ -1,8 +1,12 @@
 """Pytest configuration file for vsclaude tests."""
 import sys
+import os
 
 def pytest_configure(config):
     """Mock docker module before tests run."""
+    # Add module path
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'vsclaude'))
+
     # Create a mock docker module
     mock_docker_module = type('MockDocker', (), {})
     mock_docker_module.errors = type('MockDockerErrors', (), {})

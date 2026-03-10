@@ -16,14 +16,14 @@ def start_command(args):
     Args:
         args: Command line arguments including:
             - name: Instance name
-            - port/port_auto: Port configuration
+            - port: Port number
             - env/env_append: Environment variables
             - image: Custom Docker image (optional)
     """
-    from vsclaude.config import ConfigManager
-    from vsclaude.ports import PortManager
-    from vsclaude.instances import InstanceManager
-    from vsclaude.compose import generate, _validate_image_name
+    from .config import ConfigManager
+    from .ports import PortManager
+    from .instances import InstanceManager
+    from .compose import generate, _validate_image_name
 
     config_manager = ConfigManager()
     global_config = config_manager.load_global_config()
@@ -120,7 +120,7 @@ def start_command(args):
     )
 
     # Start the container using Docker SDK
-    from vsclaude.docker import DockerClient
+    from .docker import DockerClient
 
     docker_client = DockerClient()
     container_name = f"vsclaude-{args.name}"
@@ -166,9 +166,9 @@ def status_command(args):
     Args:
         args: Command line arguments (no specific args needed)
     """
-    from vsclaude.instances import InstanceManager
-    from vsclaude.docker import DockerClient
-    from vsclaude.config import ConfigManager
+    from .instances import InstanceManager
+    from .docker import DockerClient
+    from .config import ConfigManager
     import json
 
     instance_manager = InstanceManager()
@@ -205,7 +205,7 @@ def stop_command(args):
         args: Command line arguments including:
             - name: Instance name to stop
     """
-    from vsclaude.docker import DockerClient
+    from .docker import DockerClient
 
     docker_client = DockerClient()
     container_name = f"vsclaude-{args.name}"
@@ -229,7 +229,7 @@ def delete_command(args):
         args: Command line arguments including:
             - name: Instance name to delete
     """
-    from vsclaude.instances import InstanceManager
+    from .instances import InstanceManager
 
     instance_manager = InstanceManager()
 

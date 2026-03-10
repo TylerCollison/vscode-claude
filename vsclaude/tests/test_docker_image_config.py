@@ -7,13 +7,13 @@ import os
 import sys
 
 # Add module path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'vsclaude'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 
 def test_config_manager_default_image():
     """Test ConfigManager default image configuration"""
-    from vsclaude.config import ConfigManager
-    from vsclaude.compose import generate
+    from vsclaude.vsclaude.config import ConfigManager
+    from vsclaude.vsclaude.compose import generate
 
     # Use temporary directory to avoid conflicts
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -45,7 +45,7 @@ def test_config_manager_default_image():
 
 def test_compose_generate_with_custom_image():
     """Test compose.generate() with custom image parameters"""
-    from vsclaude.compose import generate
+    from vsclaude.vsclaude.compose import generate
 
     # Test full image string
     config = generate(
@@ -97,14 +97,13 @@ def test_cli_image_flag_integration():
     mock_yaml = MagicMock()
     sys.modules['yaml'] = mock_yaml
 
-    from vsclaude.cli import start_command
+    from vsclaude.vsclaude.cli import start_command
 
     # Test argument parsing
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command")
     start_parser = subparsers.add_parser("start")
     start_parser.add_argument("name")
-    start_parser.add_argument("--port-auto", action="store_true")
     start_parser.add_argument("--port", type=int)
     start_parser.add_argument("--env", action="append")
     start_parser.add_argument("--env-append", action="append")
@@ -119,11 +118,11 @@ def test_cli_image_flag_integration():
     assert args2.image is None
 
     # Mock dependencies and test start_command integration
-    with patch('vsclaude.config.ConfigManager', create=True) as MockConfigManager, \
-         patch('vsclaude.ports.PortManager', create=True) as MockPortManager, \
-         patch('vsclaude.instances.InstanceManager', create=True) as MockInstanceManager, \
-         patch('vsclaude.compose.generate') as mock_generate, \
-         patch('vsclaude.docker.DockerClient', create=True) as MockDockerClient:
+    with patch('vsclaude.vsclaude.config.ConfigManager', create=True) as MockConfigManager, \
+         patch('vsclaude.vsclaude.ports.PortManager', create=True) as MockPortManager, \
+         patch('vsclaude.vsclaude.instances.InstanceManager', create=True) as MockInstanceManager, \
+         patch('vsclaude.vsclaude.compose.generate') as mock_generate, \
+         patch('vsclaude.vsclaude.docker.DockerClient', create=True) as MockDockerClient:
 
         # Setup mocks
         mock_config_manager = MockConfigManager.return_value
@@ -170,7 +169,7 @@ def test_cli_image_flag_integration():
 
 def test_backward_compatibility():
     """Test that existing functionality continues to work"""
-    from vsclaude.compose import generate
+    from vsclaude.vsclaude.compose import generate
 
     # Test default behavior (no image_name parameter)
     config = generate(
@@ -233,8 +232,8 @@ def test_image_parsing_logic():
 
 def test_end_to_end_flow():
     """Test complete end-to-end flow"""
-    from vsclaude.config import ConfigManager
-    from vsclaude.compose import generate
+    from vsclaude.vsclaude.config import ConfigManager
+    from vsclaude.vsclaude.compose import generate
     import tempfile
 
     # Use temporary directory

@@ -22,7 +22,6 @@ def test_cli_env_append_argument():
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
     start_parser = subparsers.add_parser("start", help="Start a new instance")
     start_parser.add_argument("name", help="Instance name")
-    start_parser.add_argument("--port-auto", action="store_true", help="Auto-allocate port")
     start_parser.add_argument("--port", type=int, help="Specific port number")
     start_parser.add_argument("--env", action="append", help="Environment variable (key=value)")
     start_parser.add_argument("--env-append", action="append", help="Environment variable to append to global config (key=value)")
@@ -52,12 +51,14 @@ def test_env_append_functionality():
     args.port = 8080
     args.env = []
     args.env_append = ["PATH=/custom/bin", "CUSTOM_VAR=appended_value"]
+    args.image = None
 
     # Mock dependencies using full module paths
     with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager, \
          patch('vsclaude.vsclaude.ports.PortManager') as MockPortManager, \
          patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager, \
-         patch('vsclaude.vsclaude.compose.generate') as mock_generate:
+         patch('vsclaude.vsclaude.compose.generate') as mock_generate, \
+         patch('vsclaude.vsclaude.docker.DockerClient') as MockDockerClient:
 
         # Configure config manager mock
         mock_config_manager = Mock()
@@ -72,6 +73,7 @@ def test_env_append_functionality():
         mock_config_manager.get_enabled_volumes.return_value = []
         mock_config_manager.get_include_docker_sock.return_value = False
         mock_config_manager.format_ide_address.return_value = "http://localhost:8080"
+        mock_config_manager.get_default_image.return_value = "tylercollison2089/vscode-claude:latest"
         MockConfigManager.return_value = mock_config_manager
 
         # Configure instance manager mock
@@ -83,6 +85,12 @@ def test_env_append_functionality():
         mock_port_manager = Mock()
         mock_port_manager.find_available_port.return_value = 8080
         MockPortManager.return_value = mock_port_manager
+
+        # Configure Docker client mock
+        mock_docker_client = Mock()
+        mock_container = Mock()
+        mock_docker_client.client.containers.create.return_value = mock_container
+        MockDockerClient.return_value = mock_docker_client
 
         # Configure compose generate mock
         mock_generate.return_value = {"services": {"claude": {"environment": {}}}}
@@ -127,12 +135,14 @@ def test_mixed_env_and_env_append():
     args.port = 8080
     args.env = ["THEME=light", "PATH=/override/bin"]  # Override PATH
     args.env_append = ["PATH=/append/bin"]  # Try to append
+    args.image = None
 
     # Mock dependencies using full module paths
     with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager, \
          patch('vsclaude.vsclaude.ports.PortManager') as MockPortManager, \
          patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager, \
-         patch('vsclaude.vsclaude.compose.generate') as mock_generate:
+         patch('vsclaude.vsclaude.compose.generate') as mock_generate, \
+         patch('vsclaude.vsclaude.docker.DockerClient') as MockDockerClient:
 
         # Configure global config with existing PATH
         mock_config_manager = Mock()
@@ -147,6 +157,7 @@ def test_mixed_env_and_env_append():
         mock_config_manager.get_enabled_volumes.return_value = []
         mock_config_manager.get_include_docker_sock.return_value = False
         mock_config_manager.format_ide_address.return_value = "http://localhost:8080"
+        mock_config_manager.get_default_image.return_value = "tylercollison2089/vscode-claude:latest"
         MockConfigManager.return_value = mock_config_manager
 
         # Configure instance manager mock
@@ -158,6 +169,12 @@ def test_mixed_env_and_env_append():
         mock_port_manager = Mock()
         mock_port_manager.find_available_port.return_value = 8080
         MockPortManager.return_value = mock_port_manager
+
+        # Configure Docker client mock
+        mock_docker_client = Mock()
+        mock_container = Mock()
+        mock_docker_client.client.containers.create.return_value = mock_container
+        MockDockerClient.return_value = mock_docker_client
 
         # Configure compose generate mock
         mock_generate.return_value = {"services": {"claude": {"environment": {}}}}
@@ -197,12 +214,14 @@ def test_env_append_fallback():
     args.port = 8080
     args.env = []
     args.env_append = ["NEW_VAR=new_value"]
+    args.image = None
 
     # Mock dependencies using full module paths
     with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager, \
          patch('vsclaude.vsclaude.ports.PortManager') as MockPortManager, \
          patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager, \
-         patch('vsclaude.vsclaude.compose.generate') as mock_generate:
+         patch('vsclaude.vsclaude.compose.generate') as mock_generate, \
+         patch('vsclaude.vsclaude.docker.DockerClient') as MockDockerClient:
 
         # Configure global config without NEW_VAR
         mock_config_manager = Mock()
@@ -214,6 +233,7 @@ def test_env_append_fallback():
         mock_config_manager.get_enabled_volumes.return_value = []
         mock_config_manager.get_include_docker_sock.return_value = False
         mock_config_manager.format_ide_address.return_value = "http://localhost:8080"
+        mock_config_manager.get_default_image.return_value = "tylercollison2089/vscode-claude:latest"
         MockConfigManager.return_value = mock_config_manager
 
         # Configure instance manager mock
@@ -225,6 +245,12 @@ def test_env_append_fallback():
         mock_port_manager = Mock()
         mock_port_manager.find_available_port.return_value = 8080
         MockPortManager.return_value = mock_port_manager
+
+        # Configure Docker client mock
+        mock_docker_client = Mock()
+        mock_container = Mock()
+        mock_docker_client.client.containers.create.return_value = mock_container
+        MockDockerClient.return_value = mock_docker_client
 
         # Configure compose generate mock
         mock_generate.return_value = {"services": {"claude": {"environment": {}}}}
@@ -266,12 +292,14 @@ def test_mm_channel_priority_with_env_append():
     args.port = None
     args.env = []
     args.env_append = []
+    args.image = None
 
     # Mock dependencies
     with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager, \
          patch('vsclaude.vsclaude.ports.PortManager') as MockPortManager, \
          patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager, \
-         patch('vsclaude.vsclaude.compose.generate') as mock_generate:
+         patch('vsclaude.vsclaude.compose.generate') as mock_generate, \
+         patch('vsclaude.vsclaude.docker.DockerClient') as MockDockerClient:
 
         # Configure global config without MM_CHANNEL
         mock_config_manager = Mock()
@@ -283,6 +311,7 @@ def test_mm_channel_priority_with_env_append():
         mock_config_manager.get_enabled_volumes.return_value = []
         mock_config_manager.get_include_docker_sock.return_value = False
         mock_config_manager.format_ide_address.return_value = "http://localhost:8080"
+        mock_config_manager.get_default_image.return_value = "tylercollison2089/vscode-claude:latest"
         MockConfigManager.return_value = mock_config_manager
 
         # Configure instance manager mock
@@ -294,6 +323,12 @@ def test_mm_channel_priority_with_env_append():
         mock_port_manager = Mock()
         mock_port_manager.find_available_port.return_value = 8080
         MockPortManager.return_value = mock_port_manager
+
+        # Configure Docker client mock
+        mock_docker_client = Mock()
+        mock_container = Mock()
+        mock_docker_client.client.containers.create.return_value = mock_container
+        MockDockerClient.return_value = mock_docker_client
 
         # Configure compose generate mock
         mock_generate.return_value = {"services": {"claude": {"environment": {}}}}
@@ -334,12 +369,14 @@ def test_mm_channel_cli_override_priority():
     args.port = None
     args.env = ["MM_CHANNEL=custom-channel"]
     args.env_append = []
+    args.image = None
 
     # Mock dependencies
     with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager, \
          patch('vsclaude.vsclaude.ports.PortManager') as MockPortManager, \
          patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager, \
-         patch('vsclaude.vsclaude.compose.generate') as mock_generate:
+         patch('vsclaude.vsclaude.compose.generate') as mock_generate, \
+         patch('vsclaude.vsclaude.docker.DockerClient') as MockDockerClient:
 
         # Configure global config without MM_CHANNEL
         mock_config_manager = Mock()
@@ -351,6 +388,7 @@ def test_mm_channel_cli_override_priority():
         mock_config_manager.get_enabled_volumes.return_value = []
         mock_config_manager.get_include_docker_sock.return_value = False
         mock_config_manager.format_ide_address.return_value = "http://localhost:8080"
+        mock_config_manager.get_default_image.return_value = "tylercollison2089/vscode-claude:latest"
         MockConfigManager.return_value = mock_config_manager
 
         # Configure instance manager mock
@@ -362,6 +400,12 @@ def test_mm_channel_cli_override_priority():
         mock_port_manager = Mock()
         mock_port_manager.find_available_port.return_value = 8080
         MockPortManager.return_value = mock_port_manager
+
+        # Configure Docker client mock
+        mock_docker_client = Mock()
+        mock_container = Mock()
+        mock_docker_client.client.containers.create.return_value = mock_container
+        MockDockerClient.return_value = mock_docker_client
 
         # Configure compose generate mock
         mock_generate.return_value = {"services": {"claude": {"environment": {}}}}
@@ -401,12 +445,14 @@ def test_mm_channel_global_config_priority():
     args.port = None
     args.env = []
     args.env_append = []
+    args.image = None
 
     # Mock dependencies
     with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager, \
          patch('vsclaude.vsclaude.ports.PortManager') as MockPortManager, \
          patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager, \
-         patch('vsclaude.vsclaude.compose.generate') as mock_generate:
+         patch('vsclaude.vsclaude.compose.generate') as mock_generate, \
+         patch('vsclaude.vsclaude.docker.DockerClient') as MockDockerClient:
 
         # Configure global config WITH MM_CHANNEL set
         mock_config_manager = Mock()
@@ -418,6 +464,7 @@ def test_mm_channel_global_config_priority():
         mock_config_manager.get_enabled_volumes.return_value = []
         mock_config_manager.get_include_docker_sock.return_value = False
         mock_config_manager.format_ide_address.return_value = "http://localhost:8080"
+        mock_config_manager.get_default_image.return_value = "tylercollison2089/vscode-claude:latest"
         MockConfigManager.return_value = mock_config_manager
 
         # Configure instance manager mock
@@ -429,6 +476,12 @@ def test_mm_channel_global_config_priority():
         mock_port_manager = Mock()
         mock_port_manager.find_available_port.return_value = 8080
         MockPortManager.return_value = mock_port_manager
+
+        # Configure Docker client mock
+        mock_docker_client = Mock()
+        mock_container = Mock()
+        mock_docker_client.client.containers.create.return_value = mock_container
+        MockDockerClient.return_value = mock_docker_client
 
         # Configure compose generate mock
         mock_generate.return_value = {"services": {"claude": {"environment": {}}}}
@@ -468,12 +521,14 @@ def test_mm_channel_with_env_append_isolation():
     args.port = None
     args.env = []
     args.env_append = ["PATH=/custom/bin", "CUSTOM_VAR=custom_value"]
+    args.image = None
 
     # Mock dependencies
     with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager, \
          patch('vsclaude.vsclaude.ports.PortManager') as MockPortManager, \
          patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager, \
-         patch('vsclaude.vsclaude.compose.generate') as mock_generate:
+         patch('vsclaude.vsclaude.compose.generate') as mock_generate, \
+         patch('vsclaude.vsclaude.docker.DockerClient') as MockDockerClient:
 
         # Configure global config with PATH but without MM_CHANNEL
         mock_config_manager = Mock()
@@ -485,6 +540,7 @@ def test_mm_channel_with_env_append_isolation():
         mock_config_manager.get_enabled_volumes.return_value = []
         mock_config_manager.get_include_docker_sock.return_value = False
         mock_config_manager.format_ide_address.return_value = "http://localhost:8080"
+        mock_config_manager.get_default_image.return_value = "tylercollison2089/vscode-claude:latest"
         MockConfigManager.return_value = mock_config_manager
 
         # Configure instance manager mock
@@ -496,6 +552,12 @@ def test_mm_channel_with_env_append_isolation():
         mock_port_manager = Mock()
         mock_port_manager.find_available_port.return_value = 8080
         MockPortManager.return_value = mock_port_manager
+
+        # Configure Docker client mock
+        mock_docker_client = Mock()
+        mock_container = Mock()
+        mock_docker_client.client.containers.create.return_value = mock_container
+        MockDockerClient.return_value = mock_docker_client
 
         # Configure compose generate mock
         mock_generate.return_value = {"services": {"claude": {"environment": {}}}}
@@ -537,12 +599,14 @@ def test_mm_channel_priority_with_cli_and_env_append():
     args.port = None
     args.env = ["MM_CHANNEL=cli-override"]
     args.env_append = ["PATH=/custom/bin"]
+    args.image = None
 
     # Mock dependencies
     with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager, \
          patch('vsclaude.vsclaude.ports.PortManager') as MockPortManager, \
          patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager, \
-         patch('vsclaude.vsclaude.compose.generate') as mock_generate:
+         patch('vsclaude.vsclaude.compose.generate') as mock_generate, \
+         patch('vsclaude.vsclaude.docker.DockerClient') as MockDockerClient:
 
         # Configure global config WITH MM_CHANNEL set and PATH
         mock_config_manager = Mock()
@@ -554,6 +618,7 @@ def test_mm_channel_priority_with_cli_and_env_append():
         mock_config_manager.get_enabled_volumes.return_value = []
         mock_config_manager.get_include_docker_sock.return_value = False
         mock_config_manager.format_ide_address.return_value = "http://localhost:8080"
+        mock_config_manager.get_default_image.return_value = "tylercollison2089/vscode-claude:latest"
         MockConfigManager.return_value = mock_config_manager
 
         # Configure instance manager mock
@@ -565,6 +630,12 @@ def test_mm_channel_priority_with_cli_and_env_append():
         mock_port_manager = Mock()
         mock_port_manager.find_available_port.return_value = 8080
         MockPortManager.return_value = mock_port_manager
+
+        # Configure Docker client mock
+        mock_docker_client = Mock()
+        mock_container = Mock()
+        mock_docker_client.client.containers.create.return_value = mock_container
+        MockDockerClient.return_value = mock_docker_client
 
         # Configure compose generate mock
         mock_generate.return_value = {"services": {"claude": {"environment": {}}}}

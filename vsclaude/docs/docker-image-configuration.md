@@ -72,7 +72,7 @@ Edit `~/.vsclaude/global-config.json`:
 vsclaude start my-instance --image custom-registry/vscode-claude:dev
 
 # Use global default
-vsclaude start my-instance --port-auto
+vsclaude start my-instance
 
 # Use specific tag of default image (backward compatible)
 vsclaude start my-instance --image tylercollison2089/vscode-claude:stable
