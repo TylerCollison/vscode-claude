@@ -20,10 +20,10 @@ def start_command(args):
             - env/env_append: Environment variables
             - image: Custom Docker image (optional)
     """
-    from vsclaude.config import ConfigManager
-    from vsclaude.ports import PortManager
-    from vsclaude.instances import InstanceManager
-    from vsclaude.compose import generate, _validate_image_name
+    from vsclaude.vsclaude.config import ConfigManager
+    from vsclaude.vsclaude.ports import PortManager
+    from vsclaude.vsclaude.instances import InstanceManager
+    from vsclaude.vsclaude.compose import generate, _validate_image_name
 
     config_manager = ConfigManager()
     global_config = config_manager.load_global_config()
@@ -122,7 +122,7 @@ def start_command(args):
     )
 
     # Start the container using Docker SDK
-    from vsclaude.docker import DockerClient
+    from vsclaude.vsclaude.docker import DockerClient
 
     docker_client = DockerClient()
     container_name = f"vsclaude-{args.name}"

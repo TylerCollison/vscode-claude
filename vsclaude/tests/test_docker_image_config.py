@@ -119,11 +119,11 @@ def test_cli_image_flag_integration():
     assert args2.image is None
 
     # Mock dependencies and test start_command integration
-    with patch('vsclaude.config.ConfigManager', create=True) as MockConfigManager, \
-         patch('vsclaude.ports.PortManager', create=True) as MockPortManager, \
-         patch('vsclaude.instances.InstanceManager', create=True) as MockInstanceManager, \
-         patch('vsclaude.compose.generate') as mock_generate, \
-         patch('vsclaude.docker.DockerClient', create=True) as MockDockerClient:
+    with patch('vsclaude.vsclaude.config.ConfigManager', create=True) as MockConfigManager, \
+         patch('vsclaude.vsclaude.ports.PortManager', create=True) as MockPortManager, \
+         patch('vsclaude.vsclaude.instances.InstanceManager', create=True) as MockInstanceManager, \
+         patch('vsclaude.vsclaude.compose.generate') as mock_generate, \
+         patch('vsclaude.vsclaude.docker.DockerClient', create=True) as MockDockerClient:
 
         # Setup mocks
         mock_config_manager = MockConfigManager.return_value
