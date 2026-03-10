@@ -33,12 +33,10 @@ def start_command(args):
         max_port=global_config["port_range"]["max"]
     )
 
-    if args.port_auto:
-        port = port_manager.find_available_port()
-    elif args.port:
+    if args.port:
         port = args.port
     else:
-        port = global_config["port_range"]["min"]
+        port = port_manager.find_available_port()
 
     # Collect environment variables from command line
     environment_vars = {}
@@ -276,7 +274,6 @@ def main():
     # Start command
     start_parser = subparsers.add_parser("start", help="Start a new instance")
     start_parser.add_argument("name", help="Instance name")
-    start_parser.add_argument("--port-auto", action="store_true", help="Auto-allocate port")
     start_parser.add_argument("--port", type=int, help="Specific port number")
     start_parser.add_argument("--env", action="append", help="Environment variable (key=value)")
     start_parser.add_argument("--env-append", action="append", help="Environment variable to append to global config (key=value)")
