@@ -1,13 +1,29 @@
 import argparse
 import json
 import docker.errors
-import yaml
 
 def start_command(args):
+    """
+    Start a new VS Code + Claude Docker instance.
+
+    This command handles instance creation with optional custom Docker image support.
+    Image handling flow:
+    1. If --image flag is provided, parse and validate the image name
+    2. If no --image flag, use default image from ConfigManager
+    3. Validate image name format using _validate_image_name()
+    4. Pass validated image parameters to compose generation
+
+    Args:
+        args: Command line arguments including:
+            - name: Instance name
+            - port/port_auto: Port configuration
+            - env/env_append: Environment variables
+            - image: Custom Docker image (optional)
+    """
     from vsclaude.config import ConfigManager
     from vsclaude.ports import PortManager
     from vsclaude.instances import InstanceManager
-    from vsclaude.compose import generate
+    from vsclaude.compose import generate, _validate_image_name
 
     config_manager = ConfigManager()
     global_config = config_manager.load_global_config()
@@ -70,10 +86,37 @@ def start_command(args):
     enabled_volumes = config_manager.get_enabled_volumes()
     include_docker_sock = config_manager.get_include_docker_sock()
 
+    # Docker image handling: Support for custom images via --image flag
+    # Priority: --image flag > ConfigManager default image
+    image_name = None
+    image_tag = None
+
+    if args.image:
+        # Parse custom image provided via --image flag
+        # Expected format: "repository/image:tag" or "image:tag" or "image"
+        if ':' in args.image:
+            image_name, image_tag = args.image.rsplit(':', 1)
+        else:
+            image_name = args.image
+            image_tag = "latest"
+
+        # Validate the image name format before using it
+        _validate_image_name(image_name)
+    else:
+        # Use default image from ConfigManager when --image flag is not provided
+        default_image = config_manager.get_default_image()
+        if ':' in default_image:
+            image_name, image_tag = default_image.rsplit(':', 1)
+        else:
+            image_name = default_image
+            image_tag = "latest"
+
     compose_config = generate(
         args.name,
         port,
         merged_environment,
+        image_name=image_name if image_name else None,
+        image_tag=image_tag if image_tag else "latest",
         enabled_volumes=enabled_volumes,
         include_docker_sock=include_docker_sock
     )
@@ -116,6 +159,15 @@ def start_command(args):
 
 
 def status_command(args):
+    """
+    Show status of all VS Code + Claude Docker instances.
+
+    This command lists all configured instances, their running status,
+    and IDE access URLs.
+
+    Args:
+        args: Command line arguments (no specific args needed)
+    """
     from vsclaude.instances import InstanceManager
     from vsclaude.docker import DockerClient
     from vsclaude.config import ConfigManager
@@ -131,6 +183,7 @@ def status_command(args):
         print("No instances configured")
         return
 
+    # Iterate through all instance directories
     for instance_dir in instances_dir.iterdir():
         if instance_dir.is_dir():
             config_file = instance_dir / "config.json"
@@ -147,6 +200,13 @@ def status_command(args):
 
 
 def stop_command(args):
+    """
+    Stop a running VS Code + Claude Docker instance.
+
+    Args:
+        args: Command line arguments including:
+            - name: Instance name to stop
+    """
     from vsclaude.docker import DockerClient
 
     docker_client = DockerClient()
@@ -161,6 +221,16 @@ def stop_command(args):
 
 
 def delete_command(args):
+    """
+    Delete a VS Code + Claude Docker instance and its configuration.
+
+    This command stops the container (if running), removes the container,
+    and deletes the instance configuration.
+
+    Args:
+        args: Command line arguments including:
+            - name: Instance name to delete
+    """
     from vsclaude.instances import InstanceManager
 
     instance_manager = InstanceManager()
@@ -188,6 +258,18 @@ def delete_command(args):
 
 
 def main():
+    """
+    Main CLI entry point for VS Code + Claude Docker Management.
+
+    This function handles command line argument parsing and dispatches
+    to the appropriate command functions.
+
+    Available commands:
+    - start: Create and start a new instance
+    - status: Show status of all instances
+    - stop: Stop a running instance
+    - delete: Delete an instance and its configuration
+    """
     parser = argparse.ArgumentParser(description="VS Code + Claude Docker Management")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
@@ -198,6 +280,7 @@ def main():
     start_parser.add_argument("--port", type=int, help="Specific port number")
     start_parser.add_argument("--env", action="append", help="Environment variable (key=value)")
     start_parser.add_argument("--env-append", action="append", help="Environment variable to append to global config (key=value)")
+    start_parser.add_argument("--image", help="Custom Docker image name (e.g., 'custom-image:v1.0')")
 
     # Status command
     status_parser = subparsers.add_parser("status", help="Show instance status")
@@ -212,6 +295,7 @@ def main():
 
     args = parser.parse_args()
 
+    # Dispatch to appropriate command function
     if args.command == "start":
         start_command(args)
     elif args.command == "status":
@@ -221,4 +305,5 @@ def main():
     elif args.command == "delete":
         delete_command(args)
     else:
+        # No valid command provided, show help
         parser.print_help()

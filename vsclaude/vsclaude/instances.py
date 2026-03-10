@@ -501,7 +501,7 @@ class InstanceManager:
 
         try:
             # Use real DockerClient for production operations
-            from vsclaude.vsclaude.docker import DockerClient
+            from vsclaude.docker import DockerClient
             docker_client = DockerClient()
             container_name = f"vsclaude-{name}"
 

@@ -14,15 +14,6 @@ class ConfigManager:
                 return json.load(f)
         return self._default_global_config()
 
-    def _default_global_config(self):
-        return {
-            "port_range": {"min": 8000, "max": 9000},
-            "default_profile": "default",
-            "ide_address_template": "http://{host}:{port}",
-            "environment": {},
-            "enabled_volumes": [],
-            "include_docker_sock": True
-        }
 
     def get_global_environment(self):
         """Get environment variables from global config"""
@@ -50,3 +41,25 @@ class ConfigManager:
         if not isinstance(paths, list):
             return False
         return all(path.startswith('/') for path in paths)
+
+    def get_default_image(self) -> str:
+        """Get default docker image from global config"""
+        config = self.load_global_config()
+        return config.get("default_image", "tylercollison2089/vscode-claude:latest")
+
+    def _default_global_config(self):
+        return {
+            "port_range": {"min": 8000, "max": 9000},
+            "default_profile": "default",
+            "ide_address_template": "http://{host}:{port}",
+            "environment": {},
+            "enabled_volumes": [],
+            "include_docker_sock": True,
+            "default_image": "tylercollison2089/vscode-claude:latest"  # NEW
+        }
+
+    def _save_config(self, config):
+        """Save configuration to global config file"""
+        config_file = self.config_dir / "global-config.json"
+        with open(config_file, 'w') as f:
+            json.dump(config, f, indent=2)
