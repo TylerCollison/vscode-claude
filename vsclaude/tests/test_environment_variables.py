@@ -37,7 +37,6 @@ def test_cli_environment_variable_parsing():
     # Mock args with environment variables
     args = Mock()
     args.name = "test-instance"
-    args.port_auto = False
     args.port = None
     args.env = ["CUSTOM_VAR=custom_value", "ANOTHER_VAR=another_value", "PASSWORD=overridden"]
     args.env_append = []

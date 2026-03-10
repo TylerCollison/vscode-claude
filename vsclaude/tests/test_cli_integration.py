@@ -2,6 +2,11 @@ import pytest
 from unittest.mock import patch, MagicMock, mock_open
 import argparse
 import json
+import sys
+import os
+
+# Add path to import modules correctly
+sys.path.insert(0, os.path.join(os.getcwd(), 'vsclaude'))
 
 
 def test_start_command_with_valid_custom_image():
@@ -11,7 +16,6 @@ def test_start_command_with_valid_custom_image():
     # Create mock arguments with custom image
     args = argparse.Namespace(
         name="test-instance",
-        port_auto=True,
         port=None,
         env=[],
         env_append=[],
@@ -95,7 +99,6 @@ def test_start_command_with_default_image():
     # Create mock arguments without --image flag
     args = argparse.Namespace(
         name="test-instance",
-        port_auto=True,
         port=None,
         env=[],
         env_append=[],
@@ -164,7 +167,6 @@ def test_start_command_with_invalid_image_format():
     # Create mock arguments with invalid image
     args = argparse.Namespace(
         name="test-instance",
-        port_auto=True,
         port=None,
         env=[],
         env_append=[],
@@ -203,7 +205,6 @@ def test_start_command_image_validation_error_handling():
 
     args = argparse.Namespace(
         name="test-instance",
-        port_auto=True,
         port=None,
         env=[],
         env_append=[],
@@ -242,7 +243,6 @@ def test_start_command_with_image_no_tag():
 
     args = argparse.Namespace(
         name="test-instance",
-        port_auto=True,
         port=None,
         env=[],
         env_append=[],
@@ -305,7 +305,6 @@ def test_start_command_validate_image_called():
 
     args = argparse.Namespace(
         name="test-instance",
-        port_auto=True,
         port=None,
         env=[],
         env_append=[],

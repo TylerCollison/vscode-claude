@@ -149,7 +149,6 @@ def test_cli_image_flag_integration():
         # Test start_command with image flag
         args_with_image = argparse.Namespace(
             name="test-instance",
-            port_auto=False,
             port=8080,
             env=None,
             env_append=None,

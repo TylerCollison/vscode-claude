@@ -18,7 +18,6 @@ class TestMMChannelAutoPopulation(unittest.TestCase):
         # Mock args with instance name but no MM_CHANNEL override
         args = Mock()
         args.name = "test-instance"
-        args.port_auto = False
         args.port = None
         args.env = []  # No MM_CHANNEL override
         args.env_append = []  # Add env_append attribute
@@ -63,7 +62,6 @@ class TestMMChannelAutoPopulation(unittest.TestCase):
         # Mock args with MM_CHANNEL override via CLI
         args = Mock()
         args.name = "test-instance"
-        args.port_auto = False
         args.port = None
         args.env = ["MM_CHANNEL=custom-channel"]  # CLI override
         args.env_append = []
@@ -107,7 +105,6 @@ class TestMMChannelAutoPopulation(unittest.TestCase):
         # Mock args with no CLI override
         args = Mock()
         args.name = "test-instance"
-        args.port_auto = False
         args.port = None
         args.env = []  # No CLI override
         args.env_append = []
@@ -153,7 +150,6 @@ class TestMMChannelAutoPopulation(unittest.TestCase):
         # Mock args with MM_CHANNEL override via CLI
         args = Mock()
         args.name = "test-instance"
-        args.port_auto = False
         args.port = None
         args.env = ["MM_CHANNEL=cli-channel"]  # CLI override
         args.env_append = []

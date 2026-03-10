@@ -44,7 +44,6 @@ def test_env_append_integration():
         # Mock args
         args = Mock()
         args.name = "integration-test"
-        args.port_auto = False
         args.port = 8080
         args.env = ["GLOBAL_VAR=overridden"]
         args.env_append = ["PATH=/custom/bin", "NEW_VAR=new_value"]
@@ -126,7 +125,6 @@ def test_env_append_fallback_integration():
         # Mock args
         args = Mock()
         args.name = "integration-test-fallback"
-        args.port_auto = False
         args.port = 8080
         args.env = []
         args.env_append = ["NEW_VAR=fallback_value"]
@@ -209,7 +207,6 @@ def test_env_append_complex_scenario_integration():
         # Mock args with mixed scenarios
         args = Mock()
         args.name = "complex-integration-test"
-        args.port_auto = False
         args.port = 8080
         args.env = ["SHARED_VAR=cli_version"]  # Override global
         args.env_append = [

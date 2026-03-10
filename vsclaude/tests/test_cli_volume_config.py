@@ -35,7 +35,6 @@ def test_cli_includes_volume_config():
                 # Mock command line args
                 class MockArgs:
                     name = "test-instance"
-                    port_auto = False
                     port = 8443
                     env = []
 

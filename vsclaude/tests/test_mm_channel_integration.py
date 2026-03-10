@@ -16,7 +16,6 @@ class TestMMChannelIntegration(unittest.TestCase):
         """Test MM_CHANNEL flows correctly to Docker Compose generation"""
         args = MagicMock()
         args.name = "integration-test"
-        args.port_auto = False
         args.port = 9090
         args.env = []
 
@@ -64,7 +63,6 @@ class TestMMChannelIntegration(unittest.TestCase):
         # Test 1: --env flag should win
         args = MagicMock()
         args.name = "priority-test"
-        args.port_auto = False
         args.port = 9091
         args.env = ["MM_CHANNEL=env-override"]
 

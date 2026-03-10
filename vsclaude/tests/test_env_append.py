@@ -49,7 +49,6 @@ def test_env_append_functionality():
     # Create mock arguments
     args = Mock()
     args.name = "test-instance"
-    args.port_auto = False
     args.port = 8080
     args.env = []
     args.env_append = ["PATH=/custom/bin", "CUSTOM_VAR=appended_value"]
@@ -125,7 +124,6 @@ def test_mixed_env_and_env_append():
     # Mock args with both env and env_append
     args = Mock()
     args.name = "test-instance"
-    args.port_auto = False
     args.port = 8080
     args.env = ["THEME=light", "PATH=/override/bin"]  # Override PATH
     args.env_append = ["PATH=/append/bin"]  # Try to append
@@ -196,7 +194,6 @@ def test_env_append_fallback():
     # Mock args with env_append for non-existent global variable
     args = Mock()
     args.name = "test-instance"
-    args.port_auto = False
     args.port = 8080
     args.env = []
     args.env_append = ["NEW_VAR=new_value"]
@@ -266,7 +263,6 @@ def test_mm_channel_priority_with_env_append():
     # Scenario 1: Basic auto-population (no overrides)
     args = Mock()
     args.name = "test-instance"
-    args.port_auto = False
     args.port = None
     args.env = []
     args.env_append = []
@@ -335,7 +331,6 @@ def test_mm_channel_cli_override_priority():
     # Mock args with CLI MM_CHANNEL override
     args = Mock()
     args.name = "test-instance"
-    args.port_auto = False
     args.port = None
     args.env = ["MM_CHANNEL=custom-channel"]
     args.env_append = []
@@ -403,7 +398,6 @@ def test_mm_channel_global_config_priority():
     # Mock args without MM_CHANNEL override
     args = Mock()
     args.name = "test-instance"
-    args.port_auto = False
     args.port = None
     args.env = []
     args.env_append = []
@@ -471,7 +465,6 @@ def test_mm_channel_with_env_append_isolation():
     # Mock args with env-append for other variables but not MM_CHANNEL
     args = Mock()
     args.name = "test-instance"
-    args.port_auto = False
     args.port = None
     args.env = []
     args.env_append = ["PATH=/custom/bin", "CUSTOM_VAR=custom_value"]
@@ -541,7 +534,6 @@ def test_mm_channel_priority_with_cli_and_env_append():
     # Mock args with CLI MM_CHANNEL override AND env-append
     args = Mock()
     args.name = "test-instance"
-    args.port_auto = False
     args.port = None
     args.env = ["MM_CHANNEL=cli-override"]
     args.env_append = ["PATH=/custom/bin"]
