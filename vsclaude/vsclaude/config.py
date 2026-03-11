@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+from typing import Optional
 
 class ConfigManager:
     def __init__(self, config_dir=None):
@@ -47,6 +48,11 @@ class ConfigManager:
         config = self.load_global_config()
         return config.get("default_image", "tylercollison2089/vscode-claude:latest")
 
+    def get_docker_network(self) -> Optional[str]:
+        """Get docker network from global config"""
+        config = self.load_global_config()
+        return config.get("docker_network")
+
     def _default_global_config(self):
         return {
             "port_range": {"min": 8000, "max": 9000},
@@ -55,7 +61,8 @@ class ConfigManager:
             "environment": {},
             "enabled_volumes": [],
             "include_docker_sock": True,
-            "default_image": "tylercollison2089/vscode-claude:latest"  # NEW
+            "default_image": "tylercollison2089/vscode-claude:latest",
+            "docker_network": None  # NEW: Default no network
         }
 
     def _save_config(self, config):

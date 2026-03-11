@@ -70,3 +70,21 @@ def test_default_config_includes_volume_settings():
     assert config["enabled_volumes"] == []
     assert "include_docker_sock" in config
     assert config["include_docker_sock"] == True
+
+
+def test_get_docker_network():
+    """Test getting docker network from config"""
+    import tempfile
+    from vsclaude.config import ConfigManager
+
+    # Test default value (no network) with clean config
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config_manager = ConfigManager(tmpdir)
+        assert config_manager.get_docker_network() is None
+
+        # Test with network specified
+        config = config_manager.load_global_config()
+        config["docker_network"] = "test-network"
+        config_manager._save_config(config)
+
+        assert config_manager.get_docker_network() == "test-network"
