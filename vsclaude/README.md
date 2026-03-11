@@ -205,6 +205,48 @@ vsclaude start dev --image myregistry.example.com/vscode-claude
 vsclaude start test --image tylercollison2089/vscode-claude:stable
 ```
 
+### Docker Network Configuration
+
+vsclaude supports optional Docker network configuration for container instances. You can specify a custom Docker network in your global configuration:
+
+#### Global Configuration
+Set a Docker network in the global configuration:
+
+```bash
+# Configure Docker network
+vsclaude config set docker_network my-custom-network
+```
+
+Or edit the global configuration file directly:
+
+```json
+{
+  "docker_network": "vsclaude-network",
+  "port_range": {"min": 8000, "max": 9000},
+  "default_profile": "default",
+  "ide_address_template": "http://{host}:{port}",
+  "environment": {},
+  "enabled_volumes": ["/config", "/workspace"],
+  "include_docker_sock": true
+}
+```
+
+#### Usage
+```bash
+# Create the Docker network first
+docker network create vsclaude-network
+
+# Start instance on the specified network
+vsclaude start my-instance
+```
+
+#### Behavior
+- **Network specified**: Containers are created on the specified Docker network
+- **Network doesn't exist**: vsclaude exits gracefully with clear error message
+- **No network specified**: Default Docker networking behavior
+
+See [docker-network-configuration.md](docs/docker-network-configuration.md) for detailed documentation.
+
 ## Security Best Practices
 
 ### Sensitive Environment Variables
