@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(os.getcwd(), 'vsclaude'))
 
 def test_start_command_with_valid_custom_image():
     """Test start command with valid custom image via --image flag"""
-    from vsclaude.cli import start_command
+    from vsclaude.vsclaude.cli import start_command
 
     # Create mock arguments with custom image
     args = argparse.Namespace(
@@ -23,11 +23,11 @@ def test_start_command_with_valid_custom_image():
     )
 
     # Mock all dependencies
-    with patch('vsclaude.config.ConfigManager') as MockConfigManager, \
-         patch('vsclaude.ports.PortManager') as MockPortManager, \
-         patch('vsclaude.instances.InstanceManager') as MockInstanceManager, \
-         patch('vsclaude.compose.generate') as mock_generate, \
-         patch('vsclaude.docker.DockerClient') as MockDockerClient:
+    with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager, \
+         patch('vsclaude.vsclaude.ports.PortManager') as MockPortManager, \
+         patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager, \
+         patch('vsclaude.vsclaude.compose.generate') as mock_generate, \
+         patch('vsclaude.vsclaude.docker.DockerClient') as MockDockerClient:
 
         # Mock ConfigManager
         mock_config_manager = MockConfigManager.return_value
@@ -94,7 +94,7 @@ def test_start_command_with_valid_custom_image():
 
 def test_start_command_with_default_image():
     """Test start command using default image from ConfigManager"""
-    from vsclaude.cli import start_command
+    from vsclaude.vsclaude.cli import start_command
 
     # Create mock arguments without --image flag
     args = argparse.Namespace(
@@ -105,11 +105,11 @@ def test_start_command_with_default_image():
         image=None
     )
 
-    with patch('vsclaude.config.ConfigManager') as MockConfigManager, \
-         patch('vsclaude.ports.PortManager') as MockPortManager, \
-         patch('vsclaude.instances.InstanceManager') as MockInstanceManager, \
-         patch('vsclaude.compose.generate') as mock_generate, \
-         patch('vsclaude.docker.DockerClient') as MockDockerClient:
+    with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager, \
+         patch('vsclaude.vsclaude.ports.PortManager') as MockPortManager, \
+         patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager, \
+         patch('vsclaude.vsclaude.compose.generate') as mock_generate, \
+         patch('vsclaude.vsclaude.docker.DockerClient') as MockDockerClient:
 
         mock_config_manager = MockConfigManager.return_value
         mock_config_manager.load_global_config.return_value = {
@@ -161,8 +161,8 @@ def test_start_command_with_default_image():
 
 def test_start_command_with_invalid_image_format():
     """Test start command with invalid image format that fails validation"""
-    from vsclaude.cli import start_command
-    from vsclaude.compose import _validate_image_name
+    from vsclaude.vsclaude.cli import start_command
+    from vsclaude.vsclaude.compose import _validate_image_name
 
     # Create mock arguments with invalid image
     args = argparse.Namespace(
@@ -173,9 +173,9 @@ def test_start_command_with_invalid_image_format():
         image="InvalidImage"  # Contains uppercase letters
     )
 
-    with patch('vsclaude.config.ConfigManager') as MockConfigManager, \
-         patch('vsclaude.ports.PortManager') as MockPortManager, \
-         patch('vsclaude.instances.InstanceManager') as MockInstanceManager:
+    with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager, \
+         patch('vsclaude.vsclaude.ports.PortManager') as MockPortManager, \
+         patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager:
 
         mock_config_manager = MockConfigManager.return_value
         mock_config_manager.load_global_config.return_value = {
@@ -201,7 +201,7 @@ def test_start_command_with_invalid_image_format():
 
 def test_start_command_image_validation_error_handling():
     """Test that image validation errors are properly propagated"""
-    from vsclaude.cli import start_command
+    from vsclaude.vsclaude.cli import start_command
 
     args = argparse.Namespace(
         name="test-instance",
@@ -211,9 +211,9 @@ def test_start_command_image_validation_error_handling():
         image="-invalid-image"  # Invalid starting character
     )
 
-    with patch('vsclaude.config.ConfigManager') as MockConfigManager, \
-         patch('vsclaude.ports.PortManager') as MockPortManager, \
-         patch('vsclaude.instances.InstanceManager') as MockInstanceManager:
+    with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager, \
+         patch('vsclaude.vsclaude.ports.PortManager') as MockPortManager, \
+         patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager:
 
         mock_config_manager = MockConfigManager.return_value
         mock_config_manager.load_global_config.return_value = {
@@ -239,7 +239,7 @@ def test_start_command_image_validation_error_handling():
 
 def test_start_command_with_image_no_tag():
     """Test start command with image name but no tag (should default to 'latest')"""
-    from vsclaude.cli import start_command
+    from vsclaude.vsclaude.cli import start_command
 
     args = argparse.Namespace(
         name="test-instance",
@@ -249,11 +249,11 @@ def test_start_command_with_image_no_tag():
         image="custom-image"  # No tag specified
     )
 
-    with patch('vsclaude.config.ConfigManager') as MockConfigManager, \
-         patch('vsclaude.ports.PortManager') as MockPortManager, \
-         patch('vsclaude.instances.InstanceManager') as MockInstanceManager, \
-         patch('vsclaude.compose.generate') as mock_generate, \
-         patch('vsclaude.docker.DockerClient') as MockDockerClient:
+    with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager, \
+         patch('vsclaude.vsclaude.ports.PortManager') as MockPortManager, \
+         patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager, \
+         patch('vsclaude.vsclaude.compose.generate') as mock_generate, \
+         patch('vsclaude.vsclaude.docker.DockerClient') as MockDockerClient:
 
         mock_config_manager = MockConfigManager.return_value
         mock_config_manager.load_global_config.return_value = {
@@ -301,7 +301,7 @@ def test_start_command_with_image_no_tag():
 
 def test_start_command_validate_image_called():
     """Test that _validate_image_name is actually called for custom images"""
-    from vsclaude.cli import start_command
+    from vsclaude.vsclaude.cli import start_command
 
     args = argparse.Namespace(
         name="test-instance",
@@ -311,12 +311,12 @@ def test_start_command_validate_image_called():
         image="valid-image:v1.0"
     )
 
-    with patch('vsclaude.config.ConfigManager') as MockConfigManager, \
-         patch('vsclaude.ports.PortManager') as MockPortManager, \
-         patch('vsclaude.instances.InstanceManager') as MockInstanceManager, \
-         patch('vsclaude.compose.generate') as mock_generate, \
-         patch('vsclaude.docker.DockerClient') as MockDockerClient, \
-         patch('vsclaude.compose._validate_image_name') as mock_validate:
+    with patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager, \
+         patch('vsclaude.vsclaude.ports.PortManager') as MockPortManager, \
+         patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager, \
+         patch('vsclaude.vsclaude.compose.generate') as mock_generate, \
+         patch('vsclaude.vsclaude.docker.DockerClient') as MockDockerClient, \
+         patch('vsclaude.vsclaude.compose._validate_image_name') as mock_validate:
 
         mock_config_manager = MockConfigManager.return_value
         mock_config_manager.load_global_config.return_value = {
@@ -362,13 +362,13 @@ def test_start_command_validate_image_called():
 
 def test_status_command_with_images():
     """Test status command showing instances with custom images"""
-    from vsclaude.cli import status_command
+    from vsclaude.vsclaude.cli import status_command
 
     args = argparse.Namespace()
 
-    with patch('vsclaude.instances.InstanceManager') as MockInstanceManager, \
-         patch('vsclaude.docker.DockerClient') as MockDockerClient, \
-         patch('vsclaude.config.ConfigManager') as MockConfigManager:
+    with patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager, \
+         patch('vsclaude.vsclaude.docker.DockerClient') as MockDockerClient, \
+         patch('vsclaude.vsclaude.config.ConfigManager') as MockConfigManager:
 
         mock_instance_manager = MockInstanceManager.return_value
         mock_instance_manager.instances_dir.exists.return_value = True
@@ -408,12 +408,12 @@ def test_status_command_with_images():
 
 def test_stop_command():
     """Test stop command functionality"""
-    from vsclaude.cli import stop_command
+    from vsclaude.vsclaude.cli import stop_command
     import docker.errors
 
     args = argparse.Namespace(name="test-instance")
 
-    with patch('vsclaude.docker.DockerClient') as MockDockerClient:
+    with patch('vsclaude.vsclaude.docker.DockerClient') as MockDockerClient:
         mock_docker_client = MockDockerClient.return_value
         mock_container = MagicMock()
         mock_docker_client.client.containers.get.return_value = mock_container
@@ -429,12 +429,12 @@ def test_stop_command():
 
 def test_stop_command_instance_not_found():
     """Test stop command when instance doesn't exist"""
-    from vsclaude.cli import stop_command
+    from vsclaude.vsclaude.cli import stop_command
     import docker.errors
 
     args = argparse.Namespace(name="nonexistent-instance")
 
-    with patch('vsclaude.docker.DockerClient') as MockDockerClient:
+    with patch('vsclaude.vsclaude.docker.DockerClient') as MockDockerClient:
         mock_docker_client = MockDockerClient.return_value
         mock_docker_client.client.containers.get.side_effect = docker.errors.NotFound("Container not found")
 
@@ -446,8 +446,8 @@ def test_stop_command_instance_not_found():
 
 def test_delete_command_success():
     """Test successful deletion scenario with mocked Docker operations"""
-    from vsclaude.cli import delete_command
-    from vsclaude.instances import InstanceManager
+    from vsclaude.vsclaude.cli import delete_command
+    from vsclaude.vsclaude.instances import InstanceManager
     from unittest.mock import patch, MagicMock
     import argparse
 
@@ -455,7 +455,7 @@ def test_delete_command_success():
     args = argparse.Namespace(name="test-instance")
 
     # Mock Docker operations and InstanceManager
-    with patch('vsclaude.instances.InstanceManager') as MockInstanceManager:
+    with patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager:
         mock_manager = MockInstanceManager.return_value
         mock_manager.delete_instance.return_value = {
             "container_stopped": True,
@@ -478,14 +478,14 @@ def test_delete_command_success():
 
 def test_delete_command_partial_success():
     """Test deletion when only some operations succeed"""
-    from vsclaude.cli import delete_command
-    from vsclaude.instances import InstanceManager
+    from vsclaude.vsclaude.cli import delete_command
+    from vsclaude.vsclaude.instances import InstanceManager
     from unittest.mock import patch
     import argparse
 
     args = argparse.Namespace(name="test-instance")
 
-    with patch('vsclaude.instances.InstanceManager') as MockInstanceManager:
+    with patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager:
         mock_manager = MockInstanceManager.return_value
         mock_manager.delete_instance.return_value = {
             "container_stopped": False,
@@ -503,14 +503,14 @@ def test_delete_command_partial_success():
 
 def test_delete_command_instance_not_found():
     """Test deletion when instance doesn't exist"""
-    from vsclaude.cli import delete_command
-    from vsclaude.instances import InstanceManager
+    from vsclaude.vsclaude.cli import delete_command
+    from vsclaude.vsclaude.instances import InstanceManager
     from unittest.mock import patch
     import argparse
 
     args = argparse.Namespace(name="nonexistent-instance")
 
-    with patch('vsclaude.instances.InstanceManager') as MockInstanceManager:
+    with patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager:
         mock_manager = MockInstanceManager.return_value
         mock_manager.delete_instance.return_value = {
             "container_stopped": False,
@@ -528,14 +528,14 @@ def test_delete_command_instance_not_found():
 
 def test_delete_command_docker_unavailable():
     """Test deletion when Docker is unavailable"""
-    from vsclaude.cli import delete_command
-    from vsclaude.instances import InstanceManager
+    from vsclaude.vsclaude.cli import delete_command
+    from vsclaude.vsclaude.instances import InstanceManager
     from unittest.mock import patch
     import argparse
 
     args = argparse.Namespace(name="test-instance")
 
-    with patch('vsclaude.instances.InstanceManager') as MockInstanceManager:
+    with patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager:
         mock_manager = MockInstanceManager.return_value
         # Simulate Docker error by returning partial success
         mock_manager.delete_instance.return_value = {
@@ -554,14 +554,14 @@ def test_delete_command_docker_unavailable():
 
 def test_delete_command_error_handling():
     """Test error handling when unexpected exceptions occur"""
-    from vsclaude.cli import delete_command
-    from vsclaude.instances import InstanceManager
+    from vsclaude.vsclaude.cli import delete_command
+    from vsclaude.vsclaude.instances import InstanceManager
     from unittest.mock import patch
     import argparse
 
     args = argparse.Namespace(name="test-instance")
 
-    with patch('vsclaude.instances.InstanceManager') as MockInstanceManager:
+    with patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager:
         mock_manager = MockInstanceManager.return_value
         # Simulate unexpected exception during deletion
         mock_manager.delete_instance.side_effect = Exception("Unexpected error")
@@ -577,8 +577,8 @@ def test_delete_command_error_handling():
 
 def test_delete_command_status_message_variations():
     """Test different status message combinations"""
-    from vsclaude.cli import delete_command
-    from vsclaude.instances import InstanceManager
+    from vsclaude.vsclaude.cli import delete_command
+    from vsclaude.vsclaude.instances import InstanceManager
     from unittest.mock import patch
     import argparse
 
@@ -600,7 +600,7 @@ def test_delete_command_status_message_variations():
     ]
 
     for result, expected_message in test_cases:
-        with patch('vsclaude.instances.InstanceManager') as MockInstanceManager:
+        with patch('vsclaude.vsclaude.instances.InstanceManager') as MockInstanceManager:
             mock_manager = MockInstanceManager.return_value
             mock_manager.delete_instance.return_value = result
 
