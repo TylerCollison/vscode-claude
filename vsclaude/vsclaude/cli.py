@@ -1,6 +1,7 @@
 import argparse
 import json
 import docker.errors
+import sys
 
 def start_command(args):
     """
@@ -125,6 +126,14 @@ def start_command(args):
     docker_client = DockerClient()
     container_name = f"vsclaude-{args.name}"
 
+    # NEW: Validate Docker network if specified in configuration
+    docker_network = config_manager.get_docker_network()
+    if docker_network:
+        if not docker_client.network_exists(docker_network):
+            print(f"Error: Docker network '{docker_network}' not found")
+            print("Please create the network first or remove the 'docker_network' configuration")
+            sys.exit(1)
+
     # Create container from compose configuration
     try:
         # Extract service configuration
@@ -137,6 +146,7 @@ def start_command(args):
             ports={service_config["ports"][0].split(":")[1]: service_config["ports"][0].split(":")[0]},
             environment={env.split("=", 1)[0]: env.split("=", 1)[1] for env in service_config["environment"]},
             volumes=service_config["volumes"],
+            network=docker_network if docker_network else None,  # NEW: Pass network parameter
             detach=True
         )
 

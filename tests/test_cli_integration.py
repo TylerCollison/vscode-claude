@@ -187,3 +187,89 @@ def test_delete_command_status_message_variations():
 
                 # Reset mock for next iteration
                 mock_print.reset_mock()
+
+
+def test_start_command_with_missing_network():
+    """Test start command exits gracefully when network doesn't exist"""
+    from vsclaude.cli import start_command
+    from vsclaude.config import ConfigManager
+    from vsclaude.docker import DockerClient
+    from unittest.mock import patch, MagicMock
+    import argparse
+    import sys
+
+    # Create mock arguments
+    args = argparse.Namespace(
+        name="test-instance",
+        port=None,
+        env=None,
+        env_append=None,
+        image=None
+    )
+
+    # Mock ConfigManager to return a non-existent network
+    with patch('vsclaude.config.ConfigManager') as MockConfigManager:
+        mock_config_manager = MockConfigManager.return_value
+
+        # Mock the network configuration
+        mock_config_manager.load_global_config.return_value = {
+            "port_range": {"min": 8000, "max": 9000},
+            "docker_network": "non-existent-network"
+        }
+        mock_config_manager.get_global_environment.return_value = {}
+        mock_config_manager.get_enabled_volumes.return_value = []
+        mock_config_manager.get_include_docker_sock.return_value = True
+        mock_config_manager.get_default_image.return_value = "tylercollison2089/vscode-claude:latest"
+        mock_config_manager.get_docker_network.return_value = "non-existent-network"
+        mock_config_manager.format_ide_address.return_value = "http://localhost:8080"
+
+        # Mock PortManager
+        with patch('vsclaude.ports.PortManager') as MockPortManager:
+            mock_port_manager = MockPortManager.return_value
+            mock_port_manager.find_available_port.return_value = 8080
+
+            # Mock DockerClient.network_exists to return False
+            with patch('vsclaude.docker.DockerClient') as MockDockerClient:
+                mock_docker_client = MockDockerClient.return_value
+                mock_docker_client.network_exists.return_value = False
+                mock_docker_client.client.containers.create.return_value = MagicMock()
+                mock_docker_client.client.containers.create.return_value.start.return_value = None
+
+                # Mock compose.generate to return a valid compose config
+                with patch('vsclaude.compose.generate') as mock_generate:
+                    mock_generate.return_value = {
+                        "services": {
+                            "vscode-claude": {
+                                "image": "tylercollison2089/vscode-claude:latest",
+                                "ports": ["8080:8080"],
+                                "environment": ["ENV_VAR=value"],
+                                "volumes": []
+                            }
+                        }
+                    }
+
+                    # Mock InstanceManager
+                    with patch('vsclaude.instances.InstanceManager') as MockInstanceManager:
+                        mock_instance_manager = MockInstanceManager.return_value
+                        mock_instance_manager.create_instance_config.return_value = {
+                            "name": "test-instance",
+                            "port": 8080
+                        }
+
+                        # Mock sys.exit to capture exit calls
+                        with patch('sys.exit') as mock_exit:
+                            with patch('builtins.print') as mock_print:
+                                try:
+                                    start_command(args)
+                                except SystemExit:
+                                    pass  # sys.exit was called
+
+                                # Verify that network_exists was called
+                                mock_docker_client.network_exists.assert_called_once_with("non-existent-network")
+
+                                # Verify error message was printed
+                                mock_print.assert_any_call("Error: Docker network 'non-existent-network' not found")
+                                mock_print.assert_any_call("Please create the network first or remove the 'docker_network' configuration")
+
+                                # Verify sys.exit(1) was called
+                                mock_exit.assert_called_once_with(1)
