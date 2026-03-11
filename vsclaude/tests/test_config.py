@@ -4,7 +4,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 def test_load_global_config():
     """Test loading global configuration"""
-    from vsclaude.vsclaude.config import ConfigManager
+    from vsclaude.config import ConfigManager
     manager = ConfigManager()
     config = manager.load_global_config()
     assert config is not None
@@ -13,7 +13,7 @@ def test_load_global_config():
 
 def test_global_config_includes_environment():
     """Test that global config includes environment field with dict default"""
-    from vsclaude.vsclaude.config import ConfigManager
+    from vsclaude.config import ConfigManager
     manager = ConfigManager()
     config = manager.load_global_config()
     assert "environment" in config
@@ -22,7 +22,7 @@ def test_global_config_includes_environment():
 
 def test_get_global_environment():
     """Test getting environment from global config"""
-    from vsclaude.vsclaude.config import ConfigManager
+    from vsclaude.config import ConfigManager
     manager = ConfigManager()
     # This test should fail initially since get_global_environment method doesn't exist
     environment = manager.get_global_environment()
@@ -31,7 +31,7 @@ def test_get_global_environment():
 
 def test_get_enabled_volumes():
     """Test getting enabled volumes from global config"""
-    from vsclaude.vsclaude.config import ConfigManager
+    from vsclaude.config import ConfigManager
     manager = ConfigManager()
     volumes = manager.get_enabled_volumes()
     assert isinstance(volumes, list)
@@ -40,7 +40,7 @@ def test_get_enabled_volumes():
 
 def test_get_include_docker_sock():
     """Test getting Docker socket preference"""
-    from vsclaude.vsclaude.config import ConfigManager
+    from vsclaude.config import ConfigManager
     manager = ConfigManager()
     include_docker_sock = manager.get_include_docker_sock()
     assert isinstance(include_docker_sock, bool)
@@ -49,7 +49,7 @@ def test_get_include_docker_sock():
 
 def test_validate_volume_paths():
     """Test volume path validation"""
-    from vsclaude.vsclaude.config import ConfigManager
+    from vsclaude.config import ConfigManager
 
     # Valid paths
     manager = ConfigManager()
@@ -62,7 +62,7 @@ def test_validate_volume_paths():
 
 def test_default_config_includes_volume_settings():
     """Test that default config includes volume settings"""
-    from vsclaude.vsclaude.config import ConfigManager
+    from vsclaude.config import ConfigManager
     manager = ConfigManager()
     config = manager._default_global_config()
     assert "enabled_volumes" in config
@@ -75,7 +75,7 @@ def test_default_config_includes_volume_settings():
 def test_get_docker_network():
     """Test getting docker network from config"""
     import tempfile
-    from vsclaude.vsclaude.config import ConfigManager
+    from vsclaude.config import ConfigManager
 
     # Test default value (no network) with clean config
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -92,7 +92,7 @@ def test_get_docker_network():
 
 def test_docker_network_default_value():
     """Test that docker_network defaults to None"""
-    from vsclaude.vsclaude.config import ConfigManager
+    from vsclaude.config import ConfigManager
     config_manager = ConfigManager()
     default_config = config_manager._default_global_config()
     assert default_config["docker_network"] is None
@@ -124,7 +124,7 @@ def test_start_command_with_missing_network():
 
         def test_start_command_simplified():
             """Simplified test for network validation logic"""
-            from vsclaude.vsclaude.config import ConfigManager
+            from vsclaude.config import ConfigManager
             from vsclaude.vsclaude.docker import MockDockerClient
 
             # Create a temporary directory for config
@@ -150,7 +150,7 @@ def test_start_command_with_missing_network():
 def test_backward_compatibility():
     """Test that existing configs without docker_network work unchanged"""
     import tempfile
-    from vsclaude.vsclaude.config import ConfigManager
+    from vsclaude.config import ConfigManager
 
     with tempfile.TemporaryDirectory() as tmpdir:
         config_manager = ConfigManager(tmpdir)
