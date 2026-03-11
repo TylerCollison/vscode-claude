@@ -697,3 +697,92 @@ def test_remove_container_success():
     client = MockDockerClient()
     assert client.remove_container("test-container-1") == True
     assert "test-container-1" not in client.mock_containers
+
+
+@patch('docker.from_env')
+def test_network_exists(mock_docker):
+    """Test network existence checking"""
+    # Mock the Docker client and network operations
+    mock_client = Mock()
+    mock_client.ping.return_value = True
+    mock_docker.return_value = mock_client
+
+    from vsclaude.vsclaude.docker import DockerClient
+    docker_client = DockerClient()
+
+    # Test with existing network
+    mock_network = Mock()
+    mock_client.networks.get.return_value = mock_network
+    assert docker_client.network_exists("bridge") == True
+
+    # Test with non-existent network
+    import docker.errors
+    mock_client.networks.get.side_effect = docker.errors.NotFound("Network not found")
+    assert docker_client.network_exists("non-existent-network") == False
+
+
+def test_mock_docker_client_network_exists():
+    """Test mock Docker client network existence checking"""
+    from vsclaude.vsclaude.docker import MockDockerClient
+    mock_client = MockDockerClient()
+
+    # Test with existing mock networks
+    assert mock_client.network_exists("bridge") == True
+    assert mock_client.network_exists("host") == True
+    assert mock_client.network_exists("none") == True
+
+    # Test with non-existent network
+    assert mock_client.network_exists("non-existent-network") == False
+
+
+@patch('docker.from_env')
+def test_network_exists_api_error(mock_docker):
+    """Test network existence checking with API errors"""
+    # Mock the Docker client and network operations
+    mock_client = Mock()
+    mock_client.ping.return_value = True
+    mock_docker.return_value = mock_client
+
+    import docker.errors
+    from vsclaude.vsclaude.docker import DockerClient, DockerConnectionError
+    docker_client = DockerClient()
+
+    # Test API error handling
+    mock_client.networks.get.side_effect = docker.errors.APIError("API error")
+    with pytest.raises(DockerConnectionError):
+        docker_client.network_exists("bridge")
+
+
+@patch('docker.from_env')
+def test_network_exists_docker_connection_error(mock_docker):
+    """Test network existence checking with Docker connection errors"""
+    # Mock the Docker client and network operations
+    mock_client = Mock()
+    mock_client.ping.return_value = True
+    mock_docker.return_value = mock_client
+
+    import docker.errors
+    from vsclaude.vsclaude.docker import DockerClient, DockerConnectionError
+    docker_client = DockerClient()
+
+    # Test Docker connection error handling
+    mock_client.networks.get.side_effect = docker.errors.DockerException("Connection failed")
+    with pytest.raises(DockerConnectionError):
+        docker_client.network_exists("bridge")
+
+
+@patch('docker.from_env')
+def test_network_exists_unexpected_error(mock_docker):
+    """Test network existence checking with unexpected errors"""
+    # Mock the Docker client and network operations
+    mock_client = Mock()
+    mock_client.ping.return_value = True
+    mock_docker.return_value = mock_client
+
+    from vsclaude.vsclaude.docker import DockerClient, DockerContainerError
+    docker_client = DockerClient()
+
+    # Test unexpected error handling
+    mock_client.networks.get.side_effect = Exception("Unexpected error")
+    with pytest.raises(DockerContainerError):
+        docker_client.network_exists("bridge")

@@ -110,6 +110,18 @@ class DockerClientInterface(ABC):
         """
         pass
 
+    @abstractmethod
+    def network_exists(self, network_name: str) -> bool:
+        """Check if a Docker network exists.
+
+        Args:
+            network_name: The name of the network to check
+
+        Returns:
+            bool: True if network exists, False otherwise
+        """
+        pass
+
 
 class DockerClient(DockerClientInterface):
     """A secure Docker client for managing container operations.
@@ -424,6 +436,32 @@ class DockerClient(DockerClientInterface):
             except Exception as e:
                 raise DockerContainerError(f"Unexpected error removing container: {e}") from e
 
+    def network_exists(self, network_name: str) -> bool:
+        """Check if a Docker network exists.
+
+        Args:
+            network_name: Name of the network to check
+
+        Returns:
+            bool: True if network exists, False otherwise
+
+        Raises:
+            DockerConnectionError: If Docker daemon communication fails
+            DockerContainerError: If container operation encounters an error
+        """
+        try:
+            # Try to get the network - if it exists, this will succeed
+            network = self.client.networks.get(network_name)
+            return network is not None
+        except docker.errors.NotFound:
+            return False
+        except docker.errors.APIError as e:
+            raise DockerConnectionError(f"Failed to check network existence: {e}") from e
+        except docker.errors.DockerException as e:
+            raise DockerConnectionError(f"Docker communication error: {e}") from e
+        except Exception as e:
+            raise DockerContainerError(f"Unexpected error checking network: {e}") from e
+
 
 def create_docker_client(max_retries: int = 3) -> DockerClient:
     """Factory function to create a Docker client with configurable retries.
@@ -461,11 +499,10 @@ class MockDockerClient(DockerClientInterface):
             container_name: The name of the container to check
 
         Returns:
-            bool: True if mock container exists and is running
+            bool: True if mock container exists and is running, False otherwise
         """
         if container_name not in self.mock_containers:
-            # Simulate that all vsclaude containers are running by default
-            self.mock_containers[container_name] = {'status': 'running', 'image': 'vsclaude:latest'}
+            return False
         return self.mock_containers[container_name]['status'] == 'running'
 
     def get_container_info(self, container_name: str) -> Optional[Dict[str, Any]]:
@@ -558,3 +595,16 @@ class MockDockerClient(DockerClientInterface):
             return False
         del self.mock_containers[container_name]
         return True
+
+    def network_exists(self, network_name: str) -> bool:
+        """Mock implementation of network existence check.
+
+        Args:
+            network_name: The name of the network to check
+
+        Returns:
+            bool: True if network exists in mock networks, False otherwise
+        """
+        # Mock networks for testing
+        mock_networks = ["bridge", "host", "none"]
+        return network_name in mock_networks
