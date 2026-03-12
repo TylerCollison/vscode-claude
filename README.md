@@ -1,10 +1,10 @@
-# Claude Code Development Environment
+# ClaudeConX
 
-A Docker image providing a complete web-based development environment with VS Code Server and Claude Code integration, built on top of the excellent [linuxserver/code-server](https://hub.docker.com/r/linuxserver/code-server) image.
+A Docker image providing a complete web-based development environment for Claude Code, built on top of the excellent [linuxserver/code-server](https://hub.docker.com/r/linuxserver/code-server) image.
 
 ## Overview
 
-This Docker image combines the power of browser-based VS Code development with Anthropic's Claude Code AI coding assistant and Claude Threads for Mattermost integration, creating a comprehensive development environment accessible from any web browser. Perfect for developers who want a portable, AI-enhanced coding workspace.
+This Docker image bundles a web-based IDE (VSCode Server), Claude Code, Claude Code Router, and Claude Threads into a comprehensive development environment accessible from any web browser and Mattermost client. Perfect for developers who want a self-contained, and highly flexible Claude Code workspace. 
 
 ## What's Included
 
@@ -24,12 +24,12 @@ This Docker image combines the power of browser-based VS Code development with A
  - [GitHub Repository](https://github.com/musistudio/claude-code-router)
  - Multi-provider support (OpenRouter, NVIDIA NIM, Google, Ollama, Mistral, etc.)
  - Dynamic model switching and request/response transformation
- - Pre-configured profiles: `default`, `nim-kimi`, `google`, `openrouter-free`, `devstral`
+ - Pre-configured profiles: `default`, `nim-kimi`, `nim-deepseek`, `google-gemini`, `mistral-devstral`, `mistral-mistral-large`
 
 - **Claude Threads** - Real-time chat integration for Mattermost
+ - [GitHub Repository](https://github.com/anneschuth/claude-threads)
  - WebSocket-based bidirectional communication
  - Multi-platform support (Mattermost)
- - Session management with configurable timeouts
 
 ### Development Stack
 
@@ -47,23 +47,16 @@ docker run -d \
  -e PUID=1000 \
  -e PGID=1000 \
  -e TZ=Etc/UTC \
- -e PASSWORD=password \
- -e HASHED_PASSWORD= \
  -e SUDO_PASSWORD=password \
- -e SUDO_PASSWORD_HASH= \
- -e PROXY_DOMAIN=code-server.my.domain \
- -e DEFAULT_WORKSPACE=/config/workspace \
+ -e DEFAULT_WORKSPACE=/workspace \
  -e PWA_APPNAME=code-server \
  -e NIM_API_KEY=your-nvidia-nim-api-key \
  -e GOOGLE_API_KEY=your-google-ai-studio-api-key \
- -e MISTRAL_API_KEY=your-mistral-api-key \
- -e OPENROUTER_API_KEY=your-openrouter-api-key \
  -p 8443:8443 \
  -v /var/run/docker.sock:/var/run/docker.sock \
- -v /path/to/code-server/config:/config \
  -v /path/to/your/code:/workspace \
  --restart unless-stopped \
- tylercollison2089/vscode-claude
+ tylercollison2089/claude-conx
 
 # Access at http://localhost:8443
 ```
@@ -73,148 +66,112 @@ docker run -d \
 This container supports extensive configuration through environment variables.
 
 ### Container Configuration
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `PUID` | User ID for container processes | `1000` |
-| `PGID` | Group ID for container processes | `1000` |
-| `TZ` | Timezone configuration | `Etc/UTC` |
-| `PROXY_DOMAIN` | Reverse proxy domain for external access | - |
-| `DEFAULT_WORKSPACE` | Default workspace directory | `/config/workspace` |
-| `PWA_APPNAME` | Progressive Web App name | `code-server` |
+| Variable | Description |
+|----------|-------------|
+| `PUID` | User ID for container processes |
+| `PGID` | Group ID for container processes |
+| `TZ` | Timezone configuration |
+| `PROXY_DOMAIN` | Reverse proxy domain for external access |
+| `DEFAULT_WORKSPACE` | Default workspace directory |
+| `PWA_APPNAME` | Progressive Web App name |
 
 ### Authentication & Access Control
 | Variable | Description |
 |----------|-------------|
 | `PASSWORD` | Plaintext password for VS Code web interface |
-| `HASHED_PASSWORD` | Argon2id-hashed password (recommended) |
+| `HASHED_PASSWORD` | Argon2id-hashed password |
 | `SUDO_PASSWORD` | Plaintext sudo password |
 | `SUDO_PASSWORD_HASH` | Hashed sudo password |
 
 ### Claude Code Configuration
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `CLAUDE_CODE_PERMISSION_MODE` | Permission mode (`acceptEdits`, `bypassPermissions`, `default`, `plan`, `dontAsk`) | `acceptEdits` |
-| `CLAUDE_MARKETPLACES` | Comma-separated list of plugin marketplaces | - |
-| `CLAUDE_PLUGINS` | Comma-separated list of plugins to install | - |
+| Variable | Description |
+|----------|-------------|
+| `CLAUDE_CODE_PERMISSION_MODE` | Permission mode (`acceptEdits`, `bypassPermissions`, `default`, `plan`, `dontAsk`) |
+| `CLAUDE_MARKETPLACES` | Comma-separated list of plugin marketplaces |
+| `CLAUDE_PLUGINS` | Comma-separated list of plugins to install |
 
 ### Claude Code Router Configuration
 | Variable | Description |
 |----------|-------------|
-| `CCR_PROFILE` | CCR profile to activate (uses `ccr <profile>` command) |
+| `CCR_PROFILE` | Claude Code Router profile to activate automatically |
 | `NIM_API_KEY` | NVIDIA NIM API key |
 | `GOOGLE_API_KEY` | Google AI Studio API key |
 | `MISTRAL_API_KEY` | Mistral AI API key |
 | `OPENROUTER_API_KEY` | OpenRouter API key |
 
 ### Claude Threads Configuration
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `ENABLE_THREADS` | Enable Claude Threads server | `false` |
-| `CCR_PROFILE` | CCR profile to use with Threads | - |
-| `MM_ADDRESS` | Mattermost server URL | - |
-| `MM_TOKEN` | Mattermost bot authentication token | - |
-| `MM_CHANNEL` | Target channel name | - |
-| `MM_CHANNEL_ID` | Target channel ID | - |
-| `MM_TEAM` | Mattermost team name | `home` |
-| `MM_BOT_NAME` | Bot display name | `Claude Threads` |
-| `THREADS_CHROME` | Chrome executable path | - |
-| `THREADS_WORKTREE_MODE` | Git worktree mode | `true` |
-| `THREADS_SKIP_PERMISSIONS` | Skip permission prompts | `false` |
+| Variable | Description |
+|----------|-------------|
+| `ENABLE_THREADS` | Enable Claude Threads server |
+| `MM_ADDRESS` | Mattermost server URL |
+| `MM_TOKEN` | Mattermost bot authentication token |
+| `MM_CHANNEL` | Target channel for this container to use |
+| `MM_TEAM` | Mattermost team name (must exist in Mattermost) |
+| `MM_BOT_NAME` | Bot display name (must match Mattermost configuration) |
+| `THREADS_CHROME` | Chrome executable path |
+| `THREADS_WORKTREE_MODE` | Git worktree mode |
+| `THREADS_SKIP_PERMISSIONS` | Skip permission prompts |
 
 ### Git Repository Setup
 | Variable | Description |
 |----------|-------------|
 | `GIT_REPO_URL` | Repository URL to clone on startup |
-| `GIT_BRANCH_NAME` | Branch name (auto-generated if not specified) |
+| `GIT_BRANCH_NAME` | Branch name |
 
 ### Knowledge Repository Integration
 | Variable | Description |
 |----------|-------------|
-| `KNOWLEDGE_REPOS` | Git repos with markdown files (format: `URL[:branch]:file1,file2;...`) |
-
-### Volume Configuration
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `enabled_volumes` | Array of container paths to mount as persistent volumes | `[]` |
-| `include_docker_sock` | Whether to mount Docker socket | `true` |
-
-**Example:**
-```json
-{
-  "enabled_volumes": ["/config", "/workspace", "/data"],
-  "include_docker_sock": false
-}
-```
-
-This creates named volumes: `{instance_name}-config`, `{instance_name}-workspace`, `{instance_name}-data`
-
-## Security Best Practices
-
-### Sensitive Environment Variables
-
-**High-Security Variables:**
-- `PASSWORD` / `HASHED_PASSWORD` - Container access authentication
-- `SUDO_PASSWORD` / `SUDO_PASSWORD_HASH` - Administrative privileges
-- `MM_TOKEN` - Mattermost bot authentication token
-- `NIM_API_KEY`, `GOOGLE_API_KEY`, `MISTRAL_API_KEY`, `OPENROUTER_API_KEY` - AI service API keys
-
-**Security Recommendations:**
-
-1. **Use hashed passwords** when possible:
- ```bash
- # Generate hashed password
- echo -n "your-password" | argon2 $(openssl rand -hex 16) -e
- ```
-
-2. **Restrict Docker socket access** in production:
- ```yaml
- networks:
- - internal-only
- ```
-
-3. **Use dedicated tokens** for Mattermost with minimal permissions
+| `KNOWLEDGE_REPOS` | Git repos with markdown files to load into CLAUDE.md (format: `URL[:branch]:file1,file2;...`) |
 
 ## Docker Compose
 
 ```yaml
 services:
  claude-dev:
- image: tylercollison2089/vscode-claude:latest
+ image: tylercollison2089/claude-conx:latest
  container_name: claude-dev
  environment:
  - PUID=1000
  - PGID=1000
  - TZ=Etc/UTC
- - PASSWORD=password
- - HASHED_PASSWORD=
- - SUDO_PASSWORD=password
- - SUDO_PASSWORD_HASH=
- - PROXY_DOMAIN=code-server.my.domain
- - DEFAULT_WORKSPACE=/config/workspace
- - PWA_APPNAME=code-server
+ - PASSWORD=password # Optional
+ - HASHED_PASSWORD= # Optional
+ - SUDO_PASSWORD=password # Optional
+ - SUDO_PASSWORD_HASH= # Optional
+ - PROXY_DOMAIN=code-server.my.domain # Optional
+ - DEFAULT_WORKSPACE=/workspace
+ - PWA_APPNAME=code-server # Optional
  - CLAUDE_CODE_PERMISSION_MODE=acceptEdits
- - NIM_API_KEY=your-nvidia-nim-api-key
- - GOOGLE_API_KEY=your-google-ai-studio-api-key
- - MISTRAL_API_KEY=your-mistral-api-key
- - OPENROUTER_API_KEY=your-openrouter-api-key
- # Git repository setup
+ - NIM_API_KEY=your-nvidia-nim-api-key # Only required if using NIM models
+ - GOOGLE_API_KEY=your-google-ai-studio-api-key # Only required if using Google models
+ - MISTRAL_API_KEY=your-mistral-api-key # Only required if using Mistral models
+ - OPENROUTER_API_KEY=your-openrouter-api-key # Only required if using OpenRouter models
+ - CCR_PROFILE=default # Optional
+ # Claude Code Plugins (optional)
+ - CLAUDE_MARKETPLACES=anthropics/claude-plugins-official
+ - CLAUDE_PLUGINS=ralph-loop,superpowers
+ # Git repository setup (optional)
  - GIT_REPO_URL=https://github.com/user/repo.git
  - GIT_BRANCH_NAME=feature-branch
- # Knowledge repositories
+ # Knowledge repositories (optional)
  - KNOWLEDGE_REPOS=https://github.com/user/docs.git:main:README.md,docs/guide.md
- # Claude Threads
+ # Claude Threads (optional)
  - ENABLE_THREADS=true
+ - IDE_ADDRESS=http://localhost:8443 
  - MM_ADDRESS=http://mattermost.example.com:8065
  - MM_CHANNEL=claude-code
  - MM_TOKEN=your-bot-token
  - MM_TEAM=engineering
- - MM_BOT_NAME=Claude AI
+ - MM_BOT_NAME=claude-code
+ - THREADS_CHROME=true
+ - THREADS_WORKTREE_MODE=off
+ - THREADS_SKIP_PERMISSIONS=true
  ports:
  - "8443:8443"
  volumes:
- - /var/run/docker.sock:/var/run/docker.sock
- - /path/to/code-server/config:/config
- - /path/to/your/code:/workspace
+ - /var/run/docker.sock:/var/run/docker.sock # Optional for docker support
+ - /path/to/code-server/config:/config # Only specify if using existing configuration
+ - /path/to/your/code:/workspace # Only specify if GIT_REPO_URL is unset
  restart: unless-stopped
 ```
 
@@ -222,7 +179,7 @@ services:
 
 ### Claude Code Setup
 
-After starting the container:
+To run Claude Code directly without Claude Code Router, after starting the container:
 1. Open the terminal in VS Code
 2. Run `claude` to start Claude Code
 3. Follow the authentication prompts for your Claude account
@@ -232,10 +189,6 @@ After starting the container:
 To use CCR with a specific profile:
 
 ```bash
-# Set the profile environment variable
-export CCR_PROFILE=default
-
-# Or use ccr command directly
 ccr nim-kimi
 ccr google
 ccr openrouter-free
@@ -243,11 +196,12 @@ ccr devstral
 ```
 
 Available profiles:
-- `default` - NIM Kimi + Google Gemini hybrid
+- `default` - NIM DeepSeek v3.1 Terminus + Google Gemini (for images)
 - `nim-kimi` - NVIDIA NIM with Kimi K2.5
-- `google` - Google Gemini models
-- `openrouter-free` - Free models via OpenRouter
-- `devstral` - Mistral Devstral models
+- `nim-deepseek` - NVIDIA NIM with DeepSeek v3.1 Terminus
+- `google-gemini` - Google Gemini 2.5 Flash
+- `mistral-devstral` - Mistral Devstral + Mistral Large (for images)
+- `mistral-mistral-large` - Mistral Large
 
 ### Claude Threads
 
@@ -260,7 +214,7 @@ environment:
  - MM_TOKEN=your-bot-token
  - MM_CHANNEL=claude-code
  - MM_TEAM=engineering
- - MM_BOT_NAME=Claude AI
+ - MM_BOT_NAME=claude-code
  - CCR_PROFILE=default # Optional: use CCR profile
 ```
 
@@ -356,12 +310,12 @@ docker build -t my-app .
 ## Building Locally
 
 ```bash
-git clone https://github.com/TylerCollison/vscode-claude.git
-cd vscode-claude
+git clone https://github.com/TylerCollison/claude-conx.git
+cd claude-conx
 docker build \
  --no-cache \
  --pull \
- -t tylercollison2089/vscode-claude:latest .
+ -t tylercollison2089/claude-conx:latest .
 
 # Test the container starts properly
 ./test-container.sh
@@ -419,7 +373,7 @@ docker exec claude-dev ls -la /config/.claude-code-router/presets/
 - **[linuxserver/code-server](https://hub.docker.com/r/linuxserver/code-server)** - Base VS Code Server environment
 - **[Anthropic Claude Code](https://code.claude.com/docs/en/overview)** - AI coding assistant
 - **[Claude Code Router](https://github.com/musistudio/claude-code-router)** - Model routing and customization
-- **[Claude Threads](https://github.com/tylercollison/claude-threads)** - Real-time chat integration
+- **[Claude Threads](https://github.com/anneschuth/claude-threads)** - Real-time chat integration
 
 ## Support
 
@@ -428,15 +382,15 @@ docker exec claude-dev ls -la /config/.claude-code-router/presets/
 - **Claude Code**: [Claude Code documentation](https://code.claude.com/docs/en/overview)
 - **linuxserver/code-server**: [linuxserver/code-server documentation](https://hub.docker.com/r/linuxserver/code-server)
 - **Claude Code Router**: [Claude Code Router GitHub](https://github.com/musistudio/claude-code-router)
-- **Claude Threads**: [Claude Threads GitHub](https://github.com/tylercollison/claude-threads)
+- **Claude Threads**: [Claude Threads GitHub](https://github.com/anneschuth/claude-threads)
 
 ### Issues
 - **VS Code**: [vscode GitHub issue tracker](https://github.com/microsoft/vscode/issues)
 - **linuxserver/code-server**: [linuxserver/code-server GitHub issue tracker](https://github.com/linuxserver/docker-code-server/issues)
 - **Claude Code**: [Claude Code GitHub issue tracker](https://github.com/anthropics/claude-code/issues)
 - **Claude Code Router**: [Claude Code Router GitHub issue tracker](https://github.com/musistudio/claude-code-router/issues)
-- **Claude Threads**: [Claude Threads GitHub issue tracker](https://github.com/tylercollison/claude-threads/issues)
-- **tylercollison2089/vscode-claude**: [VSCode Claude GitHub issue tracker](https://github.com/TylerCollison/vscode-claude/issues)
+- **Claude Threads**: [Claude Threads GitHub issue tracker](https://github.com/anneschuth/claude-threads/issues)
+- **tylercollison2089/claude-conx**: [ClaudeConX GitHub issue tracker](https://github.com/TylerCollison/claude-conx/issues)
 
 ## License
 
