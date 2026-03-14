@@ -1,7 +1,7 @@
 """Tests for build environment manager."""
 
 import os
-import unittest
+import pytest
 from unittest.mock import Mock
 
 # Mock docker before imports
@@ -22,108 +22,122 @@ sys.modules['build_env.security'].generate_container_uuid.return_value = "123456
 from build_env import BuildEnvironmentManager, BuildEnvironmentError
 
 
-class TestBuildEnvironmentManager(unittest.TestCase):
-    """Test BuildEnvironmentManager core functionality."""
-
-    def setUp(self):
-        """Set up test fixtures."""
-        self.mock_docker_client = Mock()
-        self.manager = BuildEnvironmentManager(
-            docker_client=self.mock_docker_client
-        )
-
-    def tearDown(self):
-        """Clean up after tests."""
-        # Clean up environment variables
-        for var in ["BUILD_CONTAINER", "DEFAULT_WORKSPACE"]:
-            if var in os.environ:
-                del os.environ[var]
-
-    def test_generate_container_name(self):
-        """Test container name generation."""
-        name = self.manager._generate_container_name()
-        self.assertTrue(name.startswith("build-env-"))
-        self.assertEqual(len(name), 46)  # build-env- + UUIDv4
-
-    def test_validate_requirements_success(self):
-        """Test requirements validation success."""
-        # Set required environment variables
-        os.environ["BUILD_CONTAINER"] = "test-container"
-        os.environ["DEFAULT_WORKSPACE"] = "/workspace"
-
-        # Should not raise any exception
-        env_vars = {"TEST_VAR": "test_value"}
-        self.manager._validate_requirements(env_vars)
-
-    def test_validate_requirements_missing_build_container(self):
-        """Test requirements validation with missing BUILD_CONTAINER."""
-        # Ensure BUILD_CONTAINER is not set
-        if "BUILD_CONTAINER" in os.environ:
-            del os.environ["BUILD_CONTAINER"]
-
-        # Set DEFAULT_WORKSPACE
-        os.environ["DEFAULT_WORKSPACE"] = "/workspace"
-
-        env_vars = {"TEST_VAR": "test_value"}
-
-        with self.assertRaises(BuildEnvironmentError) as cm:
-            self.manager._validate_requirements(env_vars)
-        self.assertIn("BUILD_CONTAINER environment variable is required", str(cm.exception))
-
-    def test_validate_requirements_missing_default_workspace(self):
-        """Test requirements validation with missing DEFAULT_WORKSPACE."""
-        # Set BUILD_CONTAINER
-        os.environ["BUILD_CONTAINER"] = "test-container"
-
-        # Ensure DEFAULT_WORKSPACE is not set
-        if "DEFAULT_WORKSPACE" in os.environ:
-            del os.environ["DEFAULT_WORKSPACE"]
-
-        env_vars = {"TEST_VAR": "test_value"}
-
-        with self.assertRaises(BuildEnvironmentError) as cm:
-            self.manager._validate_requirements(env_vars)
-        self.assertIn("DEFAULT_WORKSPACE environment variable is required", str(cm.exception))
-
-    def test_get_container_uuid(self):
-        """Test workspace UUID generation."""
-        uuid = self.manager._get_container_uuid("/workspace/test")
-        self.assertEqual(uuid, "12345678-1234-5678-1234-567812345678")
-
-    def test_container_exists(self):
-        """Test container existence check."""
-        # Container exists
-        self.mock_docker_client.containers.get.return_value = Mock()
-        self.assertTrue(self.manager._container_exists("my-container"))
-
-        # Container does not exist
-        self.mock_docker_client.containers.get.side_effect = Exception("Not found")
-        self.assertFalse(self.manager._container_exists("non-existent-container"))
-
-    def test_container_running(self):
-        """Test container running status check."""
-        # Container is running
-        mock_container = Mock()
-        mock_container.status = "running"
-        self.mock_docker_client.containers.get.return_value = mock_container
-        self.assertTrue(self.manager._container_running("running-container"))
-
-        # Container is not running
-        mock_container.status = "exited"
-        self.assertFalse(self.manager._container_running("exited-container"))
-
-        # Container does not exist
-        self.mock_docker_client.containers.get.side_effect = Exception("Not found")
-        self.assertFalse(self.manager._container_running("non-existent-container"))
-
-    def test_get_container_uuid_calls_security_module(self):
-        """Test that get_container_uuid calls the security module."""
-        # Reset the mock call count
-        sys.modules['build_env.security'].generate_container_uuid.reset_mock()
-        uuid = self.manager._get_container_uuid("/workspace/test")
-        self.assertEqual(uuid, "12345678-1234-5678-1234-567812345678")
-        sys.modules['build_env.security'].generate_container_uuid.assert_called_once()
+@pytest.fixture
+def mock_docker_client():
+    """Mock Docker client fixture."""
+    return Mock()
 
 
-if __name__ == "__main__":
-    unittest.main()
+@pytest.fixture
+def manager(mock_docker_client):
+    """BuildEnvironmentManager fixture."""
+    return BuildEnvironmentManager(docker_client=mock_docker_client)
+
+
+def test_build_env_manager_initialization():
+    """Test BuildEnvironmentManager initialization."""
+    manager = BuildEnvironmentManager()
+    assert manager.docker_client is not None
+
+
+def test_container_name_generation(manager):
+    """Test container name generation with UUID."""
+    container_name = manager._generate_container_name()
+    assert container_name.startswith("build-env-")
+    assert len(container_name) == 46  # build-env- + UUIDv4
+
+
+def test_validate_requirements_success(manager):
+    """Test requirements validation success."""
+    # Set required environment variables
+    os.environ["BUILD_CONTAINER"] = "test-container"
+    os.environ["DEFAULT_WORKSPACE"] = "/workspace"
+
+    # Should not raise any exception
+    env_vars = {"TEST_VAR": "test_value"}
+    manager._validate_requirements(env_vars)
+
+    # Clean up
+    del os.environ["BUILD_CONTAINER"]
+    del os.environ["DEFAULT_WORKSPACE"]
+
+
+def test_validate_requirements_missing_build_container(manager):
+    """Test validation fails when BUILD_CONTAINER not set."""
+    # Ensure BUILD_CONTAINER is not set
+    if "BUILD_CONTAINER" in os.environ:
+        del os.environ["BUILD_CONTAINER"]
+
+    # Set DEFAULT_WORKSPACE
+    os.environ["DEFAULT_WORKSPACE"] = "/workspace"
+
+    env_vars = {"TEST_VAR": "test_value"}
+
+    with pytest.raises(BuildEnvironmentError) as exc_info:
+        manager._validate_requirements(env_vars)
+    assert "BUILD_CONTAINER environment variable is required" in str(exc_info.value)
+
+    # Clean up
+    del os.environ["DEFAULT_WORKSPACE"]
+
+
+def test_validate_requirements_missing_default_workspace(manager):
+    """Test validation fails when DEFAULT_WORKSPACE not set."""
+    # Set BUILD_CONTAINER
+    os.environ["BUILD_CONTAINER"] = "test-container"
+
+    # Ensure DEFAULT_WORKSPACE is not set
+    if "DEFAULT_WORKSPACE" in os.environ:
+        del os.environ["DEFAULT_WORKSPACE"]
+
+    env_vars = {"TEST_VAR": "test_value"}
+
+    with pytest.raises(BuildEnvironmentError) as exc_info:
+        manager._validate_requirements(env_vars)
+    assert "DEFAULT_WORKSPACE environment variable is required" in str(exc_info.value)
+
+    # Clean up
+    del os.environ["BUILD_CONTAINER"]
+
+
+def test_get_container_uuid(manager):
+    """Test workspace UUID generation."""
+    uuid = manager._get_container_uuid("/workspace/test")
+    assert uuid == "12345678-1234-5678-1234-567812345678"
+
+
+def test_container_exists(manager, mock_docker_client):
+    """Test container existence check."""
+    # Container exists
+    mock_docker_client.containers.get.return_value = Mock()
+    assert manager._container_exists("my-container") is True
+
+    # Container does not exist
+    mock_docker_client.containers.get.side_effect = Exception("Not found")
+    assert manager._container_exists("non-existent-container") is False
+
+
+def test_container_running(manager, mock_docker_client):
+    """Test container running status check."""
+    # Container is running
+    mock_container = Mock()
+    mock_container.status = "running"
+    mock_docker_client.containers.get.return_value = mock_container
+    assert manager._container_running("running-container") is True
+
+    # Container is not running
+    mock_container.status = "exited"
+    assert manager._container_running("exited-container") is False
+
+    # Container does not exist
+    mock_docker_client.containers.get.side_effect = Exception("Not found")
+    assert manager._container_running("non-existent-container") is False
+
+
+def test_get_container_uuid_calls_security_module(manager):
+    """Test that get_container_uuid calls the security module."""
+    # Reset the mock call count
+    sys.modules['build_env.security'].generate_container_uuid.reset_mock()
+    uuid = manager._get_container_uuid("/workspace/test")
+    assert uuid == "12345678-1234-5678-1234-567812345678"
+    sys.modules['build_env.security'].generate_container_uuid.assert_called_once()
