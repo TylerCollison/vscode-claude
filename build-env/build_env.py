@@ -1,10 +1,21 @@
 """Build environment manager core logic."""
 
+import os
 import re
 import uuid
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import docker
 from docker.errors import NotFound
+
+from build_env.security import (
+    validate_image_name, filter_environment_variables,
+    generate_container_uuid, SecurityError
+)
+
+
+class BuildEnvironmentError(Exception):
+    """Build environment error."""
+    pass
 
 
 class BuildEnvironmentManager:
@@ -18,23 +29,13 @@ class BuildEnvironmentManager:
         """
         self.docker_client = docker_client or docker.from_env()
 
-    def _generate_container_name(self, project_name: str) -> str:
-        """Generate a unique container name for the project.
-
-        Args:
-            project_name: Name of the project
+    def _generate_container_name(self) -> str:
+        """Generate a unique container name.
 
         Returns:
-            Unique container name with format: {project}-{uuid8}
+            Unique container name with format: build-{uuid}
         """
-        # Clean project name - replace non-alphanumeric characters with hyphens
-        clean_name = re.sub(r'[^a-zA-Z0-9]', '-', project_name)
-        clean_name = re.sub(r'-+', '-', clean_name).strip('-')
-
-        # Generate unique identifier
-        uuid_short = str(uuid.uuid4())[:8]
-
-        return f"{clean_name}-{uuid_short}"
+        return f"build-{generate_container_uuid()}"
 
     def _validate_requirements(self, requirements: Dict[str, Any]) -> bool:
         """Validate build environment requirements.
@@ -46,23 +47,30 @@ class BuildEnvironmentManager:
             True if requirements are valid
 
         Raises:
-            ValueError: If requirements are invalid
+            BuildEnvironmentError: If requirements are invalid
         """
         if "image" not in requirements:
-            raise ValueError("Docker image is required")
+            raise BuildEnvironmentError("Docker image is required")
 
-        if not isinstance(requirements["image"], str):
-            raise ValueError("Docker image must be a string")
+        # Validate image name using security module
+        try:
+            validate_image_name(requirements["image"])
+        except Exception as e:
+            raise BuildEnvironmentError(f"Invalid image name: {e}")
 
-        # Optional validation for working directory
-        if "working_dir" in requirements:
-            if not isinstance(requirements["working_dir"], str):
-                raise ValueError("Working directory must be a string")
+        # Check for BUILD_CONTAINER environment variable
+        if not os.environ.get("BUILD_CONTAINER"):
+            raise BuildEnvironmentError("BUILD_CONTAINER environment variable is required")
 
-        # Optional validation for command
-        if "command" in requirements:
-            if not isinstance(requirements["command"], (list, tuple)):
-                raise ValueError("Command must be a list or tuple")
+        # Check for DEFAULT_WORKSPACE environment variable
+        if not os.environ.get("DEFAULT_WORKSPACE"):
+            raise BuildEnvironmentError("DEFAULT_WORKSPACE environment variable is required")
+
+        # Filter environment variables
+        if "environment" in requirements:
+            requirements["environment"] = filter_environment_variables(
+                requirements["environment"]
+            )
 
         return True
 
@@ -106,10 +114,10 @@ class BuildEnvironmentManager:
             Container UUID (ID)
 
         Raises:
-            ValueError: If container doesn't exist
+            BuildEnvironmentError: If container doesn't exist
         """
         try:
             container = self.docker_client.containers.get(container_name)
             return container.id
         except NotFound:
-            raise ValueError(f"Container '{container_name}' does not exist")
+            raise BuildEnvironmentError(f"Container '{container_name}' does not exist")
