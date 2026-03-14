@@ -48,7 +48,7 @@ class BuildEnvironmentManager:
         """
         # Check for BUILD_CONTAINER environment variable
         if not env_vars.get("BUILD_CONTAINER"):
-            raise BuildEnvironmentError("BUILD_CONTAINER environment variable is required")
+            raise BuildEnvironmentError("BUILD_CONTAINER environment variable must be set")
 
         # Check for DEFAULT_WORKSPACE environment variable
         if not env_vars.get("DEFAULT_WORKSPACE"):

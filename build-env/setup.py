@@ -16,6 +16,7 @@ setup(
             "build-env=build_env_cli:main",
         ],
     },
+    py_modules=['build_env', 'build_env_cli', 'security'],
     author="Claude Code",
     author_email="noreply@anthropic.com",
     classifiers=[
