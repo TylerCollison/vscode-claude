@@ -1,16 +1,11 @@
 """Build environment manager core logic."""
 
 import os
-import re
-import uuid
-from typing import Dict, Any, Optional, List
+from typing import Dict, Optional
 import docker
 from docker.errors import NotFound
 
-from build_env.security import (
-    validate_image_name, filter_environment_variables,
-    generate_container_uuid, SecurityError
-)
+from build_env.security import generate_container_uuid
 
 
 class BuildEnvironmentError(Exception):
@@ -33,31 +28,19 @@ class BuildEnvironmentManager:
         """Generate a unique container name.
 
         Returns:
-            Unique container name with format: build-{uuid}
+            Unique container name with format: build-env-{uuid}
         """
-        return f"build-{generate_container_uuid()}"
+        return f"build-env-{generate_container_uuid()}"
 
-    def _validate_requirements(self, requirements: Dict[str, Any]) -> bool:
+    def _validate_requirements(self, env_vars: Dict[str, str]) -> None:
         """Validate build environment requirements.
 
         Args:
-            requirements: Dictionary containing build environment requirements
-
-        Returns:
-            True if requirements are valid
+            env_vars: Dictionary of environment variables
 
         Raises:
             BuildEnvironmentError: If requirements are invalid
         """
-        if "image" not in requirements:
-            raise BuildEnvironmentError("Docker image is required")
-
-        # Validate image name using security module
-        try:
-            validate_image_name(requirements["image"])
-        except Exception as e:
-            raise BuildEnvironmentError(f"Invalid image name: {e}")
-
         # Check for BUILD_CONTAINER environment variable
         if not os.environ.get("BUILD_CONTAINER"):
             raise BuildEnvironmentError("BUILD_CONTAINER environment variable is required")
@@ -65,14 +48,6 @@ class BuildEnvironmentManager:
         # Check for DEFAULT_WORKSPACE environment variable
         if not os.environ.get("DEFAULT_WORKSPACE"):
             raise BuildEnvironmentError("DEFAULT_WORKSPACE environment variable is required")
-
-        # Filter environment variables
-        if "environment" in requirements:
-            requirements["environment"] = filter_environment_variables(
-                requirements["environment"]
-            )
-
-        return True
 
     def _container_exists(self, container_name: str) -> bool:
         """Check if a container exists.
@@ -104,20 +79,13 @@ class BuildEnvironmentManager:
         except NotFound:
             return False
 
-    def _get_container_uuid(self, container_name: str) -> str:
-        """Get the unique identifier for a container.
+    def _get_container_uuid(self, workspace_path: str) -> str:
+        """Get the unique identifier for a workspace.
 
         Args:
-            container_name: Name of the container
+            workspace_path: Path to the workspace
 
         Returns:
-            Container UUID (ID)
-
-        Raises:
-            BuildEnvironmentError: If container doesn't exist
+            UUID string
         """
-        try:
-            container = self.docker_client.containers.get(container_name)
-            return container.id
-        except NotFound:
-            raise BuildEnvironmentError(f"Container '{container_name}' does not exist")
+        return generate_container_uuid()
