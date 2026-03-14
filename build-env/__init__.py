@@ -1,1 +1,5 @@
-# Package initialization for build-env
+"""Build environment manager package."""
+
+from .build_env import BuildEnvironmentManager
+
+__all__ = ['BuildEnvironmentManager']
