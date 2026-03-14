@@ -171,14 +171,34 @@ Host environment variables are filtered to:
 - Reject potentially dangerous image patterns
 
 **Environment Variable Filtering:**
-- Exclude: `DOCKER_*`, `_*`, sensitive API keys
-- Include: `PATH`, `HOME`, `USER`, build-related variables
-- Whitelist approach for safety
+```python
+# Safe environment variable whitelist
+SAFE_ENV_VARS = {
+    'PATH', 'HOME', 'USER', 'PWD', 'SHELL', 'TERM', 'LANG', 'LC_ALL',
+    'BUILD_CONTAINER', 'DEFAULT_WORKSPACE', 'CCONX_*', 'BUILD_*'
+}
+
+# Dangerous environment variable blacklist
+DANGEROUS_ENV_PATTERNS = {
+    'DOCKER_*', '_*', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY',
+    'GITHUB_TOKEN', 'API_KEY', 'SECRET', 'PASSWORD', 'TOKEN'
+}
+```
+
+**UUID Generation Security:**
+- Use `uuid.uuid4()` for cryptographically secure random UUIDs
+- Store UUID in workspace metadata for consistency
+- Validate UUID format before use
+
+**Container Privileges:**
+- Use minimal Docker security profile
+- No `--privileged` flag
+- Capabilities limited to build requirements
 
 **Command Execution Security:**
 - Use Docker Python SDK `exec_run()` instead of shell
-- Proper argument escaping
-- Input validation for all parameters
+- Proper argument escaping using `shlex.quote()`
+- Input validation using existing cconx patterns
 
 ## Performance Considerations
 
@@ -186,13 +206,26 @@ Host environment variables are filtered to:
 - Minimal overhead for repeated commands
 - Efficient environment variable passing
 
+## Container Cleanup Strategy
+
+**Inactive Container Detection:**
+- Track last usage timestamp
+- Auto-cleanup after 24 hours of inactivity
+- Manual cleanup via `build-env --cleanup` command
+
+**Container Cleanup Process:**
+1. Stop container gracefully
+2. Remove container and associated resources
+3. Clean up workspace metadata
+4. Log cleanup actions for audit
+
 ## Future Enhancements
 
 ### Potential Features
-- Container cleanup after inactivity
 - Multiple container support per workspace
 - Custom entrypoint scripts
 - Build cache persistence
+- Resource usage monitoring
 
 ## Dependencies
 
