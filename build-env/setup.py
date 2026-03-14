@@ -11,6 +11,11 @@ setup(
         "docker>=6.0.0",
     ],
     python_requires=">=3.8",
+    entry_points={
+        "console_scripts": [
+            "build-env=build_env_cli:main",
+        ],
+    },
     author="Claude Code",
     author_email="noreply@anthropic.com",
     classifiers=[
