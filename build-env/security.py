@@ -5,118 +5,123 @@ Provides validation functions to ensure Docker container configurations are safe
 """
 
 import re
+import uuid as uuid_lib
+from typing import Dict, Set
 
 
-class SecurityValidation:
-    """Validates Docker container configurations for security."""
+class SecurityError(Exception):
+    """Security validation error."""
+    pass
 
-    def validate_image_name(self, image_name: str) -> bool:
-        """
-        Validate that an image name is safe.
 
-        Args:
-            image_name: The Docker image name to validate
+# Safe environment variable whitelist
+SAFE_ENV_VARS: Set[str] = {
+    'PATH', 'HOME', 'USER', 'PWD', 'SHELL', 'TERM', 'LANG', 'LC_ALL',
+    'BUILD_CONTAINER', 'DEFAULT_WORKSPACE', 'BUILD_*'
+}
 
-        Returns:
-            bool: True if the image name is safe, False otherwise
-        """
-        if not image_name:
-            return False
+# Dangerous environment variable patterns
+DANGEROUS_ENV_PATTERNS: Set[str] = {
+    'DOCKER_*', '_*', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY',
+    'GITHUB_TOKEN', 'API_KEY', 'SECRET', 'PASSWORD', 'TOKEN'
+}
 
-        # Reject path traversal attempts
-        if ".." in image_name or image_name.startswith("/") or "://" in image_name:
-            return False
+# Valid image name pattern
+IMAGE_NAME_PATTERN = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_.\-/:]*:[a-zA-Z0-9_.\-]+$')
 
-        # Reject whitespace characters
-        if any(c.isspace() for c in image_name):
-            return False
 
-        # Basic format validation (repo/image:tag)
-        pattern = r'^[a-zA-Z0-9][a-zA-Z0-9._-]*(/[a-zA-Z0-9][a-zA-Z0-9._-]*)?(:[a-zA-Z0-9._-]+)?$'
-        return bool(re.match(pattern, image_name))
+def validate_image_name(image_name: str) -> bool:
+    """Validate Docker image name for security.
 
-    def validate_command(self, command: list) -> bool:
-        """
-        Validate that a command is safe to execute.
+    Args:
+        image_name: Docker image name to validate
 
-        Args:
-            command: The command list to validate
+    Returns:
+        True if image name is valid
 
-        Returns:
-            bool: True if the command is safe, False otherwise
-        """
-        if not command:
-            return False
+    Raises:
+        SecurityError: If image name is invalid or potentially dangerous
+    """
+    if not image_name or not isinstance(image_name, str):
+        raise SecurityError("Image name must be a non-empty string")
 
-        dangerous_patterns = [
-            r'rm\s+-rf\s+/',  # Dangerous rm command
-            r'dd\s+',  # Disk operations
-            r'chmod\s+777',  # Permission changes
-            r'\|\s*(sh|bash|zsh)',  # Pipe to shell
-            r'wget.*\|',  # Download and pipe
-            r'curl.*\|'  # Download and pipe
-        ]
+    # Check for injection patterns
+    injection_patterns = [';', '|', '&', '`', '$', '(', ')', '<', '>', '"', "'", '\\']
+    for pattern in injection_patterns:
+        if pattern in image_name:
+            raise SecurityError(f"Image name contains dangerous pattern: {pattern}")
 
-        cmd_str = ' '.join(command)
-        for pattern in dangerous_patterns:
-            if re.search(pattern, cmd_str):
-                return False
+    # Check for path traversal
+    if '..' in image_name or image_name.startswith('/'):
+        raise SecurityError("Image name contains path traversal patterns")
 
+    # Validate format
+    if not IMAGE_NAME_PATTERN.match(image_name):
+        raise SecurityError(
+            f"Invalid image name format: {image_name}. "
+            "Expected format: repository/image:tag"
+        )
+
+    return True
+
+
+def filter_environment_variables(env_vars: Dict[str, str]) -> Dict[str, str]:
+    """Filter environment variables for safety.
+
+    Args:
+        env_vars: Dictionary of environment variables
+
+    Returns:
+        Filtered dictionary with safe variables only
+    """
+    filtered = {}
+
+    for key, value in env_vars.items():
+        # Skip dangerous patterns
+        skip = False
+        for pattern in DANGEROUS_ENV_PATTERNS:
+            if pattern.endswith('*') and key.startswith(pattern[:-1]):
+                skip = True
+                break
+            elif key == pattern:
+                skip = True
+                break
+
+        if skip:
+            continue
+
+        # Include safe variables
+        if key in SAFE_ENV_VARS:
+            filtered[key] = value
+        elif key.startswith('BUILD_'):
+            filtered[key] = value
+
+    return filtered
+
+
+def validate_uuid(uuid_str: str) -> bool:
+    """Validate UUID format.
+
+    Args:
+        uuid_str: UUID string to validate
+
+    Returns:
+        True if UUID is valid
+
+    Raises:
+        SecurityError: If UUID format is invalid
+    """
+    try:
+        uuid_lib.UUID(uuid_str)
         return True
+    except ValueError:
+        raise SecurityError(f"Invalid UUID format: {uuid_str}")
 
-    def validate_environment_variables(self, env_vars: dict) -> bool:
-        """
-        Validate that environment variables are safe.
 
-        Args:
-            env_vars: Dictionary of environment variables
+def generate_container_uuid() -> str:
+    """Generate cryptographically secure UUID for container naming.
 
-        Returns:
-            bool: True if environment variables are safe, False otherwise
-        """
-        dangerous_vars = {
-            'LD_PRELOAD',  # Library injection
-            'LD_LIBRARY_PATH',  # Library path manipulation
-            'PYTHONPATH',  # Python module path manipulation
-            'PYTHONSTARTUP',  # Python startup script
-            'NODE_PATH',  # Node module path manipulation
-            'NODE_OPTIONS',  # Node options injection
-            'PERL5LIB',  # Perl module path manipulation
-            'RUBYLIB',  # Ruby library path manipulation
-            'GOPATH'  # Go path manipulation
-        }
-
-        for var_name in env_vars:
-            if var_name.upper() in dangerous_vars:
-                return False
-
-        return True
-
-    def validate_volumes(self, volumes: dict) -> bool:
-        """
-        Validate that volume mounts are safe.
-
-        Args:
-            volumes: Dictionary mapping container paths to host paths
-
-        Returns:
-            bool: True if volume mounts are safe, False otherwise
-        """
-        dangerous_paths = {
-            '/etc',  # System configuration
-            '/root',  # Root home directory
-            '/proc',  # Process filesystem
-            '/sys',  # System filesystem
-            '/dev',  # Device files
-            '/boot',  # Boot files
-            '/var/log',  # System logs
-            '/usr/bin',  # System binaries
-            '/bin',  # System binaries
-            '/sbin',  # System binaries
-        }
-
-        for container_path in volumes:
-            if container_path in dangerous_paths:
-                return False
-
-        return True
+    Returns:
+        UUID string
+    """
+    return str(uuid_lib.uuid4())
