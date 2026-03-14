@@ -89,7 +89,7 @@ class ConfigManager:
         return {
             "port_range": {"min": 8000, "max": 9000},
             "default_profile": "default",
-            "ide_address_template": "http://{host}:{port}",
+            "ide_address_template": "http://localhost:{port}",
             "environment": {},
             "enabled_volumes": [],
             "include_docker_sock": True,
