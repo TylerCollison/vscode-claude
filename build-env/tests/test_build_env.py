@@ -141,3 +141,82 @@ def test_get_container_uuid_calls_security_module(manager):
     uuid = manager._get_container_uuid("/workspace/test")
     assert uuid == "12345678-1234-5678-1234-567812345678"
     sys.modules['build_env.security'].generate_container_uuid.assert_called_once()
+
+
+def test_start_container_creates_new_container(manager, mock_docker_client):
+    """Test starting a new container when none exists."""
+    # Setup mocks
+    mock_image = Mock()
+    mock_container = Mock()
+
+    mock_docker_client.containers.get.side_effect = Exception("Not found")
+    mock_docker_client.images.get.return_value = mock_image
+    mock_docker_client.containers.create.return_value = mock_container
+    mock_container.start.return_value = None
+
+    # Call method
+    result = manager._start_container("test-image", "/workspace", {"TEST_VAR": "test_value"})
+
+    # Assertions
+    mock_docker_client.containers.get.assert_called_once_with("build-env-12345678-1234-5678-1234-567812345678")
+    mock_docker_client.images.get.assert_called_once_with("test-image")
+    mock_docker_client.containers.create.assert_called_once_with(
+        image="test-image",
+        name="build-env-12345678-1234-5678-1234-567812345678",
+        working_dir="/workspace",
+        volumes={"/workspace": {"bind": "/workspace", "mode": "rw"}},
+        environment={"TEST_VAR": "test_value"},
+        detach=True
+    )
+    mock_container.start.assert_called_once()
+    assert result == mock_container
+
+
+def test_start_container_reuses_running_container(manager, mock_docker_client):
+    """Test reusing an existing running container."""
+    # Setup mocks
+    mock_container = Mock()
+    mock_container.status = "running"
+
+    mock_docker_client.containers.get.return_value = mock_container
+
+    # Call method
+    result = manager._start_container("test-image", "/workspace", {"TEST_VAR": "test_value"})
+
+    # Assertions - should reuse existing container
+    mock_docker_client.containers.get.assert_called_once_with("build-env-12345678-1234-5678-1234-567812345678")
+    assert result == mock_container
+
+
+def test_execute_command(manager, mock_docker_client):
+    """Test executing a command in the container."""
+    # Setup mocks
+    mock_container = Mock()
+    mock_exec_result = Mock()
+    mock_exec_result.exit_code = 0
+    mock_exec_result.output = b"Command output"
+
+    mock_container.exec_run.return_value = mock_exec_result
+
+    # Call method
+    result = manager._execute_command(mock_container, "echo hello")
+
+    # Assertions
+    mock_container.exec_run.assert_called_once_with("echo hello", detach=False)
+    assert result.exit_code == 0
+    assert result.output == b"Command output"
+
+
+def test_shutdown_container(manager, mock_docker_client):
+    """Test shutting down and removing a container."""
+    # Setup mocks
+    mock_container = Mock()
+    mock_container.stop.return_value = None
+    mock_container.remove.return_value = None
+
+    # Call method
+    manager._shutdown_container(mock_container)
+
+    # Assertions
+    mock_container.stop.assert_called_once()
+    mock_container.remove.assert_called_once_with(force=True)

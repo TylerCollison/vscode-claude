@@ -1,7 +1,7 @@
 """Build environment manager core logic."""
 
 import os
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 import docker
 from docker.errors import NotFound
 
@@ -89,3 +89,64 @@ class BuildEnvironmentManager:
             UUID string
         """
         return generate_container_uuid()
+
+    def _start_container(self, image_name: str, workspace_path: str, env_vars: Dict[str, str]) -> Any:
+        """Start or create build container.
+
+        Args:
+            image_name: Docker image name
+            workspace_path: Path to the workspace
+            env_vars: Environment variables
+
+        Returns:
+            Container instance
+        """
+        container_name = self._generate_container_name()
+
+        # Try to get existing container
+        try:
+            container = self.docker_client.containers.get(container_name)
+            # If container exists and is running, return it
+            if container.status == "running":
+                return container
+            # If container exists but is not running, remove it
+            else:
+                container.remove(force=True)
+        except NotFound:
+            # Container doesn't exist, proceed to create new one
+            pass
+
+        # Create new container
+        container = self.docker_client.containers.create(
+            image=image_name,
+            name=container_name,
+            working_dir=workspace_path,
+            volumes={workspace_path: {"bind": workspace_path, "mode": "rw"}},
+            environment=env_vars,
+            detach=True
+        )
+
+        # Start the container
+        container.start()
+        return container
+
+    def _execute_command(self, container: Any, command: str) -> Any:
+        """Execute command in container.
+
+        Args:
+            container: Container instance
+            command: Command to execute
+
+        Returns:
+            Execution result
+        """
+        return container.exec_run(command, detach=False)
+
+    def _shutdown_container(self, container: Any) -> None:
+        """Shutdown and remove container.
+
+        Args:
+            container: Container instance to shutdown
+        """
+        container.stop()
+        container.remove(force=True)
