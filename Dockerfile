@@ -9,6 +9,8 @@ RUN apt-get update && apt-get install -y \
     jq \
     gettext-base \
     docker.io \
+    python3-pip \
+    python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
 # Add NodeSource repository for Node.js 22
@@ -18,14 +20,30 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 RUN apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
+# Install GitHub CLI
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+    && apt-get update \
+    && apt-get install -y gh \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install Claude Code, Claude Code Router, and Claude Threads
 RUN npm install -g @anthropic-ai/claude-code @musistudio/claude-code-router claude-threads
 
 # Copy ccr-presets to the container
 COPY ccr-presets /ccr-presets
 
+# Copy cconx to the container
+COPY cconx /workspace/cconx
+
 # Copy claude-threads config to the container
 COPY claude-threads /claude-threads
+
+# Install cconx Python package using virtual environment
+RUN python3 -m venv /opt/cconx-venv \
+    && /opt/cconx-venv/bin/pip install /workspace/cconx \
+    && ln -sf /opt/cconx-venv/bin/cconx /usr/local/bin/cconx
 
 # Copy startup scripts to root directory
 COPY git-repo-setup.sh /93-git-repo-setup
