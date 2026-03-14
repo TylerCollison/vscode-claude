@@ -47,11 +47,11 @@ class BuildEnvironmentManager:
             BuildEnvironmentError: If requirements are invalid
         """
         # Check for BUILD_CONTAINER environment variable
-        if not os.environ.get("BUILD_CONTAINER"):
+        if not env_vars.get("BUILD_CONTAINER"):
             raise BuildEnvironmentError("BUILD_CONTAINER environment variable is required")
 
         # Check for DEFAULT_WORKSPACE environment variable
-        if not os.environ.get("DEFAULT_WORKSPACE"):
+        if not env_vars.get("DEFAULT_WORKSPACE"):
             raise BuildEnvironmentError("DEFAULT_WORKSPACE environment variable is required")
 
     def _container_exists(self, container_name: str) -> bool:
@@ -148,7 +148,7 @@ class BuildEnvironmentManager:
         container.start()
         return container_name
 
-    def _execute_command(self, container_name: str, command: str, env_vars: Dict[str, str]) -> Any:
+    def _execute_command(self, container_name: str, command: str, env_vars: Dict[str, str]) -> tuple:
         """Execute command in container.
 
         Args:
@@ -157,7 +157,7 @@ class BuildEnvironmentManager:
             env_vars: Environment variables
 
         Returns:
-            Execution result
+            Tuple of (exit_code, output)
         """
         # Filter environment variables
         filtered_env_vars = filter_environment_variables(env_vars)
@@ -165,7 +165,8 @@ class BuildEnvironmentManager:
         # Get container
         container = self.docker_client.containers.get(container_name)
 
-        return container.exec_run(
+        # Execute command
+        exec_result = container.exec_run(
             command,
             detach=False,
             environment=filtered_env_vars,
@@ -173,6 +174,9 @@ class BuildEnvironmentManager:
             tty=True,
             stdin=True
         )
+
+        # Return exit code and output
+        return exec_result.exit_code, exec_result.output
 
     def _shutdown_container(self, container_name: str) -> None:
         """Shutdown and remove container.

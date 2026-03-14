@@ -22,6 +22,8 @@ A standalone Python tool that provides persistent Docker container environments 
 - Docker Engine
 - Docker Python SDK (`docker` package)
 
+Note: The package installs the `docker` dependency automatically via `requirements.txt`
+
 ### From Source
 
 ```bash
@@ -64,6 +66,7 @@ build-env --exit
 ### Optional
 
 - Any other environment variables you want to pass to the container (filtered for security)
+- Environment variables starting with `BUILD_` will be passed through safely
 
 ## Configuration
 
@@ -79,9 +82,11 @@ The build environment uses Docker images specified via the `BUILD_CONTAINER` env
 
 The tool filters environment variables passed to containers to prevent exposure of sensitive information:
 
-- Environment variables containing "SECRET", "KEY", "PASSWORD", "TOKEN" are filtered out
-- Docker image names are validated for security
-- Unique container UUIDs are generated for each workspace
+- **Safe environment variables**: `PATH`, `HOME`, `USER`, `PWD`, `SHELL`, `TERM`, `LANG`, `LC_ALL`, `BUILD_CONTAINER`, `DEFAULT_WORKSPACE`
+- **Always filtered**: Environment variables containing "SECRET", "KEY", "PASSWORD", "TOKEN" patterns
+- **Allowed patterns**: Variables starting with `BUILD_` are passed through
+- **Docker image validation**: Ensures image names follow safe patterns
+- **Container isolation**: Unique containers per workspace based on UUID generation
 
 ## Development
 

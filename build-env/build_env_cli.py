@@ -37,29 +37,33 @@ def main():
 
         if args.exit:
             # Shutdown container
-            container_uuid = manager._get_container_uuid(env_vars.get('DEFAULT_WORKSPACE', '.'))
+            workspace_path = os.environ.get('DEFAULT_WORKSPACE', os.getcwd())
+            container_uuid = manager._get_container_uuid(workspace_path)
             container_name = f"build-env-{container_uuid}"
             manager._shutdown_container(container_name)
             print(f"Build environment container {container_name} shutdown")
             return 0
 
         # Validate requirements
-        manager._validate_requirements(env_vars)
+        manager._validate_requirements(os.environ)
 
         # Get or create container
         container_name = manager._start_container(
-            env_vars["BUILD_CONTAINER"],
-            env_vars["DEFAULT_WORKSPACE"],
-            env_vars
+            os.environ["BUILD_CONTAINER"],
+            os.environ["DEFAULT_WORKSPACE"],
+            os.environ
         )
 
         if args.command:
             # Execute command
             command = ' '.join(args.command)
-            exit_code, output = manager._execute_command(container_name, command, env_vars)
+            exit_code, output = manager._execute_command(container_name, command, os.environ)
 
-            # Print output
+            # Print output if there is any
             if output:
+                # Docker exec_run returns bytes, decode to string
+                if isinstance(output, bytes):
+                    output = output.decode('utf-8')
                 print(output.strip())
 
             return exit_code
