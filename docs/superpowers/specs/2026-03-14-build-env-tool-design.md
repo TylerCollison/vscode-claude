@@ -21,20 +21,20 @@ The `build-env` tool provides a persistent container environment for running bui
 - [x] Full container privileges (without `--privileged` flag)
 
 ### Non-Functional Requirements
-- [x] Python implementation (aligns with existing cconx patterns)
+- [x] Standalone Python implementation (separate from cconx)
 - [x] UUID-based container naming for uniqueness
 - [x] Error handling with clear messages
 - [x] Fast startup time
-- [x] Security validation using existing DockerClient patterns
+- [x] Security validation using Docker Python SDK directly
 
 ## Architecture
 
 ### Component Design
 
 ```
-build-env (Python CLI)
+build-env (Standalone Python CLI)
 ├── Container Manager
-│   ├── Container existence check (using DockerClient)
+│   ├── Container existence check (using Docker SDK directly)
 │   ├── Container startup logic (with security validation)
 │   └── Container shutdown logic
 ├── Environment Handler
@@ -111,16 +111,21 @@ result = container.exec_run(
 ### File Structure
 
 ```
-cconx/cconx/build_env.py      # Main Python implementation
-cconx/scripts/build-env       # CLI wrapper script
-cconx/tests/test_build_env.py # Test suite
+build-env/                    # Standalone tool directory
+├── build_env.py              # Main Python implementation
+├── build_env_cli.py          # CLI entry point
+├── security.py               # Security validation utilities
+├── tests/                    # Test suite
+│   ├── test_build_env.py
+│   └── test_security.py
+└── setup.py                  # Installation script
 ```
 
 ### Key Functions
 
 1. **`get_container_uuid()`** - Generate/lookup UUID for workspace
-2. **`validate_image_name()`** - Security validation using existing patterns
-3. **`container_exists()`** - Check if container exists (using DockerClient)
+2. **`validate_image_name()`** - Security validation using standalone patterns
+3. **`container_exists()`** - Check if container exists (using Docker SDK directly)
 4. **`container_running()`** - Check if container is running
 5. **`start_container()`** - Start/create container with security validation
 6. **`execute_command()`** - Run command in container using exec_run
@@ -166,7 +171,7 @@ Host environment variables are filtered to:
 ### Security Implementation Details
 
 **Image Validation:**
-- Use existing `_validate_image_name()` from cconx
+- Use standalone `validate_image_name()` function
 - Pattern matching for safe image names
 - Reject potentially dangerous image patterns
 
@@ -175,7 +180,7 @@ Host environment variables are filtered to:
 # Safe environment variable whitelist
 SAFE_ENV_VARS = {
     'PATH', 'HOME', 'USER', 'PWD', 'SHELL', 'TERM', 'LANG', 'LC_ALL',
-    'BUILD_CONTAINER', 'DEFAULT_WORKSPACE', 'CCONX_*', 'BUILD_*'
+    'BUILD_CONTAINER', 'DEFAULT_WORKSPACE', 'BUILD_*'
 }
 
 # Dangerous environment variable blacklist
@@ -198,7 +203,7 @@ DANGEROUS_ENV_PATTERNS = {
 **Command Execution Security:**
 - Use Docker Python SDK `exec_run()` instead of shell
 - Proper argument escaping using `shlex.quote()`
-- Input validation using existing cconx patterns
+- Input validation using standalone patterns
 
 ## Performance Considerations
 
@@ -231,7 +236,7 @@ DANGEROUS_ENV_PATTERNS = {
 
 - Docker Python SDK
 - Python 3.8+
-- Existing cconx DockerClient infrastructure
+- Docker CLI available in PATH
 
 ## Success Criteria
 
