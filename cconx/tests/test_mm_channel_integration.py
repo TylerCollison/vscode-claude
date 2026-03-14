@@ -19,10 +19,10 @@ class TestMMChannelIntegration(unittest.TestCase):
         args.port = 9090
         args.env = []
 
-        with patch('cconx.config.ConfigManager') as MockConfigManager, \
-             patch('cconx.ports.PortManager') as MockPortManager, \
-             patch('cconx.instances.InstanceManager') as MockInstanceManager, \
-             patch('cconx.compose.generate') as mock_generate:
+        with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
+             patch('cconx.cconx.ports.PortManager') as MockPortManager, \
+             patch('cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
+             patch('cconx.cconx.compose.generate') as mock_generate:
 
             mock_config_manager = MockConfigManager.return_value
             mock_config_manager.load_global_config.return_value = {
@@ -66,10 +66,10 @@ class TestMMChannelIntegration(unittest.TestCase):
         args.port = 9091
         args.env = ["MM_CHANNEL=env-override"]
 
-        with patch('cconx.config.ConfigManager') as MockConfigManager, \
-             patch('cconx.ports.PortManager') as MockPortManager, \
-             patch('cconx.instances.InstanceManager') as MockInstanceManager, \
-             patch('cconx.compose.generate') as mock_generate:
+        with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
+             patch('cconx.cconx.ports.PortManager') as MockPortManager, \
+             patch('cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
+             patch('cconx.cconx.compose.generate') as mock_generate:
 
             mock_config_manager = MockConfigManager.return_value
             mock_config_manager.load_global_config.return_value = {

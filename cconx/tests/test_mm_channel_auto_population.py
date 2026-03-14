@@ -22,10 +22,10 @@ class TestMMChannelAutoPopulation(unittest.TestCase):
         args.env = []  # No MM_CHANNEL override
         args.env_append = []  # Add env_append attribute
 
-        with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
-             patch('cconx.cconx.ports.PortManager') as MockPortManager, \
-             patch('cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
-             patch('cconx.cconx.compose.generate') as mock_generate:
+        with patch('cconx.cconx.cconx.config.ConfigManager') as MockConfigManager, \
+             patch('cconx.cconx.cconx.ports.PortManager') as MockPortManager, \
+             patch('cconx.cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
+             patch('cconx.cconx.cconx.compose.generate') as mock_generate:
 
             # Configure mocks
             mock_config = MagicMock()
@@ -66,10 +66,10 @@ class TestMMChannelAutoPopulation(unittest.TestCase):
         args.env = ["MM_CHANNEL=custom-channel"]  # CLI override
         args.env_append = []
 
-        with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
-             patch('cconx.cconx.ports.PortManager') as MockPortManager, \
-             patch('cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
-             patch('cconx.cconx.compose.generate') as mock_generate:
+        with patch('cconx.cconx.cconx.config.ConfigManager') as MockConfigManager, \
+             patch('cconx.cconx.cconx.ports.PortManager') as MockPortManager, \
+             patch('cconx.cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
+             patch('cconx.cconx.cconx.compose.generate') as mock_generate:
 
             # Configure mocks
             mock_config = MagicMock()
@@ -109,10 +109,10 @@ class TestMMChannelAutoPopulation(unittest.TestCase):
         args.env = []  # No CLI override
         args.env_append = []
 
-        with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
-             patch('cconx.cconx.ports.PortManager') as MockPortManager, \
-             patch('cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
-             patch('cconx.cconx.compose.generate') as mock_generate:
+        with patch('cconx.cconx.cconx.config.ConfigManager') as MockConfigManager, \
+             patch('cconx.cconx.cconx.ports.PortManager') as MockPortManager, \
+             patch('cconx.cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
+             patch('cconx.cconx.cconx.compose.generate') as mock_generate:
 
             # Configure mocks - global config has MM_CHANNEL set
             mock_config = MagicMock()
@@ -154,10 +154,10 @@ class TestMMChannelAutoPopulation(unittest.TestCase):
         args.env = ["MM_CHANNEL=cli-channel"]  # CLI override
         args.env_append = []
 
-        with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
-             patch('cconx.cconx.ports.PortManager') as MockPortManager, \
-             patch('cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
-             patch('cconx.cconx.compose.generate') as mock_generate:
+        with patch('cconx.cconx.cconx.config.ConfigManager') as MockConfigManager, \
+             patch('cconx.cconx.cconx.ports.PortManager') as MockPortManager, \
+             patch('cconx.cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
+             patch('cconx.cconx.cconx.compose.generate') as mock_generate:
 
             # Configure mocks - global config also has MM_CHANNEL
             mock_config = MagicMock()

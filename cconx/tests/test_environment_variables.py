@@ -44,11 +44,11 @@ def test_cli_environment_variable_parsing():
     # Mock dependencies to avoid actual Docker operations
     from unittest.mock import patch, MagicMock
 
-    with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
-         patch('cconx.cconx.ports.PortManager') as MockPortManager, \
-         patch('cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
-         patch('cconx.cconx.compose.generate') as mock_generate, \
-         patch('cconx.cconx.cli.docker.errors') as mock_docker_errors:
+    with patch('cconx.cconx.cconx.config.ConfigManager') as MockConfigManager, \
+         patch('cconx.cconx.cconx.ports.PortManager') as MockPortManager, \
+         patch('cconx.cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
+         patch('cconx.cconx.cconx.compose.generate') as mock_generate, \
+         patch('cconx.cconx.cconx.cli.docker.errors') as mock_docker_errors:
 
         # Configure mocks
         mock_config = MagicMock()

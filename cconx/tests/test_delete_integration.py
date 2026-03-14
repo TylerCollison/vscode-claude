@@ -8,8 +8,8 @@ security validation, error handling, transactional safety, and edge cases.
 import pytest
 from unittest.mock import patch, MagicMock
 from pathlib import Path
-from cconx.instances import InstanceManager
-from cconx.docker import MockDockerClient
+from cconx.cconx.instances import InstanceManager
+from cconx.cconx.docker import MockDockerClient
 
 
 class TestDeleteIntegration:
@@ -36,7 +36,7 @@ class TestDeleteIntegration:
         assert instance_manager.instance_exists(instance_name) is True
 
         # Mock Docker client to simulate running container
-        with patch('cconx.docker.DockerClient', MockDockerClient):
+        with patch('cconx.cconx.docker.DockerClient', MockDockerClient):
             result = instance_manager.delete_instance(instance_name)
 
         assert result["config_deleted"] is True
@@ -62,7 +62,7 @@ class TestDeleteIntegration:
         instance_name = "container-only-instance"
 
         # Mock Docker client that simulates existing container
-        with patch('cconx.docker.DockerClient') as mock_class:
+        with patch('cconx.cconx.docker.DockerClient') as mock_class:
             mock_instance = MockDockerClient()
             # Simulate existing container by ensuring is_container_running returns True
             mock_class.return_value = mock_instance
@@ -89,7 +89,7 @@ class TestDeleteIntegration:
 
         # Mock Docker client that simulates container not existing
         # Use MockDockerClient directly since we want normal behavior (container doesn't exist by default)
-        with patch('cconx.docker.DockerClient', MockDockerClient):
+        with patch('cconx.cconx.docker.DockerClient', MockDockerClient):
             result = instance_manager.delete_instance(instance_name)
 
         # Should succeed with config deletion
@@ -112,7 +112,7 @@ class TestDeleteIntegration:
         assert instance_manager.instance_exists(instance_name) is True
 
         # Mock Docker client that raises exceptions
-        with patch('cconx.docker.DockerClient') as mock_class:
+        with patch('cconx.cconx.docker.DockerClient') as mock_class:
             from unittest.mock import MagicMock
             mock_instance = MagicMock(spec=MockDockerClient)
             # Override methods to simulate Docker failures
@@ -141,7 +141,7 @@ class TestDeleteIntegration:
         assert instance_manager.instance_exists(instance_name) is True
 
         # Mock Docker client with container that fails to stop
-        with patch('cconx.docker.DockerClient') as mock_class:
+        with patch('cconx.cconx.docker.DockerClient') as mock_class:
             mock_instance = MagicMock(spec=MockDockerClient)
             mock_instance.is_container_running.return_value = True
             mock_instance.stop_container.side_effect = Exception("Cannot stop container")
@@ -166,7 +166,7 @@ class TestDeleteIntegration:
             assert instance_manager.instance_exists(name) is True
 
         # Mock Docker client
-        with patch('cconx.docker.DockerClient', MockDockerClient):
+        with patch('cconx.cconx.docker.DockerClient', MockDockerClient):
             # Delete first instance
             result1 = instance_manager.delete_instance("instance-1")
             assert result1["config_deleted"] is True
@@ -193,7 +193,7 @@ class TestDeleteIntegration:
         instance_manager.create_instance_config(instance_name, 9090)
         assert instance_manager.instance_exists(instance_name) is True
 
-        with patch('cconx.docker.DockerClient', MockDockerClient) as mock_class:
+        with patch('cconx.cconx.docker.DockerClient', MockDockerClient) as mock_class:
             result = instance_manager.delete_instance(instance_name)
 
             # Verify Docker client was called appropriately
@@ -214,7 +214,7 @@ class TestDeleteIntegration:
         assert instance_manager.instance_exists(instance_name) is True
 
         # Mock DockerClient initialization failure
-        with patch('cconx.docker.DockerClient.__init__',
+        with patch('cconx.cconx.docker.DockerClient.__init__',
                    side_effect=Exception("Docker daemon unavailable")):
             result = instance_manager.delete_instance(instance_name)
 
@@ -259,7 +259,7 @@ class TestDeleteIntegration:
         instance_manager.create_instance_config(instance_name, port)
         assert instance_manager.instance_exists(instance_name) is True
 
-        with patch('cconx.docker.DockerClient', MockDockerClient):
+        with patch('cconx.cconx.docker.DockerClient', MockDockerClient):
             result = instance_manager.delete_instance(instance_name)
 
             assert result["config_deleted"] == expected_success
@@ -280,7 +280,7 @@ class TestDeleteIntegration:
         assert instance_manager.instance_exists(instance_name) is True
 
         # Mock Docker client with stopped container scenario
-        with patch('cconx.docker.DockerClient') as mock_class:
+        with patch('cconx.cconx.docker.DockerClient') as mock_class:
             mock_instance = MagicMock(spec=MockDockerClient)
             # Container exists but is already stopped
             mock_instance.is_container_running.return_value = False
@@ -307,7 +307,7 @@ class TestDeleteIntegration:
         instance_manager.create_instance_config(instance_name, 9090)
         assert instance_manager.instance_exists(instance_name) is True
 
-        with patch('cconx.docker.DockerClient') as mock_class:
+        with patch('cconx.cconx.docker.DockerClient') as mock_class:
             mock_instance = MagicMock(spec=MockDockerClient)
             # Container doesn't exist initially
             mock_instance.is_container_running.return_value = False

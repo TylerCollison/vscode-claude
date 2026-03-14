@@ -157,7 +157,7 @@ services:
  - KNOWLEDGE_REPOS=https://github.com/user/docs.git:main:README.md,docs/guide.md
  # Claude Threads (optional)
  - ENABLE_THREADS=true
- - IDE_ADDRESS=http://localhost:8443 
+ - IDE_ADDRESS=http://localhost:8443
  - MM_ADDRESS=http://mattermost.example.com:8065
  - MM_CHANNEL=claude-code
  - MM_TOKEN=your-bot-token

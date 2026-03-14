@@ -49,10 +49,10 @@ def test_env_append_integration():
         args.env_append = ["PATH=/custom/bin", "NEW_VAR=new_value"]
 
         # Mock dependencies that require actual operations
-        with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
-             patch('cconx.cconx.ports.PortManager') as MockPortManager, \
-             patch('cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
-             patch('cconx.cconx.compose.generate') as mock_generate:
+        with patch('cconx.cconx.cconx.config.ConfigManager') as MockConfigManager, \
+             patch('cconx.cconx.cconx.ports.PortManager') as MockPortManager, \
+             patch('cconx.cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
+             patch('cconx.cconx.cconx.compose.generate') as mock_generate:
 
             # Configure mock to use our temp config
             mock_config = Mock()
@@ -130,10 +130,10 @@ def test_env_append_fallback_integration():
         args.env_append = ["NEW_VAR=fallback_value"]
 
         # Mock dependencies that require actual operations
-        with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
-             patch('cconx.cconx.ports.PortManager') as MockPortManager, \
-             patch('cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
-             patch('cconx.cconx.compose.generate') as mock_generate:
+        with patch('cconx.cconx.cconx.config.ConfigManager') as MockConfigManager, \
+             patch('cconx.cconx.cconx.ports.PortManager') as MockPortManager, \
+             patch('cconx.cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
+             patch('cconx.cconx.cconx.compose.generate') as mock_generate:
 
             # Configure mock to use our temp config
             mock_config = Mock()
@@ -217,10 +217,10 @@ def test_env_append_complex_scenario_integration():
         ]
 
         # Mock dependencies that require actual operations
-        with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
-             patch('cconx.cconx.ports.PortManager') as MockPortManager, \
-             patch('cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
-             patch('cconx.cconx.compose.generate') as mock_generate:
+        with patch('cconx.cconx.cconx.config.ConfigManager') as MockConfigManager, \
+             patch('cconx.cconx.cconx.ports.PortManager') as MockPortManager, \
+             patch('cconx.cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
+             patch('cconx.cconx.cconx.compose.generate') as mock_generate:
 
             # Configure mock to use our temp config
             mock_config = Mock()

@@ -28,7 +28,7 @@ sys.modules['docker'] = docker_mock
 sys.modules['docker.errors'] = docker_mock.errors
 
 # Import error classes first since they don't depend on docker
-from cconx.docker import (
+from cconx.cconx.docker import (
     DockerSecurityError,
     DockerConnectionError,
     DockerContainerError
@@ -37,7 +37,7 @@ from cconx.docker import (
 
 def test_docker_client_initialization():
     """Test Docker client can be initialized"""
-    from cconx.docker import DockerClient
+    from cconx.cconx.docker import DockerClient
     client = DockerClient()
     assert client.client is not None
 
@@ -74,15 +74,15 @@ class TestMockDockerClient:
 
     def test_mock_client_implements_interface(self):
         """Test MockDockerClient implements DockerClientInterface."""
-        from cconx.docker import MockDockerClient
-        from cconx.docker import DockerClientInterface
-        from cconx.docker import MockDockerClient
+        from cconx.cconx.docker import MockDockerClient
+        from cconx.cconx.docker import DockerClientInterface
+        from cconx.cconx.docker import MockDockerClient
         client = MockDockerClient()
         assert isinstance(client, DockerClientInterface)
 
     def test_mock_client_remove_container_success(self):
         """Test mock client can remove a container."""
-        from cconx.docker import MockDockerClient
+        from cconx.cconx.docker import MockDockerClient
         client = MockDockerClient()
         assert "test-container-1" in client.mock_containers
         result = client.remove_container("test-container-1")
@@ -91,32 +91,32 @@ class TestMockDockerClient:
 
     def test_mock_client_remove_container_not_found(self):
         """Test mock client returns False for non-existent container."""
-        from cconx.docker import MockDockerClient
+        from cconx.cconx.docker import MockDockerClient
         client = MockDockerClient()
         result = client.remove_container("non-existent-container")
         assert result is False
 
     def test_mock_client_is_container_running_true(self):
         """Test mock client returns True for running container."""
-        from cconx.docker import MockDockerClient
+        from cconx.cconx.docker import MockDockerClient
         client = MockDockerClient()
         assert client.is_container_running("test-container-1") is True
 
     def test_mock_client_is_container_running_false(self):
         """Test mock client returns False for stopped container."""
-        from cconx.docker import MockDockerClient
+        from cconx.cconx.docker import MockDockerClient
         client = MockDockerClient()
         assert client.is_container_running("test-container-2") is False
 
     def test_mock_client_is_container_running_not_found(self):
         """Test mock client returns False for non-existent container."""
-        from cconx.docker import MockDockerClient
+        from cconx.cconx.docker import MockDockerClient
         client = MockDockerClient()
         assert client.is_container_running("non-existent-container") is False
 
     def test_mock_client_get_container_info_found(self):
         """Test mock client returns container info for existing container."""
-        from cconx.docker import MockDockerClient
+        from cconx.cconx.docker import MockDockerClient
         client = MockDockerClient()
         info = client.get_container_info("test-container-1")
         assert info is not None
@@ -125,14 +125,14 @@ class TestMockDockerClient:
 
     def test_mock_client_get_container_info_not_found(self):
         """Test mock client returns None for non-existent container."""
-        from cconx.docker import MockDockerClient
+        from cconx.cconx.docker import MockDockerClient
         client = MockDockerClient()
         info = client.get_container_info("non-existent-container")
         assert info is None
 
     def test_mock_client_list_containers_running_only(self):
         """Test mock client lists running containers."""
-        from cconx.docker import MockDockerClient
+        from cconx.cconx.docker import MockDockerClient
         client = MockDockerClient()
         containers = client.list_containers(all_containers=False)
         assert len(containers) == 2  # Only running containers
@@ -140,14 +140,14 @@ class TestMockDockerClient:
 
     def test_mock_client_list_containers_all(self):
         """Test mock client lists all containers."""
-        from cconx.docker import MockDockerClient
+        from cconx.cconx.docker import MockDockerClient
         client = MockDockerClient()
         containers = client.list_containers(all_containers=True)
         assert len(containers) == 3  # All containers
 
     def test_mock_client_start_container_not_running(self):
         """Test mock client can start a stopped container."""
-        from cconx.docker import MockDockerClient
+        from cconx.cconx.docker import MockDockerClient
         client = MockDockerClient()
         result = client.start_container("test-container-2")
         assert result is True
@@ -155,14 +155,14 @@ class TestMockDockerClient:
 
     def test_mock_client_start_container_already_running(self):
         """Test mock client returns False when container already running."""
-        from cconx.docker import MockDockerClient
+        from cconx.cconx.docker import MockDockerClient
         client = MockDockerClient()
         result = client.start_container("test-container-1")
         assert result is False
 
     def test_mock_client_stop_container_running(self):
         """Test mock client can stop a running container."""
-        from cconx.docker import MockDockerClient
+        from cconx.cconx.docker import MockDockerClient
         client = MockDockerClient()
         result = client.stop_container("test-container-1")
         assert result is True
@@ -170,7 +170,7 @@ class TestMockDockerClient:
 
     def test_mock_client_stop_container_already_stopped(self):
         """Test mock client returns False when container already stopped."""
-        from cconx.docker import MockDockerClient
+        from cconx.cconx.docker import MockDockerClient
         client = MockDockerClient()
         result = client.stop_container("test-container-2")
         assert result is False
@@ -186,7 +186,7 @@ class TestDockerClientSecurity:
         mock_client.ping.return_value = True
         mock_docker.return_value = mock_client
 
-        from cconx.docker import DockerClient
+        from cconx.cconx.docker import DockerClient
         client = DockerClient()
         assert client.client is not None
 
@@ -196,7 +196,7 @@ class TestDockerClientSecurity:
         import docker.errors
         mock_docker.side_effect = docker.errors.DockerException("Connection failed")
 
-        from cconx.docker import DockerClient
+        from cconx.cconx.docker import DockerClient
         with pytest.raises(DockerConnectionError) as exc_info:
             DockerClient()
         assert "Connection failed" in str(exc_info.value)
@@ -209,7 +209,7 @@ class TestDockerClientSecurity:
         mock_client.containers.get.return_value = Mock(status="running")
         mock_docker.return_value = mock_client
 
-        from cconx.docker import DockerClient
+        from cconx.cconx.docker import DockerClient
         client = DockerClient()
         # These should not raise DockerSecurityError
         client.is_container_running("valid-container")
@@ -224,7 +224,7 @@ class TestDockerClientSecurity:
         mock_client.ping.return_value = True
         mock_docker.return_value = mock_client
 
-        from cconx.docker import DockerClient
+        from cconx.cconx.docker import DockerClient
         client = DockerClient()
 
         invalid_names = [
@@ -253,7 +253,7 @@ class TestDockerClientSecurity:
         mock_client.ping.return_value = True
         mock_docker.return_value = mock_client
 
-        from cconx.docker import DockerClient
+        from cconx.cconx.docker import DockerClient
         client = DockerClient()
 
         invalid_names = [
@@ -282,7 +282,7 @@ class TestDockerClientFunctionality:
         mock_container.status = "running"
         mock_client.containers.get.return_value = mock_container
 
-        from cconx.docker import DockerClient
+        from cconx.cconx.docker import DockerClient
         client = DockerClient()
         result = client.is_container_running("test-container")
         assert result is True
@@ -298,7 +298,7 @@ class TestDockerClientFunctionality:
         mock_container.status = "stopped"
         mock_client.containers.get.return_value = mock_container
 
-        from cconx.docker import DockerClient
+        from cconx.cconx.docker import DockerClient
         client = DockerClient()
         result = client.is_container_running("test-container")
         assert result is False
@@ -313,7 +313,7 @@ class TestDockerClientFunctionality:
         import docker.errors
         mock_client.containers.get.side_effect = docker.errors.NotFound("Container not found")
 
-        from cconx.docker import DockerClient
+        from cconx.cconx.docker import DockerClient
         client = DockerClient()
         result = client.is_container_running("non-existent-container")
         assert result is False
@@ -338,7 +338,7 @@ class TestDockerClientFunctionality:
         }
         mock_client.containers.get.return_value = mock_container
 
-        from cconx.docker import DockerClient
+        from cconx.cconx.docker import DockerClient
         client = DockerClient()
         info = client.get_container_info("test-container")
 
@@ -365,7 +365,7 @@ class TestDockerClientFunctionality:
 
         mock_client.containers.list.return_value = [mock_container]
 
-        from cconx.docker import DockerClient
+        from cconx.cconx.docker import DockerClient
         client = DockerClient()
         containers = client.list_containers()
 
@@ -387,7 +387,7 @@ class TestDockerClientFunctionality:
         mock_container.start.return_value = None
         mock_client.containers.get.return_value = mock_container
 
-        from cconx.docker import DockerClient
+        from cconx.cconx.docker import DockerClient
         client = DockerClient()
         result = client.start_container("test-container")
 
@@ -405,7 +405,7 @@ class TestDockerClientFunctionality:
         mock_container.status = "running"
         mock_client.containers.get.return_value = mock_container
 
-        from cconx.docker import DockerClient
+        from cconx.cconx.docker import DockerClient
         client = DockerClient()
         result = client.start_container("test-container")
 
@@ -424,7 +424,7 @@ class TestDockerClientFunctionality:
         mock_container.stop.return_value = None
         mock_client.containers.get.return_value = mock_container
 
-        from cconx.docker import DockerClient
+        from cconx.cconx.docker import DockerClient
         client = DockerClient()
         result = client.stop_container("test-container")
 
@@ -442,7 +442,7 @@ class TestDockerClientFunctionality:
         mock_container.status = "stopped"
         mock_client.containers.get.return_value = mock_container
 
-        from cconx.docker import DockerClient
+        from cconx.cconx.docker import DockerClient
         client = DockerClient()
         result = client.stop_container("test-container")
 
@@ -460,7 +460,7 @@ class TestDockerClientFunctionality:
         mock_container.remove.return_value = None
         mock_client.containers.get.return_value = mock_container
 
-        from cconx.docker import DockerClient
+        from cconx.cconx.docker import DockerClient
         client = DockerClient()
         result = client.remove_container("test-container")
 
@@ -477,7 +477,7 @@ class TestDockerClientFunctionality:
         import docker.errors
         mock_client.containers.get.side_effect = docker.errors.NotFound("Container not found")
 
-        from cconx.docker import DockerClient
+        from cconx.cconx.docker import DockerClient
         client = DockerClient()
         result = client.remove_container("non-existent-container")
 
@@ -497,7 +497,7 @@ class TestDockerClientFunctionality:
             Mock(remove=lambda: None)
         ]
 
-        from cconx.docker import DockerClient
+        from cconx.cconx.docker import DockerClient
         client = DockerClient()
         # Set lower retries for faster test
         client._max_retries = 2
@@ -516,7 +516,7 @@ class TestDockerClientFunctionality:
         import docker.errors
         mock_client.containers.get.side_effect = docker.errors.APIError("Persistent API error")
 
-        from cconx.docker import DockerClient
+        from cconx.cconx.docker import DockerClient
         client = DockerClient()
         # Set low retries for faster test
         client._max_retries = 1
@@ -534,7 +534,7 @@ class TestDockerClientFunctionality:
         import docker.errors
         mock_client.containers.get.side_effect = docker.errors.DockerException("Connection failed")
 
-        from cconx.docker import DockerClient
+        from cconx.cconx.docker import DockerClient
         client = DockerClient()
 
         with pytest.raises(DockerConnectionError):
@@ -549,7 +549,7 @@ class TestDockerClientFunctionality:
 
         mock_client.containers.get.side_effect = Exception("Unexpected error")
 
-        from cconx.docker import DockerClient
+        from cconx.cconx.docker import DockerClient
         client = DockerClient()
 
         with pytest.raises(DockerContainerError):
@@ -568,7 +568,7 @@ class TestDockerClientFunctionality:
         mock_container.remove.side_effect = docker.errors.NotFound("Container not found")
         mock_client.containers.get.return_value = mock_container
 
-        from cconx.docker import DockerClient
+        from cconx.cconx.docker import DockerClient
         client = DockerClient()
         result = client.remove_container("test-container")
 
@@ -588,7 +588,7 @@ class TestDockerClientFunctionality:
         mock_container.remove.side_effect = docker.errors.APIError("Removal failed")
         mock_client.containers.get.return_value = mock_container
 
-        from cconx.docker import DockerClient
+        from cconx.cconx.docker import DockerClient
         client = DockerClient()
         # Set low retries for faster test
         client._max_retries = 1
@@ -614,7 +614,7 @@ class TestDockerClientErrorHandling:
             Mock(status="running")
         ]
 
-        from cconx.docker import DockerClient
+        from cconx.cconx.docker import DockerClient
         client = DockerClient()
         # Set lower retries for faster test
         client._max_retries = 2
@@ -632,7 +632,7 @@ class TestDockerClientErrorHandling:
 
         mock_client.containers.get.side_effect = Exception("Persistent API error")
 
-        from cconx.docker import DockerClient
+        from cconx.cconx.docker import DockerClient
         client = DockerClient()
         # Set low retries for faster test
         client._max_retries = 1
@@ -650,7 +650,7 @@ class TestDockerClientErrorHandling:
         import docker.errors
         mock_client.containers.get.side_effect = docker.errors.NotFound("Container not found")
 
-        from cconx.docker import DockerClient
+        from cconx.cconx.docker import DockerClient
         client = DockerClient()
 
         # start/stop should raise DockerContainerError
@@ -675,7 +675,7 @@ class TestFactoryFunction:
         mock_client.ping.return_value = True
         mock_docker.return_value = mock_client
 
-        from cconx.docker import create_docker_client
+        from cconx.cconx.docker import create_docker_client
         client = create_docker_client(max_retries=5)
         assert client._max_retries == 5
 
@@ -686,14 +686,14 @@ class TestFactoryFunction:
         mock_client.ping.return_value = True
         mock_docker.return_value = mock_client
 
-        from cconx.docker import create_docker_client
+        from cconx.cconx.docker import create_docker_client
         client = create_docker_client()
         assert client._max_retries == 3
 
 
 def test_remove_container_success():
     """Test successful container removal"""
-    from cconx.docker import MockDockerClient
+    from cconx.cconx.docker import MockDockerClient
     client = MockDockerClient()
     assert client.remove_container("test-container-1") == True
     assert "test-container-1" not in client.mock_containers

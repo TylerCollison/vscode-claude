@@ -10,7 +10,7 @@ import tempfile
 import pytest
 from pathlib import Path
 from unittest.mock import patch, mock_open, MagicMock
-from cconx.instances import (
+from cconx.cconx.instances import (
     InstanceManager,
     InstanceValidationError,
     InstanceSecurityError
@@ -522,8 +522,8 @@ class TestInstanceManager:
         assert instance_manager.instance_exists(instance_name) == True
 
         # Test deletion using MockDockerClient
-        from cconx.docker import MockDockerClient
-        with patch('cconx.docker.DockerClient', MockDockerClient):
+        from cconx.cconx.docker import MockDockerClient
+        with patch('cconx.cconx.docker.DockerClient', MockDockerClient):
             result = instance_manager.delete_instance(instance_name)
             assert result["container_stopped"] == True
             assert result["container_removed"] == True

@@ -54,11 +54,11 @@ def test_env_append_functionality():
     args.image = None
 
     # Mock dependencies using full module paths
-    with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
-         patch('cconx.cconx.ports.PortManager') as MockPortManager, \
-         patch('cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
-         patch('cconx.cconx.compose.generate') as mock_generate, \
-         patch('cconx.cconx.docker.DockerClient') as MockDockerClient:
+    with patch('cconx.cconx.cconx.config.ConfigManager') as MockConfigManager, \
+         patch('cconx.cconx.cconx.ports.PortManager') as MockPortManager, \
+         patch('cconx.cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
+         patch('cconx.cconx.cconx.compose.generate') as mock_generate, \
+         patch('cconx.cconx.cconx.docker.DockerClient') as MockDockerClient:
 
         # Configure config manager mock
         mock_config_manager = Mock()
@@ -138,11 +138,11 @@ def test_mixed_env_and_env_append():
     args.image = None
 
     # Mock dependencies using full module paths
-    with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
-         patch('cconx.cconx.ports.PortManager') as MockPortManager, \
-         patch('cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
-         patch('cconx.cconx.compose.generate') as mock_generate, \
-         patch('cconx.cconx.docker.DockerClient') as MockDockerClient:
+    with patch('cconx.cconx.cconx.config.ConfigManager') as MockConfigManager, \
+         patch('cconx.cconx.cconx.ports.PortManager') as MockPortManager, \
+         patch('cconx.cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
+         patch('cconx.cconx.cconx.compose.generate') as mock_generate, \
+         patch('cconx.cconx.cconx.docker.DockerClient') as MockDockerClient:
 
         # Configure global config with existing PATH
         mock_config_manager = Mock()
@@ -217,11 +217,11 @@ def test_env_append_fallback():
     args.image = None
 
     # Mock dependencies using full module paths
-    with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
-         patch('cconx.cconx.ports.PortManager') as MockPortManager, \
-         patch('cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
-         patch('cconx.cconx.compose.generate') as mock_generate, \
-         patch('cconx.cconx.docker.DockerClient') as MockDockerClient:
+    with patch('cconx.cconx.cconx.config.ConfigManager') as MockConfigManager, \
+         patch('cconx.cconx.cconx.ports.PortManager') as MockPortManager, \
+         patch('cconx.cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
+         patch('cconx.cconx.cconx.compose.generate') as mock_generate, \
+         patch('cconx.cconx.cconx.docker.DockerClient') as MockDockerClient:
 
         # Configure global config without NEW_VAR
         mock_config_manager = Mock()
@@ -295,11 +295,11 @@ def test_mm_channel_priority_with_env_append():
     args.image = None
 
     # Mock dependencies
-    with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
-         patch('cconx.cconx.ports.PortManager') as MockPortManager, \
-         patch('cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
-         patch('cconx.cconx.compose.generate') as mock_generate, \
-         patch('cconx.cconx.docker.DockerClient') as MockDockerClient:
+    with patch('cconx.cconx.cconx.config.ConfigManager') as MockConfigManager, \
+         patch('cconx.cconx.cconx.ports.PortManager') as MockPortManager, \
+         patch('cconx.cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
+         patch('cconx.cconx.cconx.compose.generate') as mock_generate, \
+         patch('cconx.cconx.cconx.docker.DockerClient') as MockDockerClient:
 
         # Configure global config without MM_CHANNEL
         mock_config_manager = Mock()
@@ -372,11 +372,11 @@ def test_mm_channel_cli_override_priority():
     args.image = None
 
     # Mock dependencies
-    with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
-         patch('cconx.cconx.ports.PortManager') as MockPortManager, \
-         patch('cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
-         patch('cconx.cconx.compose.generate') as mock_generate, \
-         patch('cconx.cconx.docker.DockerClient') as MockDockerClient:
+    with patch('cconx.cconx.cconx.config.ConfigManager') as MockConfigManager, \
+         patch('cconx.cconx.cconx.ports.PortManager') as MockPortManager, \
+         patch('cconx.cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
+         patch('cconx.cconx.cconx.compose.generate') as mock_generate, \
+         patch('cconx.cconx.cconx.docker.DockerClient') as MockDockerClient:
 
         # Configure global config without MM_CHANNEL
         mock_config_manager = Mock()
@@ -448,11 +448,11 @@ def test_mm_channel_global_config_priority():
     args.image = None
 
     # Mock dependencies
-    with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
-         patch('cconx.cconx.ports.PortManager') as MockPortManager, \
-         patch('cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
-         patch('cconx.cconx.compose.generate') as mock_generate, \
-         patch('cconx.cconx.docker.DockerClient') as MockDockerClient:
+    with patch('cconx.cconx.cconx.config.ConfigManager') as MockConfigManager, \
+         patch('cconx.cconx.cconx.ports.PortManager') as MockPortManager, \
+         patch('cconx.cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
+         patch('cconx.cconx.cconx.compose.generate') as mock_generate, \
+         patch('cconx.cconx.cconx.docker.DockerClient') as MockDockerClient:
 
         # Configure global config WITH MM_CHANNEL set
         mock_config_manager = Mock()
@@ -524,11 +524,11 @@ def test_mm_channel_with_env_append_isolation():
     args.image = None
 
     # Mock dependencies
-    with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
-         patch('cconx.cconx.ports.PortManager') as MockPortManager, \
-         patch('cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
-         patch('cconx.cconx.compose.generate') as mock_generate, \
-         patch('cconx.cconx.docker.DockerClient') as MockDockerClient:
+    with patch('cconx.cconx.cconx.config.ConfigManager') as MockConfigManager, \
+         patch('cconx.cconx.cconx.ports.PortManager') as MockPortManager, \
+         patch('cconx.cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
+         patch('cconx.cconx.cconx.compose.generate') as mock_generate, \
+         patch('cconx.cconx.cconx.docker.DockerClient') as MockDockerClient:
 
         # Configure global config with PATH but without MM_CHANNEL
         mock_config_manager = Mock()
@@ -602,11 +602,11 @@ def test_mm_channel_priority_with_cli_and_env_append():
     args.image = None
 
     # Mock dependencies
-    with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
-         patch('cconx.cconx.ports.PortManager') as MockPortManager, \
-         patch('cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
-         patch('cconx.cconx.compose.generate') as mock_generate, \
-         patch('cconx.cconx.docker.DockerClient') as MockDockerClient:
+    with patch('cconx.cconx.cconx.config.ConfigManager') as MockConfigManager, \
+         patch('cconx.cconx.cconx.ports.PortManager') as MockPortManager, \
+         patch('cconx.cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
+         patch('cconx.cconx.cconx.compose.generate') as mock_generate, \
+         patch('cconx.cconx.cconx.docker.DockerClient') as MockDockerClient:
 
         # Configure global config WITH MM_CHANNEL set and PATH
         mock_config_manager = Mock()

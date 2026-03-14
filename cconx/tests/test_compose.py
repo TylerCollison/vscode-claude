@@ -1,5 +1,5 @@
 import pytest
-from cconx.compose import generate, _validate_instance_name, _validate_port, _validate_restart_policy, _validate_image_name
+from cconx.cconx.compose import generate, _validate_instance_name, _validate_port, _validate_restart_policy, _validate_image_name
 
 
 def test_generate_basic_config():

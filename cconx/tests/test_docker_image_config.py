@@ -118,11 +118,11 @@ def test_cli_image_flag_integration():
     assert args2.image is None
 
     # Mock dependencies and test start_command integration
-    with patch('cconx.cconx.config.ConfigManager', create=True) as MockConfigManager, \
-         patch('cconx.cconx.ports.PortManager', create=True) as MockPortManager, \
-         patch('cconx.cconx.instances.InstanceManager', create=True) as MockInstanceManager, \
-         patch('cconx.cconx.compose.generate') as mock_generate, \
-         patch('cconx.cconx.docker.DockerClient', create=True) as MockDockerClient:
+    with patch('cconx.cconx.cconx.config.ConfigManager', create=True) as MockConfigManager, \
+         patch('cconx.cconx.cconx.ports.PortManager', create=True) as MockPortManager, \
+         patch('cconx.cconx.cconx.instances.InstanceManager', create=True) as MockInstanceManager, \
+         patch('cconx.cconx.cconx.compose.generate') as mock_generate, \
+         patch('cconx.cconx.cconx.docker.DockerClient', create=True) as MockDockerClient:
 
         # Setup mocks
         mock_config_manager = MockConfigManager.return_value

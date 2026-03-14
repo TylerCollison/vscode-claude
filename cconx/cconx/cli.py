@@ -85,6 +85,24 @@ def start_command(args):
     enabled_volumes = config_manager.get_enabled_volumes()
     include_docker_sock = config_manager.get_include_docker_sock()
 
+    # DNS configuration
+    dns_servers = None
+    # Get DNS servers from global config
+    global_dns_servers = config_manager.get_dns_servers()
+
+    # Override with CLI DNS flags if provided
+    if hasattr(args, 'dns') and args.dns:
+        # Validate CLI-provided DNS servers
+        dns_servers = config_manager._validate_dns_servers(args.dns)
+    elif global_dns_servers is not None:
+        # Use global DNS servers if CLI flags not provided
+        dns_servers = global_dns_servers
+
+    # Skip DNS configuration for host and none networks
+    docker_network = config_manager.get_docker_network()
+    if docker_network in ["host", "none"]:
+        dns_servers = None
+
     # Docker image handling: Support for custom images via --image flag
     # Priority: --image flag > ConfigManager default image
     image_name = None
@@ -140,15 +158,21 @@ def start_command(args):
         service_config = compose_config["services"]["vscode-claude"]
 
         # Create container
-        container = docker_client.client.containers.create(
-            image=service_config["image"],
-            name=container_name,
-            ports={service_config["ports"][0].split(":")[1]: service_config["ports"][0].split(":")[0]},
-            environment={env.split("=", 1)[0]: env.split("=", 1)[1] for env in service_config["environment"]},
-            volumes=service_config["volumes"],
-            network=docker_network if docker_network else None,  # NEW: Pass network parameter
-            detach=True
-        )
+        container_kwargs = {
+            "image": service_config["image"],
+            "name": container_name,
+            "ports": {service_config["ports"][0].split(":")[1]: service_config["ports"][0].split(":")[0]},
+            "environment": {env.split("=", 1)[0]: env.split("=", 1)[1] for env in service_config["environment"]},
+            "volumes": service_config["volumes"],
+            "network": docker_network if docker_network else None,
+            "detach": True
+        }
+
+        # Add DNS servers if configured (and not host/none network)
+        if dns_servers is not None:
+            container_kwargs["dns"] = dns_servers
+
+        container = docker_client.client.containers.create(**container_kwargs)
 
         # Start container
         container.start()
@@ -288,6 +312,7 @@ def main():
     start_parser.add_argument("--env", action="append", help="Environment variable (key=value)")
     start_parser.add_argument("--env-append", action="append", help="Environment variable to append to global config (key=value)")
     start_parser.add_argument("--image", help="Custom Docker image name (e.g., 'custom-image:v1.0')")
+    start_parser.add_argument("--dns", action="append", help="DNS server IP address (can be specified multiple times)")
 
     # Status command
     status_parser = subparsers.add_parser("status", help="Show instance status")

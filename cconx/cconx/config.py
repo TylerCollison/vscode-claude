@@ -1,7 +1,8 @@
 import json
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
+import ipaddress
 
 class ConfigManager:
     def __init__(self, config_dir=None):
@@ -53,6 +54,37 @@ class ConfigManager:
         config = self.load_global_config()
         return config.get("docker_network")
 
+    def get_dns_servers(self) -> Optional[List[str]]:
+        """Get DNS servers from global config"""
+        config = self.load_global_config()
+        dns_servers = config.get("dns_servers")
+
+        if dns_servers is None:
+            return None
+
+        if not dns_servers:
+            # Empty list means "use Docker defaults"
+            return []
+
+        return self._validate_dns_servers(dns_servers)
+
+    def _validate_dns_servers(self, dns_servers: List[str]) -> List[str]:
+        """Validate DNS servers list, filtering out invalid IP addresses"""
+        if not isinstance(dns_servers, list):
+            raise ValueError("DNS servers must be a list")
+
+        valid_servers = []
+
+        for server in dns_servers:
+            try:
+                # Validate IP address format
+                ipaddress.ip_address(server)
+                valid_servers.append(server)
+            except ValueError:
+                print(f"Warning: Invalid DNS server address '{server}' - skipping")
+
+        return valid_servers
+
     def _default_global_config(self):
         return {
             "port_range": {"min": 8000, "max": 9000},
@@ -62,7 +94,8 @@ class ConfigManager:
             "enabled_volumes": [],
             "include_docker_sock": True,
             "default_image": "tylercollison2089/vscode-claude:latest",
-            "docker_network": None  # NEW: Default no network
+            "docker_network": None,  # Default no network
+            "dns_servers": None  # Default no custom DNS servers
         }
 
     def _save_config(self, config):
