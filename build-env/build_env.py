@@ -5,7 +5,7 @@ from typing import Dict, Optional, Any
 import docker
 from docker.errors import NotFound
 
-from build_env.security import (
+from security import (
     filter_environment_variables,
     generate_container_uuid,
     validate_image_name,

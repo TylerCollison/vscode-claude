@@ -2,7 +2,7 @@
 
 import os
 import pytest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 # Mock docker before imports
 import sys
@@ -308,3 +308,74 @@ def test_start_container_image_not_found(manager, mock_docker_client):
 
     # Assertions
     assert "Docker image not found" in str(exc_info.value)
+
+
+def test_cli_exit_command():
+    """Test --exit flag handling."""
+    with patch('sys.argv', ['build-env', '--exit']):
+        # Mock BuildEnvironmentManager before importing CLI
+        with patch('build_env.BuildEnvironmentManager') as mock_manager:
+            mock_instance = mock_manager.return_value
+            mock_instance._get_container_uuid.return_value = "12345678-1234-5678-1234-567812345678"
+
+            # Import CLI after mocking
+            import importlib
+            import sys
+
+            # Remove the module from cache to force re-import
+            if 'build_env_cli' in sys.modules:
+                del sys.modules['build_env_cli']
+
+            from build_env_cli import main
+            main()
+            mock_instance._shutdown_container.assert_called_once_with("build-env-12345678-1234-5678-1234-567812345678")
+
+
+def test_cli_command_execution():
+    """Test command execution via CLI."""
+    with patch('sys.argv', ['build-env', 'echo', 'hello']):
+        with patch('build_env.BuildEnvironmentManager') as mock_manager:
+            mock_instance = mock_manager.return_value
+            mock_instance._execute_command.return_value = (0, "hello\\n")
+            mock_instance._validate_requirements.return_value = None
+            mock_instance._start_container.return_value = "build-env-test-uuid"
+
+            with patch('os.environ', {
+                'BUILD_CONTAINER': 'python:3.11',
+                'DEFAULT_WORKSPACE': '/workspace'
+            }):
+                # Import CLI after mocking
+                import importlib
+                import sys
+
+                # Remove the module from cache to force re-import
+                if 'build_env_cli' in sys.modules:
+                    del sys.modules['build_env_cli']
+
+                from build_env_cli import main
+                main()
+                mock_instance._execute_command.assert_called_once()
+
+
+def test_cli_missing_environment_variables():
+    """Test CLI fails with missing environment variables."""
+    with patch('sys.argv', ['build-env', 'echo', 'hello']):
+        with patch('build_env.BuildEnvironmentManager') as mock_manager:
+            mock_instance = mock_manager.return_value
+            # Mock validate_requirements to raise BuildEnvironmentError
+            from build_env import BuildEnvironmentError
+            mock_instance._validate_requirements.side_effect = BuildEnvironmentError("Environment variables missing")
+
+            with patch('os.environ', {}):
+                # Import CLI after mocking
+                import importlib
+                import sys
+
+                # Remove the module from cache to force re-import
+                if 'build_env_cli' in sys.modules:
+                    del sys.modules['build_env_cli']
+
+                from build_env_cli import main
+                result = main()
+                # Should return non-zero exit code
+                assert result == 1
