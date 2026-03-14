@@ -21,26 +21,26 @@ The `build-env` tool provides a persistent container environment for running bui
 - [x] Full container privileges (without `--privileged` flag)
 
 ### Non-Functional Requirements
-- [x] Simple bash script implementation
+- [x] Python implementation (aligns with existing cconx patterns)
 - [x] UUID-based container naming for uniqueness
 - [x] Error handling with clear messages
 - [x] Fast startup time
-- [x] Minimal dependencies
+- [x] Security validation using existing DockerClient patterns
 
 ## Architecture
 
 ### Component Design
 
 ```
-build-env (bash script)
+build-env (Python CLI)
 ├── Container Manager
-│   ├── Container existence check
-│   ├── Container startup logic
+│   ├── Container existence check (using DockerClient)
+│   ├── Container startup logic (with security validation)
 │   └── Container shutdown logic
 ├── Environment Handler
-│   ├── BUILD_CONTAINER validation
+│   ├── BUILD_CONTAINER validation (image name validation)
 │   ├── DEFAULT_WORKSPACE mounting
-│   └── Host environment variable passing
+│   └── Host environment variable filtering
 └── Command Executor
     ├── Interactive command execution
     └── Exit flag handling
@@ -83,11 +83,16 @@ UUID generation ensures:
 
 ### Command Execution Pattern
 
-```bash
-docker exec -it \
-  -e $(env | grep -v "^_" | xargs -I {} echo "-e {}") \
-  build-env-{uuid} \
-  bash -c "$command"
+```python
+# Using Docker Python SDK with proper environment variable handling
+container = docker_client.client.containers.get(container_name)
+result = container.exec_run(
+    command,
+    environment=safe_environment_variables,
+    workdir="/workspace",
+    tty=True,
+    stdin=True
+)
 ```
 
 ### Error Handling
@@ -106,24 +111,28 @@ docker exec -it \
 ### File Structure
 
 ```
-/usr/local/bin/build-env      # Main executable script
-/var/lib/build-env/           # State directory (optional)
-  ├── containers/             # Container state tracking
-  └── uuids/                  # UUID mapping to workspaces
+cconx/cconx/build_env.py      # Main Python implementation
+cconx/scripts/build-env       # CLI wrapper script
+cconx/tests/test_build_env.py # Test suite
 ```
 
 ### Key Functions
 
 1. **`get_container_uuid()`** - Generate/lookup UUID for workspace
-2. **`container_exists()`** - Check if container exists
-3. **`container_running()`** - Check if container is running
-4. **`start_container()`** - Start/create container
-5. **`execute_command()`** - Run command in container
-6. **`shutdown_container()`** - Stop and remove container
+2. **`validate_image_name()`** - Security validation using existing patterns
+3. **`container_exists()`** - Check if container exists (using DockerClient)
+4. **`container_running()`** - Check if container is running
+5. **`start_container()`** - Start/create container with security validation
+6. **`execute_command()`** - Run command in container using exec_run
+7. **`shutdown_container()`** - Stop and remove container
 
 ### Environment Variable Handling
 
-All host environment variables are passed to the container, filtered to avoid Docker-specific variables that might cause conflicts.
+Host environment variables are filtered to:
+- Exclude Docker-specific variables
+- Exclude sensitive variables (API keys, tokens)
+- Include development/build-related variables
+- Maintain security while preserving functionality
 
 ## Testing Strategy
 
@@ -148,8 +157,28 @@ All host environment variables are passed to the container, filtered to avoid Do
 
 - No `--privileged` flag used
 - Container runs with default Docker security profile
-- Environment variables filtered to avoid sensitive data leakage
+- Environment variables filtered using safe variable list
 - UUID-based naming prevents container hijacking
+- Image name validation using existing security patterns
+- Command argument sanitization
+- Input validation for all user inputs
+
+### Security Implementation Details
+
+**Image Validation:**
+- Use existing `_validate_image_name()` from cconx
+- Pattern matching for safe image names
+- Reject potentially dangerous image patterns
+
+**Environment Variable Filtering:**
+- Exclude: `DOCKER_*`, `_*`, sensitive API keys
+- Include: `PATH`, `HOME`, `USER`, build-related variables
+- Whitelist approach for safety
+
+**Command Execution Security:**
+- Use Docker Python SDK `exec_run()` instead of shell
+- Proper argument escaping
+- Input validation for all parameters
 
 ## Performance Considerations
 
@@ -167,9 +196,9 @@ All host environment variables are passed to the container, filtered to avoid Do
 
 ## Dependencies
 
-- Docker CLI
-- Bash shell
-- Standard Unix utilities
+- Docker Python SDK
+- Python 3.8+
+- Existing cconx DockerClient infrastructure
 
 ## Success Criteria
 
