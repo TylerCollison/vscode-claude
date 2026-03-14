@@ -15,6 +15,9 @@ sys.modules['docker.errors'].NotFound = Exception
 # Mock security module with proper mocking
 sys.modules['build_env.security'] = Mock()
 sys.modules['build_env.security'].generate_container_uuid = Mock()
+sys.modules['build_env.security'].validate_image_name = Mock()
+sys.modules['build_env.security'].filter_environment_variables = Mock()
+sys.modules['build_env.security'].SecurityError = Exception
 
 # Set default behavior for mocks
 sys.modules['build_env.security'].generate_container_uuid.return_value = "12345678-1234-5678-1234-567812345678"
@@ -154,14 +157,20 @@ def test_start_container_creates_new_container(manager, mock_docker_client):
     mock_docker_client.containers.create.return_value = mock_container
     mock_container.start.return_value = None
 
+    # Mock security functions
+    sys.modules['build_env.security'].validate_image_name.return_value = True
+    sys.modules['build_env.security'].filter_environment_variables.return_value = {"TEST_VAR": "test_value"}
+
     # Call method
-    result = manager._start_container("test-image", "/workspace", {"TEST_VAR": "test_value"})
+    result = manager._start_container("test-image:latest", "/workspace", {"TEST_VAR": "test_value"})
 
     # Assertions
+    sys.modules['build_env.security'].validate_image_name.assert_called_once_with("test-image:latest")
+    sys.modules['build_env.security'].filter_environment_variables.assert_called_once_with({"TEST_VAR": "test_value"})
     mock_docker_client.containers.get.assert_called_once_with("build-env-12345678-1234-5678-1234-567812345678")
-    mock_docker_client.images.get.assert_called_once_with("test-image")
+    mock_docker_client.images.get.assert_called_once_with("test-image:latest")
     mock_docker_client.containers.create.assert_called_once_with(
-        image="test-image",
+        image="test-image:latest",
         name="build-env-12345678-1234-5678-1234-567812345678",
         working_dir="/workspace",
         volumes={"/workspace": {"bind": "/workspace", "mode": "rw"}},
@@ -169,7 +178,7 @@ def test_start_container_creates_new_container(manager, mock_docker_client):
         detach=True
     )
     mock_container.start.assert_called_once()
-    assert result == mock_container
+    assert result == "build-env-12345678-1234-5678-1234-567812345678"
 
 
 def test_start_container_reuses_running_container(manager, mock_docker_client):
@@ -179,13 +188,16 @@ def test_start_container_reuses_running_container(manager, mock_docker_client):
     mock_container.status = "running"
 
     mock_docker_client.containers.get.return_value = mock_container
+    sys.modules['build_env.security'].validate_image_name.return_value = True
+    sys.modules['build_env.security'].filter_environment_variables.return_value = {"TEST_VAR": "test_value"}
 
     # Call method
-    result = manager._start_container("test-image", "/workspace", {"TEST_VAR": "test_value"})
+    result = manager._start_container("test-image:latest", "/workspace", {"TEST_VAR": "test_value"})
 
     # Assertions - should reuse existing container
+    sys.modules['build_env.security'].validate_image_name.assert_called_once_with("test-image:latest")
     mock_docker_client.containers.get.assert_called_once_with("build-env-12345678-1234-5678-1234-567812345678")
-    assert result == mock_container
+    assert result == "build-env-12345678-1234-5678-1234-567812345678"
 
 
 def test_execute_command(manager, mock_docker_client):
@@ -196,15 +208,25 @@ def test_execute_command(manager, mock_docker_client):
     mock_exec_result.exit_code = 0
     mock_exec_result.output = b"Command output"
 
+    mock_docker_client.containers.get.return_value = mock_container
     mock_container.exec_run.return_value = mock_exec_result
+    sys.modules['build_env.security'].filter_environment_variables.return_value = {"TEST_VAR": "test_value"}
 
     # Call method
-    result = manager._execute_command(mock_container, "echo hello")
+    result = manager._execute_command("build-env-12345678-1234-5678-1234-567812345678", "echo hello", {"TEST_VAR": "test_value"})
 
     # Assertions
-    mock_container.exec_run.assert_called_once_with("echo hello", detach=False)
-    assert result.exit_code == 0
-    assert result.output == b"Command output"
+    sys.modules['build_env.security'].filter_environment_variables.assert_called_once_with({"TEST_VAR": "test_value"})
+    mock_docker_client.containers.get.assert_called_once_with("build-env-12345678-1234-5678-1234-567812345678")
+    mock_container.exec_run.assert_called_once_with(
+        "echo hello",
+        detach=False,
+        environment={"TEST_VAR": "test_value"},
+        workdir="/workspace",
+        tty=True,
+        stdin=True
+    )
+    assert result == mock_exec_result
 
 
 def test_shutdown_container(manager, mock_docker_client):
@@ -214,9 +236,75 @@ def test_shutdown_container(manager, mock_docker_client):
     mock_container.stop.return_value = None
     mock_container.remove.return_value = None
 
+    mock_docker_client.containers.get.return_value = mock_container
+
     # Call method
-    manager._shutdown_container(mock_container)
+    manager._shutdown_container("build-env-12345678-1234-5678-1234-567812345678")
 
     # Assertions
+    mock_docker_client.containers.get.assert_called_once_with("build-env-12345678-1234-5678-1234-567812345678")
     mock_container.stop.assert_called_once()
     mock_container.remove.assert_called_once_with(force=True)
+
+
+def test_start_container_invalid_image_name(manager):
+    """Test that invalid image names raise BuildEnvironmentError."""
+    # Setup mock to raise SecurityError
+    sys.modules['build_env.security'].validate_image_name.side_effect = SecurityError("Invalid image name")
+
+    # Call method
+    with pytest.raises(BuildEnvironmentError) as exc_info:
+        manager._start_container("invalid-image", "/workspace", {"TEST_VAR": "test_value"})
+
+    # Assertions
+    assert "Invalid image name" in str(exc_info.value)
+
+
+def test_execute_command_filters_dangerous_env_vars(manager, mock_docker_client):
+    """Test that dangerous environment variables are filtered."""
+    # Setup mocks
+    mock_container = Mock()
+    mock_exec_result = Mock()
+    mock_exec_result.exit_code = 0
+
+    mock_docker_client.containers.get.return_value = mock_container
+    mock_container.exec_run.return_value = mock_exec_result
+
+    # Mock security function to filter dangerous vars
+    sys.modules['build_env.security'].filter_environment_variables.return_value = {"SAFE_VAR": "safe_value"}
+
+    # Call method with dangerous environment variables
+    result = manager._execute_command(
+        "build-env-12345678-1234-5678-1234-567812345678",
+        "echo hello",
+        {"DANGEROUS_VAR": "dangerous", "SAFE_VAR": "safe_value"}
+    )
+
+    # Assertions
+    sys.modules['build_env.security'].filter_environment_variables.assert_called_once_with(
+        {"DANGEROUS_VAR": "dangerous", "SAFE_VAR": "safe_value"}
+    )
+    mock_container.exec_run.assert_called_once_with(
+        "echo hello",
+        detach=False,
+        environment={"SAFE_VAR": "safe_value"},
+        workdir="/workspace",
+        tty=True,
+        stdin=True
+    )
+
+
+def test_start_container_image_not_found(manager, mock_docker_client):
+    """Test handling of image not found error."""
+    # Setup mocks
+    mock_docker_client.containers.get.side_effect = Exception("Not found")
+    mock_docker_client.images.get.side_effect = Exception("Image not found")
+    sys.modules['build_env.security'].validate_image_name.return_value = True
+    sys.modules['build_env.security'].filter_environment_variables.return_value = {"TEST_VAR": "test_value"}
+
+    # Call method
+    with pytest.raises(BuildEnvironmentError) as exc_info:
+        manager._start_container("nonexistent-image:latest", "/workspace", {"TEST_VAR": "test_value"})
+
+    # Assertions
+    assert "Docker image not found" in str(exc_info.value)

@@ -5,7 +5,12 @@ from typing import Dict, Optional, Any
 import docker
 from docker.errors import NotFound
 
-from build_env.security import generate_container_uuid
+from build_env.security import (
+    filter_environment_variables,
+    generate_container_uuid,
+    validate_image_name,
+    SecurityError
+)
 
 
 class BuildEnvironmentError(Exception):
@@ -90,7 +95,7 @@ class BuildEnvironmentManager:
         """
         return generate_container_uuid()
 
-    def _start_container(self, image_name: str, workspace_path: str, env_vars: Dict[str, str]) -> Any:
+    def _start_container(self, image_name: str, workspace_path: str, env_vars: Dict[str, str]) -> str:
         """Start or create build container.
 
         Args:
@@ -99,54 +104,82 @@ class BuildEnvironmentManager:
             env_vars: Environment variables
 
         Returns:
-            Container instance
+            Container name
         """
+        # Validate image name
+        try:
+            validate_image_name(image_name)
+        except SecurityError as e:
+            raise BuildEnvironmentError(f"Invalid image name: {e}")
+
+        # Filter environment variables
+        filtered_env_vars = filter_environment_variables(env_vars)
+
         container_name = self._generate_container_name()
 
-        # Try to get existing container
+        # Check if container exists and is running
         try:
             container = self.docker_client.containers.get(container_name)
-            # If container exists and is running, return it
             if container.status == "running":
-                return container
-            # If container exists but is not running, remove it
+                return container_name
             else:
+                # Container exists but is not running, remove it
+                container.stop()
                 container.remove(force=True)
         except NotFound:
             # Container doesn't exist, proceed to create new one
             pass
 
-        # Create new container
+        # Create and start new container
+        try:
+            self.docker_client.images.get(image_name)
+        except NotFound:
+            raise BuildEnvironmentError(f"Docker image not found: {image_name}")
+
         container = self.docker_client.containers.create(
             image=image_name,
             name=container_name,
             working_dir=workspace_path,
             volumes={workspace_path: {"bind": workspace_path, "mode": "rw"}},
-            environment=env_vars,
+            environment=filtered_env_vars,
             detach=True
         )
 
-        # Start the container
         container.start()
-        return container
+        return container_name
 
-    def _execute_command(self, container: Any, command: str) -> Any:
+    def _execute_command(self, container_name: str, command: str, env_vars: Dict[str, str]) -> Any:
         """Execute command in container.
 
         Args:
-            container: Container instance
+            container_name: Name of the container
             command: Command to execute
+            env_vars: Environment variables
 
         Returns:
             Execution result
         """
-        return container.exec_run(command, detach=False)
+        # Filter environment variables
+        filtered_env_vars = filter_environment_variables(env_vars)
 
-    def _shutdown_container(self, container: Any) -> None:
+        # Get container
+        container = self.docker_client.containers.get(container_name)
+
+        return container.exec_run(
+            command,
+            detach=False,
+            environment=filtered_env_vars,
+            workdir="/workspace",
+            tty=True,
+            stdin=True
+        )
+
+    def _shutdown_container(self, container_name: str) -> None:
         """Shutdown and remove container.
 
         Args:
-            container: Container instance to shutdown
+            container_name: Name of the container to shutdown
         """
+        container = self.docker_client.containers.get(container_name)
         container.stop()
         container.remove(force=True)
