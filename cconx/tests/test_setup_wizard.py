@@ -28,3 +28,115 @@ def test_setup_wizard_creation():
     assert wizard.config_manager == mock_config_manager
     assert isinstance(wizard.field_handlers, dict)
     assert len(wizard.field_handlers) == 0
+
+
+def test_setup_wizard_run_method():
+    """Test SetupWizard run method with mock handlers."""
+    from unittest.mock import MagicMock, patch
+    from cconx.wizard.setup_wizard import SetupWizard
+    from cconx.wizard.field_handlers import SimpleStringFieldHandler
+
+    mock_config_manager = MagicMock()
+    mock_config_manager.load_global_config.return_value = {}
+
+    wizard = SetupWizard(mock_config_manager)
+    handler = SimpleStringFieldHandler("test_field", "Test explanation", "default")
+    wizard.register_field_handler("test_field", handler)
+
+    with patch('builtins.input', return_value="test_value"):
+        with patch('builtins.print'):
+            result = wizard.run()
+
+    assert "test_field" in result
+    assert result["test_field"] == "test_value"
+
+
+def test_setup_wizard_preserves_existing_config():
+    """Test that wizard preserves existing configuration values."""
+    from unittest.mock import MagicMock, patch
+    from cconx.wizard.setup_wizard import SetupWizard
+    from cconx.wizard.field_handlers import SimpleStringFieldHandler
+
+    mock_config_manager = MagicMock()
+    mock_config_manager.load_global_config.return_value = {"existing_field": "existing_value"}
+
+    wizard = SetupWizard(mock_config_manager)
+    handler = SimpleStringFieldHandler("test_field", "Test explanation", "default")
+    wizard.register_field_handler("test_field", handler)
+
+    with patch('builtins.input', return_value=""):
+        with patch('builtins.print'):
+            result = wizard.run()
+
+    assert "existing_field" in result
+    assert result["existing_field"] == "existing_value"
+    assert "test_field" in result
+
+
+def test_simple_string_field_handler():
+    """Test SimpleStringFieldHandler functionality."""
+    from cconx.wizard.field_handlers import SimpleStringFieldHandler
+
+    handler = SimpleStringFieldHandler("test_field", "Test explanation", "default_value")
+
+    # Test default values
+    assert handler.get_default() == "default_value"
+    assert handler.get_explanation() == "Test explanation"
+    assert handler.field_name == "test_field"
+
+    # Test validation
+    assert handler.validate("valid string") is True
+    assert handler.validate("") is True
+    assert handler.validate(123) is False
+
+    # Test formatting
+    assert handler.format("test") == "test"
+    assert handler.format(123) == "123"
+
+
+def test_string_field_handler():
+    """Test StringFieldHandler functionality."""
+    from cconx.wizard.field_handlers import StringFieldHandler
+
+    handler = StringFieldHandler("test_field", "Test explanation", "default_value")
+
+    assert handler.field_name == "test_field"
+    assert handler.get_explanation() == "Test explanation"
+    assert handler.get_default() == "default_value"
+    assert handler.validate("test") == True
+    assert handler.validate(123) == False
+    assert handler.format("test") == "test"
+
+
+def test_boolean_field_handler():
+    """Test BooleanFieldHandler functionality."""
+    from cconx.wizard.field_handlers import BooleanFieldHandler
+
+    handler = BooleanFieldHandler("test_field", "Test explanation", True)
+
+    assert handler.field_name == "test_field"
+    assert handler.get_explanation() == "Test explanation"
+    assert handler.get_default() == True
+    assert handler.validate(True) == True
+    assert handler.validate("string") == False
+    assert handler.format(True) == True
+
+
+def test_port_range_field_handler():
+    """Test PortRangeFieldHandler functionality."""
+    from cconx.wizard.field_handlers import PortRangeFieldHandler
+
+    handler = PortRangeFieldHandler()
+
+    assert handler.field_name == "port_range"
+    assert "port range" in handler.get_explanation().lower()
+
+    # Test validation
+    assert handler.validate({"min": "8000", "max": "9000"}) == True
+    assert handler.validate({"min": "9000", "max": "8000"}) == False  # min > max
+    assert handler.validate({"min": "0", "max": "9000"}) == False     # min too low
+    assert handler.validate({"min": "8000", "max": "70000"}) == False # max too high
+
+    # Test formatting
+    formatted = handler.format({"min": "8000", "max": "9000"})
+    assert formatted == {"min": 8000, "max": 9000}
