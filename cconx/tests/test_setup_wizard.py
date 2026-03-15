@@ -303,24 +303,31 @@ def test_end_to_end_wizard_flow():
 
 def test_cli_setup_command():
     """Test CLI setup command execution."""
-    from unittest.mock import patch
     import argparse
+    from cconx.cli import setup_command
+    from unittest.mock import patch, MagicMock
 
     # Create mock args
-    mock_args = argparse.Namespace()
+    mock_args = MagicMock()
 
-    # Test that setup command can be imported and called without errors
-    try:
-        # Mock user input to avoid blocking
-        with patch('builtins.input', return_value=""):
-            with patch('builtins.print'):  # Suppress output
-                from cconx.cli import setup_command
-                setup_command(mock_args)
-        assert True  # If we get here, the function executed without errors
-    except Exception as e:
-        # The function might raise expected exceptions, but shouldn't crash
-        print(f"CLI setup command completed with: {type(e).__name__}: {e}")
-        # This is acceptable as long as it's not a crash
+    with patch('cconx.config.ConfigManager') as mock_config_manager_class:
+        mock_config_manager = MagicMock()
+        mock_config_manager_class.return_value = mock_config_manager
+        mock_config_manager.load_global_config.return_value = {}
+
+        with patch('cconx.wizard.setup_wizard.SetupWizard') as mock_wizard_class:
+            mock_wizard = MagicMock()
+            mock_wizard_class.return_value = mock_wizard
+            mock_wizard.run.return_value = {"test": "config"}
+
+            # Mock user input and print
+            with patch('builtins.input', lambda x: ""):
+                with patch('builtins.print'):  # Suppress output
+                    setup_command(mock_args)
+
+            # Verify wizard was called
+            mock_wizard.run.assert_called_once()
+            mock_config_manager._save_config.assert_called_once_with({"test": "config"})
 
 
 if __name__ == "__main__":
