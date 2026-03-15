@@ -243,7 +243,11 @@ class VolumesFieldHandler(FieldHandler):
             else:
                 print("Invalid path. Path must start with '/'.")
 
-        return new_volumes if new_volumes else volumes
+        # FIXED: Merge new volumes with existing volumes
+        if new_volumes:
+            return volumes + new_volumes
+        else:
+            return volumes
 
     def validate(self, input_value: Any) -> bool:
         if not isinstance(input_value, list):

@@ -191,6 +191,43 @@ def test_setup_command_integration():
         assert result == {"test": "config"}
 
 
+def test_volumes_field_handler_preserves_existing():
+    """Test that VolumesFieldHandler preserves existing volumes when no new ones are added."""
+    from cconx.wizard.field_handlers import VolumesFieldHandler
+    from unittest.mock import patch
+
+    handler = VolumesFieldHandler()
+    existing_volumes = ["/existing/path1", "/existing/path2"]
+
+    # Simulate user entering empty line (no new volumes)
+    with patch('builtins.input', return_value=""):
+        with patch('builtins.print'):
+            result = handler.prompt(existing_volumes)
+
+    # Should preserve existing volumes when no new ones added
+    assert result == existing_volumes
+    assert len(result) == 2
+
+
+def test_volumes_field_handler_merges_new_volumes():
+    """Test that VolumesFieldHandler merges new volumes with existing ones."""
+    from cconx.wizard.field_handlers import VolumesFieldHandler
+    from unittest.mock import patch
+
+    handler = VolumesFieldHandler()
+    existing_volumes = ["/existing/path1", "/existing/path2"]
+
+    # Simulate user adding two new volumes
+    input_responses = ["/new/path1", "/new/path2", ""]
+    with patch('builtins.input', side_effect=input_responses):
+        with patch('builtins.print'):
+            result = handler.prompt(existing_volumes)
+
+    # Should merge new volumes with existing ones
+    assert result == ["/existing/path1", "/existing/path2", "/new/path1", "/new/path2"]
+    assert len(result) == 4
+
+
 if __name__ == "__main__":
     # Run all test functions
     test_field_handler_abc()
