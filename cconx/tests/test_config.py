@@ -4,7 +4,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 def test_load_global_config():
     """Test loading global configuration"""
-    from cconx.cconx.config import ConfigManager
+    from cconx.config import ConfigManager
     manager = ConfigManager()
     config = manager.load_global_config()
     assert config is not None
@@ -13,7 +13,7 @@ def test_load_global_config():
 
 def test_global_config_includes_environment():
     """Test that global config includes environment field with dict default"""
-    from cconx.cconx.config import ConfigManager
+    from cconx.config import ConfigManager
     manager = ConfigManager()
     config = manager.load_global_config()
     assert "environment" in config
@@ -22,7 +22,7 @@ def test_global_config_includes_environment():
 
 def test_get_global_environment():
     """Test getting environment from global config"""
-    from cconx.cconx.config import ConfigManager
+    from cconx.config import ConfigManager
     manager = ConfigManager()
     # This test should fail initially since get_global_environment method doesn't exist
     environment = manager.get_global_environment()
@@ -31,7 +31,7 @@ def test_get_global_environment():
 
 def test_get_enabled_volumes():
     """Test getting enabled volumes from global config"""
-    from cconx.cconx.config import ConfigManager
+    from cconx.config import ConfigManager
     manager = ConfigManager()
     volumes = manager.get_enabled_volumes()
     assert isinstance(volumes, list)
@@ -40,7 +40,7 @@ def test_get_enabled_volumes():
 
 def test_get_include_docker_sock():
     """Test getting Docker socket preference"""
-    from cconx.cconx.config import ConfigManager
+    from cconx.config import ConfigManager
     manager = ConfigManager()
     include_docker_sock = manager.get_include_docker_sock()
     assert isinstance(include_docker_sock, bool)
@@ -49,7 +49,7 @@ def test_get_include_docker_sock():
 
 def test_validate_volume_paths():
     """Test volume path validation"""
-    from cconx.cconx.config import ConfigManager
+    from cconx.config import ConfigManager
 
     # Valid paths
     manager = ConfigManager()
@@ -62,7 +62,7 @@ def test_validate_volume_paths():
 
 def test_default_config_includes_volume_settings():
     """Test that default config includes volume settings"""
-    from cconx.cconx.config import ConfigManager
+    from cconx.config import ConfigManager
     manager = ConfigManager()
     config = manager._default_global_config()
     assert "enabled_volumes" in config
@@ -75,7 +75,7 @@ def test_default_config_includes_volume_settings():
 def test_get_docker_network():
     """Test getting docker network from config"""
     import tempfile
-    from cconx.cconx.config import ConfigManager
+    from cconx.config import ConfigManager
 
     # Test default value (no network) with clean config
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -92,7 +92,7 @@ def test_get_docker_network():
 
 def test_docker_network_default_value():
     """Test that docker_network defaults to None"""
-    from cconx.cconx.config import ConfigManager
+    from cconx.config import ConfigManager
     config_manager = ConfigManager()
     default_config = config_manager._default_global_config()
     assert default_config["docker_network"] is None
@@ -124,7 +124,7 @@ def test_start_command_with_missing_network():
 
         def test_start_command_simplified():
             """Simplified test for network validation logic"""
-            from cconx.cconx.config import ConfigManager
+            from cconx.config import ConfigManager
             from cconx.cconx.docker import MockDockerClient
 
             # Create a temporary directory for config
@@ -150,7 +150,7 @@ def test_start_command_with_missing_network():
 def test_backward_compatibility():
     """Test that existing configs without docker_network work unchanged"""
     import tempfile
-    from cconx.cconx.config import ConfigManager
+    from cconx.config import ConfigManager
 
     with tempfile.TemporaryDirectory() as tmpdir:
         config_manager = ConfigManager(tmpdir)
@@ -171,7 +171,7 @@ def test_backward_compatibility():
 def test_get_dns_servers():
     """Test getting DNS servers from config"""
     import tempfile
-    from cconx.cconx.config import ConfigManager
+    from cconx.config import ConfigManager
 
     with tempfile.TemporaryDirectory() as tmpdir:
         config_manager = ConfigManager(tmpdir)
@@ -195,7 +195,7 @@ def test_get_dns_servers():
 
 def test_validate_dns_servers():
     """Test DNS server validation"""
-    from cconx.cconx.config import ConfigManager
+    from cconx.config import ConfigManager
 
     config_manager = ConfigManager()
 
@@ -234,7 +234,7 @@ def test_validate_dns_servers():
 def test_dns_servers_backward_compatibility():
     """Test that existing configs without dns_servers work unchanged"""
     import tempfile
-    from cconx.cconx.config import ConfigManager
+    from cconx.config import ConfigManager
 
     with tempfile.TemporaryDirectory() as tmpdir:
         config_manager = ConfigManager(tmpdir)
@@ -254,7 +254,7 @@ def test_dns_servers_backward_compatibility():
 
 def test_dns_servers_default_value():
     """Test that dns_servers defaults to None"""
-    from cconx.cconx.config import ConfigManager
+    from cconx.config import ConfigManager
     config_manager = ConfigManager()
     default_config = config_manager._default_global_config()
     assert default_config["dns_servers"] is None
@@ -263,7 +263,7 @@ def test_dns_servers_default_value():
 def test_get_dns_servers_none_case():
     """Test get_dns_servers behavior with None value"""
     import tempfile
-    from cconx.cconx.config import ConfigManager
+    from cconx.config import ConfigManager
 
     with tempfile.TemporaryDirectory() as tmpdir:
         config_manager = ConfigManager(tmpdir)
@@ -279,7 +279,7 @@ def test_get_dns_servers_none_case():
 def test_get_dns_servers_empty_list():
     """Test get_dns_servers behavior with empty list"""
     import tempfile
-    from cconx.cconx.config import ConfigManager
+    from cconx.config import ConfigManager
 
     with tempfile.TemporaryDirectory() as tmpdir:
         config_manager = ConfigManager(tmpdir)
@@ -294,7 +294,7 @@ def test_get_dns_servers_empty_list():
 
 def test_validate_dns_servers_mixed_ipv4_ipv6():
     """Test DNS validation with mixed IPv4 and IPv6 addresses"""
-    from cconx.cconx.config import ConfigManager
+    from cconx.config import ConfigManager
 
     config_manager = ConfigManager()
 
@@ -308,7 +308,7 @@ def test_validate_dns_servers_mixed_ipv4_ipv6():
 
 def test_validate_dns_servers_with_warnings():
     """Test DNS validation with invalid addresses that trigger warnings"""
-    from cconx.cconx.config import ConfigManager
+    from cconx.config import ConfigManager
 
     config_manager = ConfigManager()
 
@@ -322,7 +322,7 @@ def test_validate_dns_servers_with_warnings():
 
 def test_validate_dns_servers_single_invalid():
     """Test DNS validation with only invalid addresses"""
-    from cconx.cconx.config import ConfigManager
+    from cconx.config import ConfigManager
 
     config_manager = ConfigManager()
 
@@ -336,7 +336,7 @@ def test_validate_dns_servers_single_invalid():
 
 def test_validate_dns_servers_special_cases():
     """Test DNS validation with special IP address cases"""
-    from cconx.cconx.config import ConfigManager
+    from cconx.config import ConfigManager
 
     config_manager = ConfigManager()
 
@@ -346,3 +346,25 @@ def test_validate_dns_servers_special_cases():
 
     # All special addresses are valid IPs
     assert validated_servers == special_servers
+
+
+def test_config_manager_setup_wizard_integration():
+    """Test ConfigManager integration with setup wizard."""
+    import tempfile
+    from unittest.mock import patch, MagicMock
+    from cconx.config import ConfigManager
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config_manager = ConfigManager(tmpdir)
+
+        # Test that setup wizard method exists
+        assert hasattr(config_manager, 'run_setup_wizard')
+
+        # Test method returns a dictionary
+        with patch('cconx.wizard.setup_wizard.SetupWizard') as mock_wizard:
+            mock_instance = MagicMock()
+            mock_wizard.return_value = mock_instance
+            mock_instance.run.return_value = {"test": "value"}
+
+            result = config_manager.run_setup_wizard()
+            assert result == {"test": "value"}
