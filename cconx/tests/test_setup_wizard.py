@@ -146,6 +146,26 @@ def test_environment_field_handler():
     assert "GOOGLE_API_KEY" in handler.special_variables
 
 
+def test_volumes_field_handler():
+    """Test VolumesFieldHandler functionality."""
+    from cconx.wizard.field_handlers import VolumesFieldHandler
+
+    handler = VolumesFieldHandler()
+
+    assert handler.field_name == "enabled_volumes"
+    assert "volume paths" in handler.get_explanation().lower()
+
+    # Test validation
+    assert handler.validate(["/path1", "/path2"]) == True
+    assert handler.validate(["relative/path"]) == False  # Must start with /
+    assert handler.validate([""]) == False  # Empty path
+    assert handler.validate("not_a_list") == False
+
+    # Test formatting
+    formatted = handler.format(["/path1", "/path2"])
+    assert formatted == ["/path1", "/path2"]
+
+
 def test_setup_command_integration():
     """Test setup command integration with CLI."""
     import sys

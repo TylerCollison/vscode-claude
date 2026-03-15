@@ -302,7 +302,8 @@ def setup_command(args):
     from .config import ConfigManager
     from .wizard.setup_wizard import SetupWizard
     from .wizard.field_handlers import (
-        PortRangeFieldHandler, StringFieldHandler, BooleanFieldHandler, EnvironmentFieldHandler
+        PortRangeFieldHandler, StringFieldHandler, BooleanFieldHandler,
+        EnvironmentFieldHandler, VolumesFieldHandler
     )
 
     config_manager = ConfigManager()
@@ -335,6 +336,7 @@ def setup_command(args):
         )
     )
     wizard.register_field_handler("environment", EnvironmentFieldHandler())
+    wizard.register_field_handler("enabled_volumes", VolumesFieldHandler())
 
     try:
         new_config = wizard.run()

@@ -208,3 +208,54 @@ class EnvironmentFieldHandler(FieldHandler):
 
     def get_explanation(self) -> str:
         return "Environment variables passed to Docker containers"
+
+
+class VolumesFieldHandler(FieldHandler):
+    """Handler for volume paths configuration."""
+
+    def __init__(self, field_name: str = "enabled_volumes"):
+        super().__init__(field_name)
+
+    def prompt(self, current_value: Any) -> Any:
+        volumes = current_value.copy() if current_value else []
+
+        print("\n=== CONFIGURE VOLUME PATHS ===")
+        print("Configure volume paths to mount in containers.")
+        print("Paths must start with '/' and be absolute paths.")
+        print("Enter one path per line. Enter empty line when finished.\n")
+
+        if volumes:
+            print("Current volumes:")
+            for vol in volumes:
+                print(f"  - {vol}")
+            print()
+
+        new_volumes = []
+
+        while True:
+            user_input = input("Enter volume path (or empty to finish): ").strip()
+            if not user_input:
+                break
+
+            if user_input.startswith("/"):
+                new_volumes.append(user_input)
+                print(f"Added: {user_input}")
+            else:
+                print("Invalid path. Path must start with '/'.")
+
+        return new_volumes if new_volumes else volumes
+
+    def validate(self, input_value: Any) -> bool:
+        if not isinstance(input_value, list):
+            return False
+
+        return all(isinstance(path, str) and path.startswith("/") for path in input_value)
+
+    def format(self, input_value: Any) -> Any:
+        return list(input_value)
+
+    def get_default(self) -> Any:
+        return []
+
+    def get_explanation(self) -> str:
+        return "List of volume paths to mount in Docker containers"
