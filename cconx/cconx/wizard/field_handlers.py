@@ -36,31 +36,6 @@ class FieldHandler(ABC):
         pass
 
 
-class SimpleStringFieldHandler(FieldHandler):
-    """Simple string field handler for testing."""
-
-    def __init__(self, field_name: str, explanation: str, default_value: str = ""):
-        super().__init__(field_name)
-        self.explanation_text = explanation
-        self.default_value = default_value
-
-    def prompt(self, current_value: Any) -> Any:
-        default_str = current_value if current_value else self.default_value
-        return input(f"Enter value (default: {default_str}): ") or default_str
-
-    def validate(self, input_value: Any) -> bool:
-        return isinstance(input_value, str)
-
-    def format(self, input_value: Any) -> Any:
-        return str(input_value)
-
-    def get_default(self) -> Any:
-        return self.default_value
-
-    def get_explanation(self) -> str:
-        return self.explanation_text
-
-
 class StringFieldHandler(FieldHandler):
     """Handler for string fields."""
 
@@ -70,6 +45,7 @@ class StringFieldHandler(FieldHandler):
         self.default_value = default_value
 
     def prompt(self, current_value: Any) -> Any:
+        print(f"Description: {self.explanation}")
         default_str = current_value if current_value else self.default_value
         return input(f"Enter value (default: {default_str}): ") or default_str
 
@@ -95,6 +71,7 @@ class BooleanFieldHandler(FieldHandler):
         self.default_value = default_value
 
     def prompt(self, current_value: Any) -> Any:
+        print(f"Description: {self.explanation}")
         default_bool = current_value if current_value is not None else self.default_value
         default_str = "yes" if default_bool else "no"
         response = input(f"Enable? (yes/no, default: {default_str}): ").lower().strip()
@@ -124,10 +101,11 @@ class PortRangeFieldHandler(FieldHandler):
         super().__init__(field_name)
 
     def prompt(self, current_value: Any) -> Any:
+        print(f"Description: {self.get_explanation()}")
         default_min = current_value.get("min", 8000) if current_value else 8000
         default_max = current_value.get("max", 9000) if current_value else 9000
 
-        print(f"Configure port range for instance allocation:")
+        print("Configure port range for instance allocation:")
         min_port = input(f"Minimum port (default: {default_min}): ") or default_min
         max_port = input(f"Maximum port (default: {default_max}): ") or default_max
 

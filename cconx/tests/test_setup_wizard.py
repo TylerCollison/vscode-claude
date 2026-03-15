@@ -34,13 +34,13 @@ def test_setup_wizard_run_method():
     """Test SetupWizard run method with mock handlers."""
     from unittest.mock import MagicMock, patch
     from cconx.wizard.setup_wizard import SetupWizard
-    from cconx.wizard.field_handlers import SimpleStringFieldHandler
+    from cconx.wizard.field_handlers import StringFieldHandler
 
     mock_config_manager = MagicMock()
     mock_config_manager.load_global_config.return_value = {}
 
     wizard = SetupWizard(mock_config_manager)
-    handler = SimpleStringFieldHandler("test_field", "Test explanation", "default")
+    handler = StringFieldHandler("test_field", "Test explanation", "default")
     wizard.register_field_handler("test_field", handler)
 
     with patch('builtins.input', return_value="test_value"):
@@ -55,13 +55,13 @@ def test_setup_wizard_preserves_existing_config():
     """Test that wizard preserves existing configuration values."""
     from unittest.mock import MagicMock, patch
     from cconx.wizard.setup_wizard import SetupWizard
-    from cconx.wizard.field_handlers import SimpleStringFieldHandler
+    from cconx.wizard.field_handlers import StringFieldHandler
 
     mock_config_manager = MagicMock()
     mock_config_manager.load_global_config.return_value = {"existing_field": "existing_value"}
 
     wizard = SetupWizard(mock_config_manager)
-    handler = SimpleStringFieldHandler("test_field", "Test explanation", "default")
+    handler = StringFieldHandler("test_field", "Test explanation", "default")
     wizard.register_field_handler("test_field", handler)
 
     with patch('builtins.input', return_value=""):
@@ -73,25 +73,6 @@ def test_setup_wizard_preserves_existing_config():
     assert "test_field" in result
 
 
-def test_simple_string_field_handler():
-    """Test SimpleStringFieldHandler functionality."""
-    from cconx.wizard.field_handlers import SimpleStringFieldHandler
-
-    handler = SimpleStringFieldHandler("test_field", "Test explanation", "default_value")
-
-    # Test default values
-    assert handler.get_default() == "default_value"
-    assert handler.get_explanation() == "Test explanation"
-    assert handler.field_name == "test_field"
-
-    # Test validation
-    assert handler.validate("valid string") is True
-    assert handler.validate("") is True
-    assert handler.validate(123) is False
-
-    # Test formatting
-    assert handler.format("test") == "test"
-    assert handler.format(123) == "123"
 
 
 def test_string_field_handler():
@@ -140,3 +121,15 @@ def test_port_range_field_handler():
     # Test formatting
     formatted = handler.format({"min": "8000", "max": "9000"})
     assert formatted == {"min": 8000, "max": 9000}
+
+
+if __name__ == "__main__":
+    # Run all test functions
+    test_field_handler_abc()
+    test_setup_wizard_creation()
+    test_setup_wizard_run_method()
+    test_setup_wizard_preserves_existing_config()
+    test_string_field_handler()
+    test_boolean_field_handler()
+    test_port_range_field_handler()
+    print("All tests passed!")
