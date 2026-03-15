@@ -1,6 +1,5 @@
 import argparse
 import json
-import docker.errors
 import sys
 
 def start_command(args):
@@ -240,6 +239,7 @@ def stop_command(args):
             - name: Instance name to stop
     """
     from .docker import DockerClient
+    import docker.errors
 
     docker_client = DockerClient()
     container_name = f"cconx-{args.name}"
@@ -289,6 +289,66 @@ def delete_command(args):
         print(f"Error deleting instance '{args.name}': {e}")
 
 
+def setup_command(args):
+    """
+    Interactive setup wizard for cconx configuration.
+
+    This command walks users through configuring all aspects of the global
+    configuration file with explanations and validation.
+
+    Args:
+        args: Command line arguments (no specific args needed)
+    """
+    from .config import ConfigManager
+    from .wizard.setup_wizard import SetupWizard
+    from .wizard.field_handlers import (
+        PortRangeFieldHandler, StringFieldHandler, BooleanFieldHandler
+    )
+
+    config_manager = ConfigManager()
+    wizard = SetupWizard(config_manager)
+
+    # Register field handlers
+    wizard.register_field_handler("port_range", PortRangeFieldHandler())
+    wizard.register_field_handler(
+        "default_image",
+        StringFieldHandler(
+            "default_image",
+            "Default Docker image for new instances",
+            "tylercollison2089/vscode-claude:latest"
+        )
+    )
+    wizard.register_field_handler(
+        "ide_address_template",
+        StringFieldHandler(
+            "ide_address_template",
+            "URL template for IDE access",
+            "http://localhost:{port}"
+        )
+    )
+    wizard.register_field_handler(
+        "include_docker_sock",
+        BooleanFieldHandler(
+            "include_docker_sock",
+            "Mount Docker socket for Docker-in-Docker support",
+            True
+        )
+    )
+
+    try:
+        new_config = wizard.run()
+        if new_config:
+            config_manager._save_config(new_config)
+            print("\n✅ Configuration saved successfully!")
+            print("You can now use 'cconx start <name>' to create instances.")
+        else:
+            print("\nConfiguration cancelled.")
+    except KeyboardInterrupt:
+        print("\nSetup cancelled by user.")
+    except Exception as e:
+        print(f"\nError during setup: {e}")
+
+
 def main():
     """
     Main CLI entry point for ClaudeConX Docker Management.
@@ -325,6 +385,9 @@ def main():
     delete_parser = subparsers.add_parser("delete", help="Delete an instance (container and config)")
     delete_parser.add_argument("name", help="Instance name")
 
+    # Setup command
+    setup_parser = subparsers.add_parser("setup", help="Interactive configuration wizard")
+
     args = parser.parse_args()
 
     # Dispatch to appropriate command function
@@ -336,6 +399,8 @@ def main():
         stop_command(args)
     elif args.command == "delete":
         delete_command(args)
+    elif args.command == "setup":
+        setup_command(args)
     else:
         # No valid command provided, show help
         parser.print_help()

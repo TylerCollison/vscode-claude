@@ -103,3 +103,33 @@ class ConfigManager:
         config_file = self.config_dir / "global-config.json"
         with open(config_file, 'w') as f:
             json.dump(config, f, indent=2)
+
+    def run_setup_wizard(self):
+        """Run the interactive setup wizard."""
+        from .wizard.setup_wizard import SetupWizard
+        from .wizard.field_handlers import (
+            PortRangeFieldHandler, StringFieldHandler, BooleanFieldHandler
+        )
+
+        wizard = SetupWizard(self)
+
+        # Register field handlers
+        wizard.register_field_handler("port_range", PortRangeFieldHandler())
+        wizard.register_field_handler(
+            "default_image",
+            StringFieldHandler(
+                "default_image",
+                "Default Docker image for new instances",
+                "tylercollison2089/vscode-claude:latest"
+            )
+        )
+        wizard.register_field_handler(
+            "include_docker_sock",
+            BooleanFieldHandler(
+                "include_docker_sock",
+                "Mount Docker socket for Docker-in-Docker support",
+                True
+            )
+        )
+
+        return wizard.run()

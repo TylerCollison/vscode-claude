@@ -123,6 +123,31 @@ def test_port_range_field_handler():
     assert formatted == {"min": 8000, "max": 9000}
 
 
+def test_setup_command_integration():
+    """Test setup command integration with CLI."""
+    import sys
+    import os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+    from unittest.mock import MagicMock, patch
+
+    # Test the ConfigManager.run_setup_wizard method directly
+    with patch('cconx.wizard.setup_wizard.SetupWizard') as mock_wizard_class:
+        mock_wizard = MagicMock()
+        mock_wizard_class.return_value = mock_wizard
+        mock_wizard.run.return_value = {"test": "config"}
+
+        from cconx.config import ConfigManager
+        config_manager = ConfigManager()
+
+        result = config_manager.run_setup_wizard()
+
+        # Verify wizard was created and run
+        mock_wizard_class.assert_called_once_with(config_manager)
+        mock_wizard.run.assert_called_once()
+        assert result == {"test": "config"}
+
+
 if __name__ == "__main__":
     # Run all test functions
     test_field_handler_abc()
@@ -132,4 +157,5 @@ if __name__ == "__main__":
     test_string_field_handler()
     test_boolean_field_handler()
     test_port_range_field_handler()
+    test_setup_command_integration()
     print("All tests passed!")
