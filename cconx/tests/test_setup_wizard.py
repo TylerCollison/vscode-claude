@@ -123,6 +123,29 @@ def test_port_range_field_handler():
     assert formatted == {"min": 8000, "max": 9000}
 
 
+def test_environment_field_handler():
+    """Test EnvironmentFieldHandler functionality."""
+    from cconx.wizard.field_handlers import EnvironmentFieldHandler
+
+    handler = EnvironmentFieldHandler()
+
+    assert handler.field_name == "environment"
+    assert "environment variables" in handler.get_explanation().lower()
+
+    # Test validation
+    assert handler.validate({"KEY": "value"}) == True
+    assert handler.validate({"KEY": 123}) == True  # Values can be any type
+    assert handler.validate("not_a_dict") == False
+
+    # Test formatting
+    formatted = handler.format({"KEY": "value"})
+    assert formatted == {"KEY": "value"}
+
+    # Test special variables
+    assert "NIM_API_KEY" in handler.special_variables
+    assert "GOOGLE_API_KEY" in handler.special_variables
+
+
 def test_setup_command_integration():
     """Test setup command integration with CLI."""
     import sys

@@ -136,3 +136,75 @@ class PortRangeFieldHandler(FieldHandler):
 
     def get_explanation(self) -> str:
         return "Defines the port range for automatically assigning ports to new instances"
+
+
+class EnvironmentFieldHandler(FieldHandler):
+    """Handler for environment variables configuration."""
+
+    def __init__(self, field_name: str = "environment"):
+        super().__init__(field_name)
+        self.special_variables = {
+            "NIM_API_KEY": "NVIDIA NIM API key",
+            "GOOGLE_API_KEY": "Google AI Studio API key",
+            "MISTRAL_API_KEY": "Mistral AI API key",
+            "OPENROUTER_API_KEY": "OpenRouter API key",
+            "CCR_PROFILE": "Claude Code Router profile",
+            "PUID": "User ID for container processes",
+            "PGID": "Group ID for container processes",
+            "TZ": "Timezone configuration",
+            "CLAUDE_CODE_PERMISSION_MODE": "Claude Code permission mode"
+        }
+
+    def prompt(self, current_value: Any) -> Any:
+        env_vars = current_value.copy() if current_value else {}
+
+        print("\n=== CONFIGURE ENVIRONMENT VARIABLES ===")
+        print("The following special variables are commonly configured:")
+
+        for var_name, description in self.special_variables.items():
+            current_val = env_vars.get(var_name, "")
+            print(f"\n{var_name}: {description}")
+            if current_val:
+                print(f"Current value: {current_val}")
+
+            new_value = input(f"Enter value for {var_name} (leave empty to keep current): ")
+            if new_value.strip():
+                env_vars[var_name] = new_value.strip()
+            elif var_name not in env_vars and new_value == "":
+                # Skip if no current value and user enters empty
+                continue
+
+        # Allow adding arbitrary variables
+        print("\n=== ADDITIONAL VARIABLES ===")
+        print("You can add any additional environment variables.")
+        print("Enter variables as KEY=VALUE pairs, one per line.")
+        print("Enter an empty line when finished.\n")
+
+        while True:
+            user_input = input("Enter KEY=VALUE (or empty to finish): ").strip()
+            if not user_input:
+                break
+
+            if "=" in user_input:
+                key, value = user_input.split("=", 1)
+                env_vars[key.strip()] = value.strip()
+            else:
+                print("Invalid format. Use KEY=VALUE format.")
+
+        return env_vars
+
+    def validate(self, input_value: Any) -> bool:
+        if not isinstance(input_value, dict):
+            return False
+
+        # Basic validation - all keys should be strings
+        return all(isinstance(key, str) for key in input_value.keys())
+
+    def format(self, input_value: Any) -> Any:
+        return dict(input_value)
+
+    def get_default(self) -> Any:
+        return {}
+
+    def get_explanation(self) -> str:
+        return "Environment variables passed to Docker containers"
