@@ -1,0 +1,40 @@
+
+When the wizard asks for the port range, it repeats the description twice, as soon below: 
+"Description: Defines the port range for automatically assigning ports to new instances
+Current value: {'min': 8000, 'max': 9000}
+Description: Defines the port range for automatically assigning ports to new instances
+Configure port range for instance allocation:
+Minimum port (default: 8000):"
+The description should not be repeated like this
+
+The current message when setting the CCR_PROFILE is "CCR_PROFILE: Claude Code Router profile"
+It should be udpated to "CCR_PROFILE: Claude Code Router profile (default, nim-kimi, nim-deepseek, google-gemini, mistral-devstral, mistral-mistral-large)"
+
+The current message when setting the TZ is "TZ: Timezone configuration". It should be updated with an example as follows: "TZ: Timezone configuration (ex. Etc/UTC)"
+
+The message displayed for CLAUDE_CODE_PERMISSION_MODE should display all possible permission modes (acceptEdits, bypassPermissions, default, plan, dontAsk)
+
+The following environment variables are not explicity set by the wizard but should be:
+- PROXY_DOMAIN (should default to unset)
+- DEFAULT_WORKSPACE (should default to /workspace)
+- PWA_APPNAME (should default to ClaudeConX)
+
+- PASSWORD (should default to unset)
+- SUDO_PASSWORD (should default to unset)
+
+- CLAUDE_MARKETPLACES (should default to unset)
+- CLAUDE_PLUGINS (should default to unset)
+
+- ENABLE_THREADS (should default to false; the following variables should only be set by the wizard if this field is set to true)
+- MM_ADDRESS (should default to http://localhost:80)
+- MM_TOKEN (should default to Mattermost-Bot-Token)
+- MM_TEAM (should default to team-name)
+- MM_BOT_NAME (should default to bot-name)
+- THREADS_CHROME (should default to false)
+- THREADS_WORKTREE_MODE (should default to off)
+- THREADS_SKIP_PERMISSIONS (should default to false)
+
+- GIT_REPO_URL (should default to unset)
+- GIT_BRANCH_NAME (should default to unset)
+
+- KNOWLEDGE_REPOS (should default to unset)

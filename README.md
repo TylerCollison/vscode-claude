@@ -108,7 +108,7 @@ This container supports extensive configuration through environment variables.
 | `MM_CHANNEL` | Target channel for this container to use |
 | `MM_TEAM` | Mattermost team name (must exist in Mattermost) |
 | `MM_BOT_NAME` | Bot display name (must match Mattermost configuration) |
-| `THREADS_CHROME` | Chrome executable path |
+| `THREADS_CHROME` | Chrome browser use enabled |
 | `THREADS_WORKTREE_MODE` | Git worktree mode |
 | `THREADS_SKIP_PERMISSIONS` | Skip permission prompts |
 

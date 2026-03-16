@@ -103,6 +103,24 @@ def test_boolean_field_handler():
     assert handler.format(True) == True
 
 
+def test_port_range_field_handler_description_not_duplicated():
+    """Test that PortRangeFieldHandler doesn't duplicate description in prompt."""
+    from cconx.wizard.field_handlers import PortRangeFieldHandler
+    from unittest.mock import patch
+
+    handler = PortRangeFieldHandler()
+    current_value = {"min": 8000, "max": 9000}
+
+    with patch('builtins.input', side_effect=["8001", "9001"]):
+        with patch('builtins.print') as mock_print:
+            handler.prompt(current_value)
+
+    # Verify description is printed exactly once
+    description_calls = [call for call in mock_print.call_args_list
+                        if "Defines the port range" in str(call)]
+    assert len(description_calls) == 1, f"Description printed {len(description_calls)} times, expected 1"
+
+
 def test_port_range_field_handler():
     """Test PortRangeFieldHandler functionality."""
     from cconx.wizard.field_handlers import PortRangeFieldHandler
