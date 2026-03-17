@@ -191,7 +191,14 @@ class EnvironmentFieldHandler(FieldHandler):
         print("\n=== CONFIGURE ENVIRONMENT VARIABLES ===")
         print("The following special variables are commonly configured:")
 
+        # Track if threads are enabled
+        threads_enabled = env_vars.get("ENABLE_THREADS", "").lower() in ["true", "yes", "1"]
+
         for var_name, description in self.special_variables.items():
+            # Skip threads variables if threads not enabled
+            if var_name.startswith(("MM_", "THREADS_")) and not threads_enabled:
+                continue
+
             current_val = env_vars.get(var_name, "")
             print(f"\n{var_name}: {description}")
             if current_val:
@@ -200,6 +207,9 @@ class EnvironmentFieldHandler(FieldHandler):
             new_value = input(f"Enter value for {var_name} (leave empty to keep current): ")
             if new_value.strip():
                 env_vars[var_name] = new_value.strip()
+                # Re-evaluate threads enabled status if ENABLE_THREADS changed
+                if var_name == "ENABLE_THREADS":
+                    threads_enabled = new_value.lower() in ["true", "yes", "1"]
             elif var_name not in env_vars and new_value == "":
                 # Skip if no current value and user enters empty
                 continue
