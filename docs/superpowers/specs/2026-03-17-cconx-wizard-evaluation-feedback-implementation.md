@@ -22,29 +22,35 @@ This document specifies the implementation of feedback items identified in `ccon
 
 ## Architecture Changes
 
-### PortRangeFieldHandler Fix
+### Systemic FieldHandler Description Fix
 
-**Current Issue**: The `prompt` method in PortRangeFieldHandler calls `print(f"Description: {self.get_explanation()}")` which causes the description to appear twice since the SetupWizard's `_process_field` method already displays it.
+**Current Issue**: ALL FieldHandler implementations (`StringFieldHandler`, `BooleanFieldHandler`, `PortRangeFieldHandler`) contain redundant `print(f"Description: ...")` calls. The `SetupWizard._process_field` method already displays the description on line 56, causing duplication across ALL handlers.
 
-**Solution**: Remove the redundant print statement:
+**Root Cause**: The `SetupWizard._process_field` method prints the description:
+```python
+print(f"Description: {handler.get_explanation()}")
+```
+
+But each FieldHandler also prints its own description in their `prompt` methods.
+
+**Solution**: Remove the redundant print statements from ALL FieldHandler implementations:
 
 ```python
-class PortRangeFieldHandler(FieldHandler):
-    def prompt(self, current_value: Any) -> Any:
-        # REMOVE: print(f"Description: {self.get_explanation()}")  # This causes duplication
-        default_min = current_value.get("min", 8000) if current_value else 8000
-        default_max = current_value.get("max", 9000) if current_value else 9000
+# StringFieldHandler.prompt() - REMOVE:
+print(f"Description: {self.explanation}")
 
-        print("Configure port range for instance allocation:")
-        min_port = input(f"Minimum port (default: {default_min}): ") or default_min
-        max_port = input(f"Maximum port (default: {default_max}): ") or default_max
+# BooleanFieldHandler.prompt() - REMOVE:
+print(f"Description: {self.explanation}")
 
-        return {"min": min_port, "max": max_port}
+# PortRangeFieldHandler.prompt() - REMOVE:
+print(f"Description: {self.get_explanation()}")
 ```
+
+This will ensure descriptions appear only once per field, displayed by the SetupWizard.
 
 ### EnvironmentFieldHandler Enhancements
 
-**Enhanced special_variables Dictionary**:
+**Enhanced special_variables Dictionary with Defaults**:
 
 ```python
 self.special_variables = {
@@ -54,13 +60,13 @@ self.special_variables = {
     "MISTRAL_API_KEY": "Mistral AI API key",
     "OPENROUTER_API_KEY": "OpenRouter API key",
 
-    # Container Configuration (enhanced)
+    # Container Configuration (enhanced with defaults)
     "PUID": "User ID for container processes",
     "PGID": "Group ID for container processes",
     "TZ": "Timezone configuration (ex. Etc/UTC)",
     "PROXY_DOMAIN": "Reverse proxy domain for external access",
-    "DEFAULT_WORKSPACE": "Default workspace directory",
-    "PWA_APPNAME": "Progressive Web App name",
+    "DEFAULT_WORKSPACE": "Default workspace directory",  # Default: /workspace
+    "PWA_APPNAME": "Progressive Web App name",  # Default: ClaudeConX
 
     # Authentication & Access Control (new)
     "PASSWORD": "Plaintext password for VS Code web interface",
@@ -72,15 +78,15 @@ self.special_variables = {
     "CLAUDE_MARKETPLACES": "Comma-separated list of plugin marketplaces",
     "CLAUDE_PLUGINS": "Comma-separated list of plugins to install",
 
-    # Claude Threads Configuration (conditional - new)
-    "ENABLE_THREADS": "Enable Claude Threads server",
-    "MM_ADDRESS": "Mattermost server URL",
-    "MM_TOKEN": "Mattermost bot authentication token",
-    "MM_TEAM": "Mattermost team name",
-    "MM_BOT_NAME": "Bot display name",
-    "THREADS_CHROME": "Chrome executable path",
-    "THREADS_WORKTREE_MODE": "Git worktree mode",
-    "THREADS_SKIP_PERMISSIONS": "Skip permission prompts",
+    # Claude Threads Configuration (conditional - new with defaults)
+    "ENABLE_THREADS": "Enable Claude Threads server",  # Default: false
+    "MM_ADDRESS": "Mattermost server URL",  # Default: http://localhost:80
+    "MM_TOKEN": "Mattermost bot authentication token",  # Default: Mattermost-Bot-Token
+    "MM_TEAM": "Mattermost team name",  # Default: team-name
+    "MM_BOT_NAME": "Bot display name",  # Default: bot-name
+    "THREADS_CHROME": "Chrome executable path",  # Default: false
+    "THREADS_WORKTREE_MODE": "Git worktree mode",  # Default: off
+    "THREADS_SKIP_PERMISSIONS": "Skip permission prompts",  # Default: false
 
     # Git Repository Setup (new)
     "GIT_REPO_URL": "Repository URL to clone on startup",
@@ -90,6 +96,8 @@ self.special_variables = {
     "KNOWLEDGE_REPOS": "Git repos with markdown files to load into CLAUDE.md"
 }
 ```
+
+**Default Value Implementation**: The EnvironmentFieldHandler should be enhanced to provide sensible defaults when users leave fields empty, as specified in the evaluation notes.
 
 ### Conditional Variable Handling
 
@@ -160,19 +168,47 @@ def prompt(self, current_value: Any) -> Any:
 ## Testing Strategy
 
 ### Unit Tests
-- Update existing PortRangeFieldHandler tests to verify no duplicate descriptions
+- Update ALL FieldHandler tests to verify no duplicate descriptions (systemic fix)
 - Add tests for EnvironmentFieldHandler with new variables
 - Test conditional variable logic (threads variables only appear when enabled)
+- Add specific test for dynamic thread enable/disable during prompt
+
+```python
+def test_environment_field_handler_conditional_threads():
+    """Test that threads variables only appear when ENABLE_THREADS is true"""
+    handler = EnvironmentFieldHandler()
+
+    # Test with ENABLE_THREADS=false
+    current_config = {"ENABLE_THREADS": "false"}
+    # Mock input to verify threads variables are skipped
+
+    # Test with ENABLE_THREADS=true
+    current_config = {"ENABLE_THREADS": "true"}
+    # Mock input to verify threads variables appear
+
+    # Test dynamic enable/disable during prompt
+    # Simulate user enabling threads mid-prompt
+
+def test_no_duplicate_descriptions():
+    """Test that field descriptions appear only once per field"""
+    # Test StringFieldHandler
+    # Test BooleanFieldHandler
+    # Test PortRangeFieldHandler
+    # Test EnvironmentFieldHandler
+    # Verify SetupWizard displays description, handlers don't duplicate
+```
 
 ### Integration Tests
 - Test full wizard flow with new environment variables
 - Verify backward compatibility with existing configurations
 - Test conditional variable handling in different scenarios
+- Mock user input sequences for complex conditional flows
 
 ### Manual Testing
 - Run wizard and verify UI improvements
 - Test conditional threads variable display
 - Verify all new variables appear correctly
+- Test dynamic thread enable/disable functionality
 
 ## Backward Compatibility
 
@@ -205,15 +241,20 @@ def prompt(self, current_value: Any) -> Any:
 
 ## Risk Assessment
 
+### Medium Risk
+- **Conditional Logic Complexity**: Dynamic variable display based on `ENABLE_THREADS` state introduces complexity
+- **Backward Compatibility**: Need to ensure existing configurations continue working
+- **Default Value Implementation**: Must correctly handle default values as specified in evaluation notes
+
 ### Low Risk
 - UI/UX fixes are isolated changes
 - Environment variable additions are additive
-- Conditional logic is contained within existing method
 
 ### Mitigation Strategies
-- Thorough testing of conditional variable logic
-- Maintain existing test coverage
-- Incremental implementation with validation at each phase
+- **Thorough testing** of conditional variable logic with various scenarios
+- **Comprehensive integration testing** with real-world configurations
+- **Incremental implementation** with validation at each phase
+- **Default value validation** to ensure correct defaults are applied
 
 ## Next Steps
 
