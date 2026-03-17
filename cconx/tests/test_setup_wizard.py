@@ -103,22 +103,28 @@ def test_boolean_field_handler():
     assert handler.format(True) == True
 
 
-def test_port_range_field_handler_description_not_duplicated():
-    """Test that PortRangeFieldHandler doesn't duplicate description in prompt."""
-    from cconx.wizard.field_handlers import PortRangeFieldHandler
+def test_port_range_field_handler_no_duplicate_description():
+    """Test that port range description appears only once"""
     from unittest.mock import patch
+    from cconx.wizard.field_handlers import PortRangeFieldHandler
 
     handler = PortRangeFieldHandler()
-    current_value = {"min": 8000, "max": 9000}
 
-    with patch('builtins.input', side_effect=["8001", "9001"]):
-        with patch('builtins.print') as mock_print:
-            handler.prompt(current_value)
+    with patch('builtins.print') as mock_print:
+        with patch('builtins.input', side_effect=['8000', '9000']):
+            handler.prompt({'min': 8000, 'max': 9000})
 
-    # Verify description is printed exactly once
-    description_calls = [call for call in mock_print.call_args_list
-                        if "Defines the port range" in str(call)]
-    assert len(description_calls) == 1, f"Description printed {len(description_calls)} times, expected 1"
+    # Verify that "Description: " is NOT printed by the handler
+    # (it should only be printed by SetupWizard, not by the handler itself)
+    description_calls = []
+    for call in mock_print.call_args_list:
+        # Check both the call arguments and string representation
+        for arg in call.args:
+            if "Description: " in str(arg):
+                description_calls.append(call)
+                break
+
+    assert len(description_calls) == 0, f"PortRangeFieldHandler should not print description, but found {len(description_calls)} calls"
 
 
 def test_port_range_field_handler():

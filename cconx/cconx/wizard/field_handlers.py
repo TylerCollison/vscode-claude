@@ -101,7 +101,6 @@ class PortRangeFieldHandler(FieldHandler):
         super().__init__(field_name)
 
     def prompt(self, current_value: Any) -> Any:
-        print(f"Description: {self.get_explanation()}")
         default_min = current_value.get("min", 8000) if current_value else 8000
         default_max = current_value.get("max", 9000) if current_value else 9000
 
