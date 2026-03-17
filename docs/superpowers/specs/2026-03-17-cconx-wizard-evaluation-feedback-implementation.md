@@ -22,31 +22,25 @@ This document specifies the implementation of feedback items identified in `ccon
 
 ## Architecture Changes
 
-### Systemic FieldHandler Description Fix
+### PortRangeFieldHandler Description Fix
 
-**Current Issue**: ALL FieldHandler implementations (`StringFieldHandler`, `BooleanFieldHandler`, `PortRangeFieldHandler`) contain redundant `print(f"Description: ...")` calls. The `SetupWizard._process_field` method already displays the description on line 56, causing duplication across ALL handlers.
+**Current Issue**: The `prompt` method in PortRangeFieldHandler calls `print(f"Description: {self.get_explanation()}")` which causes the description to appear twice since the SetupWizard's `_process_field` method already displays it.
 
 **Root Cause**: The `SetupWizard._process_field` method prints the description:
 ```python
 print(f"Description: {handler.get_explanation()}")
 ```
 
-But each FieldHandler also prints its own description in their `prompt` methods.
+But PortRangeFieldHandler also prints its own description in its `prompt` method.
 
-**Solution**: Remove the redundant print statements from ALL FieldHandler implementations:
+**Solution**: Remove the redundant print statement from PortRangeFieldHandler:
 
 ```python
-# StringFieldHandler.prompt() - REMOVE:
-print(f"Description: {self.explanation}")
-
-# BooleanFieldHandler.prompt() - REMOVE:
-print(f"Description: {self.explanation}")
-
 # PortRangeFieldHandler.prompt() - REMOVE:
 print(f"Description: {self.get_explanation()}")
 ```
 
-This will ensure descriptions appear only once per field, displayed by the SetupWizard.
+This will ensure the port range description appears only once per field, displayed by the SetupWizard.
 
 ### EnvironmentFieldHandler Enhancements
 
@@ -138,18 +132,16 @@ def prompt(self, current_value: Any) -> Any:
 
 ## Implementation Phases
 
-### Phase 1: UI/UX Fixes (High Priority)
+### Phase 1: UI/UX Fixes and Simple Environment Variables
 1. Fix PortRangeFieldHandler duplicate description
 2. Update CCR_PROFILE message with available profiles
 3. Update TZ message with example
 4. Update CLAUDE_CODE_PERMISSION_MODE with available modes
+5. Add PROXY_DOMAIN, DEFAULT_WORKSPACE, PWA_APPNAME
+6. Add PASSWORD, SUDO_PASSWORD
+7. Add CLAUDE_MARKETPLACES, CLAUDE_PLUGINS
 
-### Phase 2: Simple Environment Variables (Medium Priority)
-1. Add PROXY_DOMAIN, DEFAULT_WORKSPACE, PWA_APPNAME
-2. Add PASSWORD, SUDO_PASSWORD
-3. Add CLAUDE_MARKETPLACES, CLAUDE_PLUGINS
-
-### Phase 3: Complex Environment Variables (Low Priority)
+### Phase 2: Complex Environment Variables
 1. Add ENABLE_THREADS and conditional thread variables
 2. Add GIT_REPO_URL, GIT_BRANCH_NAME
 3. Add KNOWLEDGE_REPOS
@@ -168,12 +160,18 @@ def prompt(self, current_value: Any) -> Any:
 ## Testing Strategy
 
 ### Unit Tests
-- Update ALL FieldHandler tests to verify no duplicate descriptions (systemic fix)
+- Update PortRangeFieldHandler tests to verify no duplicate descriptions
 - Add tests for EnvironmentFieldHandler with new variables
 - Test conditional variable logic (threads variables only appear when enabled)
 - Add specific test for dynamic thread enable/disable during prompt
 
 ```python
+def test_port_range_field_handler_no_duplicate_description():
+    """Test that port range description appears only once"""
+    handler = PortRangeFieldHandler()
+    # Mock SetupWizard._process_field description display
+    # Verify PortRangeFieldHandler.prompt doesn't duplicate description
+
 def test_environment_field_handler_conditional_threads():
     """Test that threads variables only appear when ENABLE_THREADS is true"""
     handler = EnvironmentFieldHandler()
@@ -188,14 +186,6 @@ def test_environment_field_handler_conditional_threads():
 
     # Test dynamic enable/disable during prompt
     # Simulate user enabling threads mid-prompt
-
-def test_no_duplicate_descriptions():
-    """Test that field descriptions appear only once per field"""
-    # Test StringFieldHandler
-    # Test BooleanFieldHandler
-    # Test PortRangeFieldHandler
-    # Test EnvironmentFieldHandler
-    # Verify SetupWizard displays description, handlers don't duplicate
 ```
 
 ### Integration Tests
