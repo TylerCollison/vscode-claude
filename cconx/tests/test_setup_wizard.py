@@ -442,10 +442,10 @@ def test_environment_field_handler_conditional_threads():
         # The test output shows threads variables were prompted, so this test passes implicitly
 
     # Test 3: Test dynamic switching during prompting
-    # ENABLE_THREADS is at position 19 (0-indexed), so we need 18 empty responses first
-    # Then "true" for ENABLE_THREADS, then empty responses for remaining variables (7 threads vars + rest)
+    # Calculate ENABLE_THREADS position dynamically instead of hard-coding
+    special_vars_list = list(handler.special_variables.keys())
     num_all_vars = len(handler.special_variables)
-    num_before_threads = 19  # ENABLE_THREADS position
+    num_before_threads = special_vars_list.index("ENABLE_THREADS")
     num_after_threads = num_all_vars - num_before_threads - 1  # Remaining after ENABLE_THREADS
 
     input_responses = ([''] * num_before_threads) + ['true'] + ([''] * (num_after_threads + 1))  # +1 for additional variables
