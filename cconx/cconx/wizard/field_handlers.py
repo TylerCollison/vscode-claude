@@ -147,11 +147,11 @@ class EnvironmentFieldHandler(FieldHandler):
             "GOOGLE_API_KEY": "Google AI Studio API key",
             "MISTRAL_API_KEY": "Mistral AI API key",
             "OPENROUTER_API_KEY": "OpenRouter API key",
-            "CCR_PROFILE": "Claude Code Router profile",
+            "CCR_PROFILE": "Claude Code Router profile (default, nim-kimi, nim-deepseek, google-gemini, mistral-devstral, mistral-mistral-large)",
             "PUID": "User ID for container processes",
             "PGID": "Group ID for container processes",
-            "TZ": "Timezone configuration",
-            "CLAUDE_CODE_PERMISSION_MODE": "Claude Code permission mode"
+            "TZ": "Timezone configuration (ex. Etc/UTC)",
+            "CLAUDE_CODE_PERMISSION_MODE": "Claude Code permission mode (acceptEdits, bypassPermissions, default, plan, dontAsk)"
         }
 
     def prompt(self, current_value: Any) -> Any:

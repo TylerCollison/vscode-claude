@@ -170,6 +170,22 @@ def test_environment_field_handler():
     assert "GOOGLE_API_KEY" in handler.special_variables
 
 
+def test_environment_field_handler_updated_messages():
+    """Test that environment variable messages include examples and options"""
+    from cconx.wizard.field_handlers import EnvironmentFieldHandler
+
+    handler = EnvironmentFieldHandler()
+
+    # Verify CCR_PROFILE message includes available profiles
+    assert "default, nim-kimi, nim-deepseek, google-gemini, mistral-devstral, mistral-mistral-large" in handler.special_variables["CCR_PROFILE"]
+
+    # Verify TZ message includes example
+    assert "(ex. Etc/UTC)" in handler.special_variables["TZ"]
+
+    # Verify CLAUDE_CODE_PERMISSION_MODE includes all modes
+    assert "acceptEdits, bypassPermissions, default, plan, dontAsk" in handler.special_variables["CLAUDE_CODE_PERMISSION_MODE"]
+
+
 def test_volumes_field_handler():
     """Test VolumesFieldHandler functionality."""
     from cconx.wizard.field_handlers import VolumesFieldHandler
