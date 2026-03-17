@@ -162,6 +162,13 @@ class EnvironmentFieldHandler(FieldHandler):
             "PASSWORD": "Plaintext password for VS Code web interface",
             "SUDO_PASSWORD": "Plaintext sudo password",
 
+            # Git Repository Setup (new)
+            "GIT_REPO_URL": "Repository URL to clone on startup",
+            "GIT_BRANCH_NAME": "Branch name",
+
+            # Knowledge Repository Integration (new)
+            "KNOWLEDGE_REPOS": "Git repos with markdown files to load into CLAUDE.md",
+
             # Claude Code Configuration
             "CLAUDE_CODE_PERMISSION_MODE": "Claude Code permission mode (acceptEdits, bypassPermissions, default, plan, dontAsk)",
             "CLAUDE_MARKETPLACES": "Comma-separated list of plugin marketplaces",

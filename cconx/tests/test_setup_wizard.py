@@ -170,6 +170,19 @@ def test_environment_field_handler():
     assert "GOOGLE_API_KEY" in handler.special_variables
 
 
+def test_environment_field_handler_git_knowledge_variables():
+    """Test that Git and Knowledge Repository variables are available"""
+    from cconx.wizard.field_handlers import EnvironmentFieldHandler
+
+    handler = EnvironmentFieldHandler()
+
+    # Verify git and knowledge variables exist
+    expected_vars = ["GIT_REPO_URL", "GIT_BRANCH_NAME", "KNOWLEDGE_REPOS"]
+
+    for var_name in expected_vars:
+        assert var_name in handler.special_variables, f"{var_name} should be in special_variables"
+
+
 def test_environment_field_handler_updated_messages():
     """Test that environment variable messages include examples and options"""
     from cconx.wizard.field_handlers import EnvironmentFieldHandler
