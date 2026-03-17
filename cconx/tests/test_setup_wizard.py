@@ -384,6 +384,21 @@ def test_environment_field_handler_new_variables():
         assert var_name in handler.special_variables, f"{var_name} should be in special_variables"
 
 
+def test_environment_field_handler_threads_variables():
+    """Test that Claude Threads variables are available"""
+    from cconx.wizard.field_handlers import EnvironmentFieldHandler
+
+    handler = EnvironmentFieldHandler()
+
+    # Verify threads variables exist
+    expected_vars = ["ENABLE_THREADS", "MM_ADDRESS", "MM_TOKEN", "MM_TEAM",
+                     "MM_BOT_NAME", "THREADS_CHROME", "THREADS_WORKTREE_MODE",
+                     "THREADS_SKIP_PERMISSIONS"]
+
+    for var_name in expected_vars:
+        assert var_name in handler.special_variables, f"{var_name} should be in special_variables"
+
+
 if __name__ == "__main__":
     # Run all test functions
     test_field_handler_abc()

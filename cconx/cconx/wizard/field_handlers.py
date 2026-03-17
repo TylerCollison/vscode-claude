@@ -165,7 +165,17 @@ class EnvironmentFieldHandler(FieldHandler):
             # Claude Code Configuration
             "CLAUDE_CODE_PERMISSION_MODE": "Claude Code permission mode (acceptEdits, bypassPermissions, default, plan, dontAsk)",
             "CLAUDE_MARKETPLACES": "Comma-separated list of plugin marketplaces",
-            "CLAUDE_PLUGINS": "Comma-separated list of plugins to install"
+            "CLAUDE_PLUGINS": "Comma-separated list of plugins to install",
+
+            # Claude Threads Configuration (new)
+            "ENABLE_THREADS": "Enable Claude Threads server",
+            "MM_ADDRESS": "Mattermost server URL",
+            "MM_TOKEN": "Mattermost bot authentication token",
+            "MM_TEAM": "Mattermost team name",
+            "MM_BOT_NAME": "Bot display name",
+            "THREADS_CHROME": "Chrome executable path",
+            "THREADS_WORKTREE_MODE": "Git worktree mode",
+            "THREADS_SKIP_PERMISSIONS": "Skip permission prompts"
         }
 
     def prompt(self, current_value: Any) -> Any:
