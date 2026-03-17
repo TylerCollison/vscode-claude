@@ -143,15 +143,29 @@ class EnvironmentFieldHandler(FieldHandler):
     def __init__(self, field_name: str = "environment"):
         super().__init__(field_name)
         self.special_variables = {
+            # API Keys & Authentication
             "NIM_API_KEY": "NVIDIA NIM API key",
             "GOOGLE_API_KEY": "Google AI Studio API key",
             "MISTRAL_API_KEY": "Mistral AI API key",
             "OPENROUTER_API_KEY": "OpenRouter API key",
-            "CCR_PROFILE": "Claude Code Router profile (default, nim-kimi, nim-deepseek, google-gemini, mistral-devstral, mistral-mistral-large)",
+
+            # Container Configuration
             "PUID": "User ID for container processes",
             "PGID": "Group ID for container processes",
             "TZ": "Timezone configuration (ex. Etc/UTC)",
-            "CLAUDE_CODE_PERMISSION_MODE": "Claude Code permission mode (acceptEdits, bypassPermissions, default, plan, dontAsk)"
+            "PROXY_DOMAIN": "Reverse proxy domain for external access",
+            "DEFAULT_WORKSPACE": "Default workspace directory",
+            "PWA_APPNAME": "Progressive Web App name",
+            "CCR_PROFILE": "Claude Code Router profile (default, nim-kimi, nim-deepseek, google-gemini, mistral-devstral, mistral-mistral-large)",
+
+            # Authentication & Access Control
+            "PASSWORD": "Plaintext password for VS Code web interface",
+            "SUDO_PASSWORD": "Plaintext sudo password",
+
+            # Claude Code Configuration
+            "CLAUDE_CODE_PERMISSION_MODE": "Claude Code permission mode (acceptEdits, bypassPermissions, default, plan, dontAsk)",
+            "CLAUDE_MARKETPLACES": "Comma-separated list of plugin marketplaces",
+            "CLAUDE_PLUGINS": "Comma-separated list of plugins to install"
         }
 
     def prompt(self, current_value: Any) -> Any:

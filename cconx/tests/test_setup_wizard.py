@@ -370,6 +370,20 @@ def test_cli_setup_command():
             mock_config_manager._save_config.assert_called_once_with({"test": "config"})
 
 
+def test_environment_field_handler_new_variables():
+    """Test that new environment variables are available"""
+    from cconx.wizard.field_handlers import EnvironmentFieldHandler
+
+    handler = EnvironmentFieldHandler()
+
+    # Verify new variables exist
+    expected_vars = ["PROXY_DOMAIN", "DEFAULT_WORKSPACE", "PWA_APPNAME",
+                     "PASSWORD", "SUDO_PASSWORD", "CLAUDE_MARKETPLACES", "CLAUDE_PLUGINS"]
+
+    for var_name in expected_vars:
+        assert var_name in handler.special_variables, f"{var_name} should be in special_variables"
+
+
 if __name__ == "__main__":
     # Run all test functions
     test_field_handler_abc()
