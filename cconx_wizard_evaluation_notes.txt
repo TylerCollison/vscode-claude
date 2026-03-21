@@ -38,3 +38,48 @@ The following environment variables are not explicity set by the wizard but shou
 - GIT_BRANCH_NAME (should default to unset)
 
 - KNOWLEDGE_REPOS (should default to unset)
+
+
+
+If an environment variable is unset, we should display "Current value: unset"
+
+"docker_network" and "dns_servers" need to be added to the setup wizard
+
+Need to get rid of the "default_profile" field in the global config. It's already handled by the CCR_PROFILE field environment variable
+
+Configuration Saved: 
+    - Should print the path to the config file
+    - "You can now use 'cconx start <name>' to create ClaudeConX instances"
+
+None of the environment variables appear to have defaults; need to fix that
+
+
+
+Tyler Updates:
+MM_TEAM: "Mattermost team name (must exist on Mattermost server)"
+
+MM_BOT_NAME: "Mattermost bot display name (must correspond to the bot name for MM_TOKEN)"
+
+THREADS_CHROME: "Enable Chrome browser usage in Claude Threads (true/false)"
+
+THREADS_WORKTREE_MODE: "Force use of Git worktrees in Claude Threads (on/off)"
+
+THREADS_SKIP_PERMISSIONS: "Skip permission prompts in Claude Threads (true/false)"
+
+Additional Variables: "You can add any additional environment variables to load into each container instance"
+
+NIM_API_KEY: add link to obtain to description
+    - Do this for all API keys
+
+Default Image: "Default Docker image for new ClaudeConX instances"
+
+Configure environment variables "ClaudeConX uses these environment variables to configure container features"
+
+The following sections repeat descriptions:
+    - DEFAULT IMAGE 
+    - IDE ADDRESS TEMPLATE 
+    - INCLUDE DOCKER SOCK
+
+IDE Address Template: "URL template for IDE access ("{port}" is replaced by the port assigned to the instance)
+
+The description for ENABLE_THREADS should include "(true/false)"
