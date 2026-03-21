@@ -49,9 +49,17 @@ Add interactive configuration for Docker network and DNS servers settings to the
 
 ### Integration Points
 
-#### Wizard Registration
-Add to `setup_command()` in `cli.py`:
+#### Dual Integration Points
+
+**Primary Integration**: Update `setup_command()` in `cli.py`:
 ```python
+wizard.register_field_handler("docker_network", DockerNetworkFieldHandler())
+wizard.register_field_handler("dns_servers", DnsServersFieldHandler())
+```
+
+**Secondary Integration**: Update `ConfigManager.run_setup_wizard()` to ensure consistency:
+```python
+# Add to the existing field handler registration
 wizard.register_field_handler("docker_network", DockerNetworkFieldHandler())
 wizard.register_field_handler("dns_servers", DnsServersFieldHandler())
 ```
@@ -67,6 +75,38 @@ Place after `include_docker_sock` and before `environment` for logical flow:
 7. environment
 8. enabled_volumes
 
+#### Docker Client Integration Strategy
+
+**Dependency Injection**: Field handlers should accept Docker client as optional parameter:
+```python
+class DockerNetworkFieldHandler(FieldHandler):
+    def __init__(self, field_name: str = "docker_network", docker_client=None):
+        super().__init__(field_name)
+        self.docker_client = docker_client
+```
+
+**Fallback Strategy**: If Docker client not available, skip network validation:
+- Show warning message
+- Allow user to proceed with manual network name entry
+- Defer validation to container startup phase
+
+#### Error Handling Strategy
+
+**Docker Connection Failures**:
+- Handle `docker.errors.DockerException` gracefully
+- Provide clear error message: "Docker daemon unavailable for network validation"
+- Allow user to continue with manual network configuration
+
+**Network Creation Failures**:
+- Handle `docker.errors.APIError` during network creation
+- Provide specific error message with Docker API details
+- Allow user to retry or skip network creation
+
+**DNS Validation Failures**:
+- Filter invalid IP addresses with warnings
+- Allow empty list (use Docker defaults)
+- Provide clear examples of valid IP formats
+
 ## Implementation Details
 
 ### DockerNetworkFieldHandler Implementation
@@ -77,20 +117,16 @@ class DockerNetworkFieldHandler(FieldHandler):
         super().__init__(field_name)
 
     def prompt(self, current_value: Any) -> Any:
-        print("=== DOCKER NETWORK ===")
-        print("Description: Docker network name for container instances")
-        print("Leave empty to use Docker's default bridge network")
-        print("Options: 'host' for host networking, 'none' for no networking")
-
-        current_display = current_value if current_value else "(empty) - using default bridge network"
-        print(f"Current value: {current_display}")
+        # Follow existing pattern: SetupWizard handles headers and explanations
+        default_value = ""  # Empty string uses Docker default bridge network
+        current_display = current_value if current_value else default_value
 
         while True:
-            user_input = input("Enter network name (empty for default, 'host', 'none', or custom): ").strip()
+            user_input = input(f"Enter network name (empty for default, 'host', 'none', or custom) (default: {current_display}): ").strip()
 
-            # Handle empty input (use default)
+            # Handle empty input
             if not user_input:
-                return ""
+                return default_value
 
             # Handle special values
             if user_input in ["host", "none"]:
@@ -115,6 +151,22 @@ class DockerNetworkFieldHandler(FieldHandler):
                     continue
 
             return user_input
+
+    def validate(self, input_value: Any) -> bool:
+        if not input_value:  # Empty string is valid (use default)
+            return True
+        if input_value in ["host", "none"]:
+            return True
+        return self._validate_network_format(input_value)
+
+    def format(self, input_value: Any) -> Any:
+        return str(input_value) if input_value else ""
+
+    def get_default(self) -> Any:
+        return ""  # Empty string uses Docker default
+
+    def get_explanation(self) -> str:
+        return "Docker network name for container instances. Leave empty to use Docker's default bridge network. Options: 'host' for host networking, 'none' for no networking, or custom network name."
 ```
 
 ### DnsServersFieldHandler Implementation
@@ -125,18 +177,21 @@ class DnsServersFieldHandler(FieldHandler):
         super().__init__(field_name)
 
     def prompt(self, current_value: Any) -> Any:
-        print("=== DNS SERVERS ===")
-        print("Description: Custom DNS servers for container instances")
-        print("Enter one IP address per line, empty line when finished")
-        print("Leave empty to use Docker's default DNS servers")
+        # Follow existing pattern: SetupWizard handles headers and explanations
+        current_list = current_value if current_value else []
 
-        current_display = current_value if current_value else "(empty) - using Docker defaults"
-        print(f"Current value: {current_display}")
+        if current_list:
+            print("Current DNS servers:")
+            for i, server in enumerate(current_list, 1):
+                print(f"  {i}. {server}")
+        else:
+            print("Current value: (empty) - using Docker defaults")
+
+        print("Enter one IP address per line, empty line when finished:")
 
         dns_servers = []
-        print("Enter DNS server IP addresses:")
-
         line_num = 1
+
         while True:
             user_input = input(f"{line_num}. ").strip()
 
@@ -150,7 +205,21 @@ class DnsServersFieldHandler(FieldHandler):
             else:
                 print(f"Invalid IP address: {user_input}. Please enter a valid IPv4 or IPv6 address.")
 
-        return dns_servers if dns_servers else []
+        return dns_servers
+
+    def validate(self, input_value: Any) -> bool:
+        if not isinstance(input_value, list):
+            return False
+        return all(self._validate_ip_address(ip) for ip in input_value)
+
+    def format(self, input_value: Any) -> Any:
+        return list(input_value)
+
+    def get_default(self) -> Any:
+        return []  # Empty list uses Docker defaults
+
+    def get_explanation(self) -> str:
+        return "Custom DNS servers for container instances. Enter one IP address per line, empty line when finished. Leave empty to use Docker's default DNS servers."
 ```
 
 ## Validation Rules
@@ -197,15 +266,48 @@ class DnsServersFieldHandler(FieldHandler):
 ## Testing Strategy
 
 ### Unit Tests
-- Test Docker network format validation
-- Test DNS IP address validation
+
+**DockerNetworkFieldHandler Tests**:
+- Test network format validation (valid/invalid names)
+- Test special value handling (`host`, `none`)
 - Test empty/default value handling
-- Test network existence checking
+- Test network existence checking (mocked)
+- Test network creation functionality (mocked)
+
+**DnsServersFieldHandler Tests**:
+- Test IP address validation (IPv4/IPv6/invalid)
+- Test empty list handling
+- Test multi-line input parsing
+- Test invalid IP filtering with warnings
 
 ### Integration Tests
+
+**Wizard Integration Tests**:
 - Test full wizard flow with new fields
-- Test network creation functionality
+- Test field order and progression
+- Test backward compatibility with existing configs
+
+**Docker Integration Tests**:
+- Test network creation functionality with real Docker
 - Test DNS configuration in container startup
+- Test error handling when Docker unavailable
+
+**Mocking Strategy**:
+- Mock Docker client for unit tests
+- Mock `ipaddress` module for DNS validation tests
+- Mock user input for interactive testing
+
+### Backward Compatibility Tests
+
+**Existing Configurations**:
+- Test wizard preserves existing `docker_network` values
+- Test wizard preserves existing `dns_servers` values
+- Test empty/default values work correctly
+
+**Config File Compatibility**:
+- Test loading old config files missing new fields
+- Test saving config files with new fields
+- Test migration from old to new config format
 
 ## Backward Compatibility
 
