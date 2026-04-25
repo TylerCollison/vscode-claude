@@ -36,9 +36,14 @@ def main():
         manager = BuildEnvironmentManager()
 
         if args.exit:
-            # Shutdown container
+            # Shutdown container using stored UUID
             workspace_path = os.environ.get('DEFAULT_WORKSPACE', os.getcwd())
-            container_uuid = manager._get_container_uuid(workspace_path)
+            container_uuid = manager._get_stored_container_uuid(workspace_path)
+
+            if container_uuid is None:
+                print("Error: No build environment container found for this workspace", file=sys.stderr)
+                return 1
+
             container_name = f"build-env-{container_uuid}"
             manager._shutdown_container(container_name)
             print(f"Build environment container {container_name} shutdown")

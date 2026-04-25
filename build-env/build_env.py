@@ -115,20 +115,27 @@ class BuildEnvironmentManager:
         # Filter environment variables
         filtered_env_vars = filter_environment_variables(env_vars)
 
-        container_name = self._generate_container_name()
+        # First check if we have a stored UUID for this workspace
+        stored_uuid = self._get_stored_container_uuid(workspace_path)
+        if stored_uuid:
+            container_name = f"build-env-{stored_uuid}"
+            # Check if stored container exists and is running
+            try:
+                container = self.docker_client.containers.get(container_name)
+                if container.status == "running":
+                    return container_name
+                else:
+                    # Container exists but is not running, remove it
+                    container.stop()
+                    container.remove(force=True)
+                    # Remove the stale UUID file
+                    self._remove_stored_uuid(workspace_path)
+            except NotFound:
+                # Stored container doesn't exist, remove stale UUID file
+                self._remove_stored_uuid(workspace_path)
 
-        # Check if container exists and is running
-        try:
-            container = self.docker_client.containers.get(container_name)
-            if container.status == "running":
-                return container_name
-            else:
-                # Container exists but is not running, remove it
-                container.stop()
-                container.remove(force=True)
-        except NotFound:
-            # Container doesn't exist, proceed to create new one
-            pass
+        # Generate new container name
+        container_name = self._generate_container_name()
 
         # Create and start new container
         try:
@@ -142,10 +149,15 @@ class BuildEnvironmentManager:
             working_dir=workspace_path,
             volumes={workspace_path: {"bind": workspace_path, "mode": "rw"}},
             environment=filtered_env_vars,
+            command=["tail", "-f", "/dev/null"],  # Keep container running
             detach=True
         )
 
         container.start()
+
+        # Store container UUID in file for later shutdown
+        self._store_container_uuid(container_name, workspace_path)
+
         return container_name
 
     def _execute_command(self, container_name: str, command: str, env_vars: Dict[str, str]) -> tuple:
@@ -170,13 +182,58 @@ class BuildEnvironmentManager:
             command,
             detach=False,
             environment=filtered_env_vars,
-            workdir="/workspace",
+            workdir=env_vars.get('DEFAULT_WORKSPACE', '/workspace'),
             tty=True,
             stdin=True
         )
 
         # Return exit code and output
         return exec_result.exit_code, exec_result.output
+
+    def _store_container_uuid(self, container_name: str, workspace_path: str) -> None:
+        """Store container UUID in a file for later shutdown.
+
+        Args:
+            container_name: Name of the container
+            workspace_path: Path to the workspace
+        """
+        # Extract UUID from container name (format: build-env-{uuid})
+        uuid = container_name.replace("build-env-", "")
+
+        # Create .build-env directory in workspace
+        build_env_dir = os.path.join(workspace_path, ".build-env")
+        os.makedirs(build_env_dir, exist_ok=True)
+
+        # Write UUID to file
+        uuid_file = os.path.join(build_env_dir, "container.uuid")
+        with open(uuid_file, 'w') as f:
+            f.write(uuid)
+
+    def _get_stored_container_uuid(self, workspace_path: str) -> Optional[str]:
+        """Get stored container UUID for workspace.
+
+        Args:
+            workspace_path: Path to the workspace
+
+        Returns:
+            UUID string if found, None otherwise
+        """
+        uuid_file = os.path.join(workspace_path, ".build-env", "container.uuid")
+
+        if os.path.exists(uuid_file):
+            with open(uuid_file, 'r') as f:
+                return f.read().strip()
+        return None
+
+    def _remove_stored_uuid(self, workspace_path: str) -> None:
+        """Remove stored container UUID for workspace.
+
+        Args:
+            workspace_path: Path to the workspace
+        """
+        uuid_file = os.path.join(workspace_path, ".build-env", "container.uuid")
+        if os.path.exists(uuid_file):
+            os.remove(uuid_file)
 
     def _shutdown_container(self, container_name: str) -> None:
         """Shutdown and remove container.
@@ -187,3 +244,14 @@ class BuildEnvironmentManager:
         container = self.docker_client.containers.get(container_name)
         container.stop()
         container.remove(force=True)
+
+        # Clean up UUID file if it exists
+        try:
+            # Try to find workspace path from container
+            workspace_path = container.attrs['Config']['WorkingDir']
+            uuid_file = os.path.join(workspace_path, ".build-env", "container.uuid")
+            if os.path.exists(uuid_file):
+                os.remove(uuid_file)
+        except (KeyError, Exception):
+            # If we can't clean up, continue anyway
+            pass
