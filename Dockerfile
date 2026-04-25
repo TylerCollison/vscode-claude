@@ -35,22 +35,22 @@ RUN npm install -g @anthropic-ai/claude-code @musistudio/claude-code-router clau
 COPY ccr-presets /ccr-presets
 
 # Copy cconx to the container
-COPY cconx /workspace/cconx
+COPY cconx /cconx
 
 # Copy build-env to the container
-COPY build-env /workspace/build-env
+COPY build-env /build-env
 
 # Copy claude-threads config to the container
 COPY claude-threads /claude-threads
 
 # Install cconx Python package using virtual environment
 RUN python3 -m venv /opt/cconx-venv \
-    && /opt/cconx-venv/bin/pip install /workspace/cconx \
+    && /opt/cconx-venv/bin/pip install /cconx \
     && ln -sf /opt/cconx-venv/bin/cconx /usr/local/bin/cconx
 
 # Install build-env Python package using virtual environment
 RUN python3 -m venv /opt/build-env-venv \
-    && /opt/build-env-venv/bin/pip install /workspace/build-env \
+    && /opt/build-env-venv/bin/pip install /build-env \
     && ln -sf /opt/build-env-venv/bin/build-env /usr/local/bin/build-env
 
 # Copy startup scripts to root directory
