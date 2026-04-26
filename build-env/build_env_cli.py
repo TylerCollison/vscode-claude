@@ -29,7 +29,7 @@ def main():
 
     args = parser.parse_args()
 
-    # Get environment variables
+    # Get environment variables and convert to regular dict to avoid Docker SDK issues
     env_vars = dict(os.environ)
 
     try:
@@ -50,19 +50,19 @@ def main():
             return 0
 
         # Validate requirements
-        manager._validate_requirements(os.environ)
+        manager._validate_requirements(env_vars)
 
         # Get or create container
         container_name = manager._start_container(
-            os.environ["BUILD_CONTAINER"],
-            os.environ["DEFAULT_WORKSPACE"],
-            os.environ
+            env_vars["BUILD_CONTAINER"],
+            env_vars["DEFAULT_WORKSPACE"],
+            env_vars
         )
 
         if args.command:
             # Execute command
             command = ' '.join(args.command)
-            exit_code, output = manager._execute_command(container_name, command, os.environ)
+            exit_code, output = manager._execute_command(container_name, command, env_vars)
 
             # Print output if there is any
             if output:
