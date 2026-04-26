@@ -15,6 +15,7 @@ node_modules/
 # IDE files
 .vscode/
 .idea/
+.build-env/
 
 # Python compiled files
 __pycache__/
