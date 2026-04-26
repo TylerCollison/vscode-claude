@@ -6,7 +6,6 @@ import docker
 from docker.errors import NotFound
 
 from security import (
-    filter_environment_variables,
     generate_container_uuid,
     validate_image_name,
     SecurityError

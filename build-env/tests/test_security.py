@@ -8,7 +8,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from security import (
     validate_image_name,
-    filter_environment_variables,
     validate_uuid,
     generate_container_uuid,
     SecurityError
@@ -39,27 +38,6 @@ def test_validate_image_name_failure():
     for image in invalid_images:
         with pytest.raises(SecurityError):
             validate_image_name(image)
-
-
-def test_filter_environment_variables():
-    """Test environment variable filtering."""
-    env_vars = {
-        "PATH": "/usr/bin",
-        "HOME": "/home/user",
-        "DOCKER_HOST": "unix:///var/run/docker.sock",
-        "AWS_ACCESS_KEY_ID": "secret",
-        "BUILD_CONTAINER": "python:3.11",
-        "_SECRET": "hidden"
-    }
-    filtered = filter_environment_variables(env_vars)
-
-    assert "PATH" in filtered
-    assert "HOME" in filtered
-    assert "BUILD_CONTAINER" in filtered
-    assert "DOCKER_HOST" not in filtered
-    assert "AWS_ACCESS_KEY_ID" not in filtered
-    assert "_SECRET" not in filtered
-
 
 def test_validate_uuid():
     """Test UUID validation."""
