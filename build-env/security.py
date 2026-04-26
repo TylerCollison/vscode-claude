@@ -64,41 +64,6 @@ def validate_image_name(image_name: str) -> bool:
 
     return True
 
-
-def filter_environment_variables(env_vars: Dict[str, str]) -> Dict[str, str]:
-    """Filter environment variables for safety.
-
-    Args:
-        env_vars: Dictionary of environment variables
-
-    Returns:
-        Filtered dictionary with safe variables only
-    """
-    filtered = {}
-
-    for key, value in env_vars.items():
-        # Skip dangerous patterns
-        skip = False
-        for pattern in DANGEROUS_ENV_PATTERNS:
-            if pattern.endswith('*') and key.startswith(pattern[:-1]):
-                skip = True
-                break
-            elif key == pattern:
-                skip = True
-                break
-
-        if skip:
-            continue
-
-        # Include safe variables
-        if key in SAFE_ENV_VARS:
-            filtered[key] = value
-        elif key.startswith('BUILD_'):
-            filtered[key] = value
-
-    return filtered
-
-
 def validate_uuid(uuid_str: str) -> bool:
     """Validate UUID format.
 

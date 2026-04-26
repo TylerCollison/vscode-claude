@@ -95,6 +95,47 @@ class BuildEnvironmentManager:
         """
         return generate_container_uuid()
 
+    def _is_docker_in_docker(self) -> bool:
+        """Check if running in Docker-in-Docker scenario.
+
+        Returns:
+            True if running Docker-in-Docker, False otherwise
+        """
+        # Check if we're inside a container by looking for .dockerenv
+        return os.path.exists('/.dockerenv') and os.path.exists('/var/run/docker.sock')
+
+    def _copy_workspace_to_container(self, container_name: str, workspace_path: str) -> bool:
+        """Copy workspace files to container using docker cp command.
+
+        Args:
+            container_name: Name of the container
+            workspace_path: Path to the workspace
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Use docker cp to copy files from current container to build container
+            import subprocess
+
+            # First, create the workspace directory in the container
+            container = self.docker_client.containers.get(container_name)
+            exec_result = container.exec_run(f'mkdir -p {workspace_path}')
+
+            if exec_result.exit_code != 0:
+                return False
+
+            # Copy all files from workspace to container
+            result = subprocess.run(
+                ['docker', 'cp', workspace_path + '/.', f'{container_name}:{workspace_path}'],
+                capture_output=True,
+                text=True
+            )
+
+            return result.returncode == 0
+        except Exception:
+            return False
+
     def _start_container(self, image_name: str, workspace_path: str, env_vars: Dict[str, str]) -> str:
         """Start or create build container.
 
@@ -111,9 +152,6 @@ class BuildEnvironmentManager:
             validate_image_name(image_name)
         except SecurityError as e:
             raise BuildEnvironmentError(f"Invalid image name: {e}")
-
-        # Filter environment variables
-        filtered_env_vars = filter_environment_variables(env_vars)
 
         # First check if we have a stored UUID for this workspace
         stored_uuid = self._get_stored_container_uuid(workspace_path)
@@ -143,15 +181,21 @@ class BuildEnvironmentManager:
         except NotFound:
             raise BuildEnvironmentError(f"Docker image not found: {image_name}")
 
+        # Create container without volume mount
+        # We'll copy files on each command execution for Docker-in-Docker scenarios
         container = self.docker_client.containers.create(
             image=image_name,
             name=container_name,
             working_dir=workspace_path,
-            volumes={workspace_path: {"bind": workspace_path, "mode": "rw"}},
-            environment=filtered_env_vars,
+            environment=env_vars,
             command=["tail", "-f", "/dev/null"],  # Keep container running
             detach=True
         )
+        container.start()
+
+        # Copy initial workspace files for Docker-in-Docker scenarios
+        if self._is_docker_in_docker():
+            self._copy_workspace_to_container(container_name, workspace_path)
 
         container.start()
 
@@ -171,17 +215,19 @@ class BuildEnvironmentManager:
         Returns:
             Tuple of (exit_code, output)
         """
-        # Filter environment variables
-        filtered_env_vars = filter_environment_variables(env_vars)
-
         # Get container
         container = self.docker_client.containers.get(container_name)
+
+        # If running Docker-in-Docker, copy workspace files before executing command
+        if self._is_docker_in_docker():
+            workspace_path = env_vars.get('DEFAULT_WORKSPACE', '/workspace')
+            self._copy_workspace_to_container(container_name, workspace_path)
 
         # Execute command
         exec_result = container.exec_run(
             command,
             detach=False,
-            environment=filtered_env_vars,
+            environment=env_vars,
             workdir=env_vars.get('DEFAULT_WORKSPACE', '/workspace'),
             tty=True,
             stdin=True
