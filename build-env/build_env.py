@@ -103,8 +103,150 @@ class BuildEnvironmentManager:
         # Check if we're inside a container by looking for .dockerenv
         return os.path.exists('/.dockerenv') and os.path.exists('/var/run/docker.sock')
 
+    def _synchronize_workspace_bidirectional(self, container_name: str, workspace_path: str) -> bool:
+        """Bidirectional synchronization that handles file deletions properly.
+
+        Args:
+            container_name: Name of the container
+            workspace_path: Path to the workspace
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            import subprocess
+            import tempfile
+
+            # Get container
+            container = self.docker_client.containers.get(container_name)
+
+            # Create workspace directory in container if it doesn't exist
+            exec_result = container.exec_run(f'mkdir -p {workspace_path}')
+            if exec_result.exit_code != 0:
+                return False
+
+            # Create temporary directory for comparison
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Step 1: Copy container files to temp directory
+                container_temp = os.path.join(temp_dir, 'container')
+                host_temp = os.path.join(temp_dir, 'host')
+
+                os.makedirs(container_temp)
+                os.makedirs(host_temp)
+
+                # Copy container files to temp directory
+                result = subprocess.run(
+                    ['docker', 'cp', f'{container_name}:{workspace_path}/.', container_temp],
+                    capture_output=True,
+                    text=True
+                )
+                if result.returncode != 0:
+                    return False
+
+                # Copy host files to temp directory
+                result = subprocess.run(
+                    ['cp', '-r', f'{workspace_path}/.', host_temp],
+                    capture_output=True,
+                    text=True
+                )
+                if result.returncode != 0:
+                    return False
+
+                # Step 2: Compare and sync deletions
+                # Get list of files in both locations
+                def get_file_list(directory):
+                    file_list = set()
+                    for root, dirs, files in os.walk(directory):
+                        for file in files:
+                            rel_path = os.path.relpath(os.path.join(root, file), directory)
+                            file_list.add(rel_path)
+                    return file_list
+
+                container_files = get_file_list(container_temp)
+                host_files = get_file_list(host_temp)
+
+                # Files that exist in container but not in host (should be copied to host)
+                files_to_copy_to_host = container_files - host_files
+
+                # Files that exist in host but not in container (should be copied to container)
+                files_to_copy_to_container = host_files - container_files
+
+                # Step 3: Copy files from container to host
+                for file_path in files_to_copy_to_host:
+                    # Copy from container temp to host
+                    source_path = os.path.join(container_temp, file_path)
+                    dest_path = os.path.join(workspace_path, file_path)
+
+                    # Ensure destination directory exists
+                    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+
+                    result = subprocess.run(
+                        ['cp', '-r', source_path, dest_path],
+                        capture_output=True,
+                        text=True
+                    )
+                    if result.returncode != 0:
+                        return False
+
+                # Step 4: Copy files from host to container
+                for file_path in files_to_copy_to_container:
+                    # Copy from host temp to container
+                    source_path = os.path.join(host_temp, file_path)
+
+                    # Use docker cp to copy to container
+                    result = subprocess.run(
+                        ['docker', 'cp', source_path, f'{container_name}:{workspace_path}/{file_path}'],
+                        capture_output=True,
+                        text=True
+                    )
+                    if result.returncode != 0:
+                        return False
+
+                # Step 5: Handle deletions
+                # For files that exist in both locations, check if they're different
+                common_files = container_files & host_files
+                for file_path in common_files:
+                    container_file = os.path.join(container_temp, file_path)
+                    host_file = os.path.join(host_temp, file_path)
+
+                    # Compare file contents
+                    result = subprocess.run(
+                        ['cmp', '-s', container_file, host_file],
+                        capture_output=True
+                    )
+
+                    # If files differ, copy the newer version
+                    if result.returncode != 0:
+                        # Get modification times
+                        container_mtime = os.path.getmtime(container_file)
+                        host_mtime = os.path.getmtime(host_file)
+
+                        if container_mtime > host_mtime:
+                            # Container version is newer, copy to host
+                            result = subprocess.run(
+                                ['cp', '-r', container_file, os.path.join(workspace_path, file_path)],
+                                capture_output=True,
+                                text=True
+                            )
+                        else:
+                            # Host version is newer, copy to container
+                            result = subprocess.run(
+                                ['docker', 'cp', host_file, f'{container_name}:{workspace_path}/{file_path}'],
+                                capture_output=True,
+                                text=True
+                            )
+
+                        if result.returncode != 0:
+                            return False
+
+            return True
+
+        except Exception:
+            return False
+
     def _copy_workspace_to_container(self, container_name: str, workspace_path: str) -> bool:
         """Copy workspace files to container using docker cp command.
+        Maintained for backward compatibility.
 
         Args:
             container_name: Name of the container
@@ -137,6 +279,7 @@ class BuildEnvironmentManager:
 
     def _copy_workspace_from_container(self, container_name: str, workspace_path: str) -> bool:
         """Copy workspace files from container back to host using docker cp command.
+        Maintained for backward compatibility.
 
         Args:
             container_name: Name of the container
@@ -220,16 +363,16 @@ class BuildEnvironmentManager:
         )
         container.start()
 
-        # Copy initial workspace files for Docker-in-Docker scenarios
+        # Synchronize workspace files for Docker-in-Docker scenarios
         if self._is_docker_in_docker():
-            self._copy_workspace_to_container(container_name, workspace_path)
+            self._synchronize_workspace_bidirectional(container_name, workspace_path)
 
         container.start()
 
-        # Copy files back from container to host after container startup
+        # Synchronize workspace files after container startup
         # This ensures any initial container setup is reflected back to host
         if self._is_docker_in_docker():
-            self._copy_workspace_from_container(container_name, workspace_path)
+            self._synchronize_workspace_bidirectional(container_name, workspace_path)
 
         # Store container UUID in file for later shutdown
         self._store_container_uuid(container_name, workspace_path)
@@ -250,10 +393,10 @@ class BuildEnvironmentManager:
         # Get container
         container = self.docker_client.containers.get(container_name)
 
-        # If running Docker-in-Docker, copy workspace files before executing command
+        # If running Docker-in-Docker, synchronize workspace files before executing command
         if self._is_docker_in_docker():
             workspace_path = env_vars.get('DEFAULT_WORKSPACE', '/workspace')
-            self._copy_workspace_to_container(container_name, workspace_path)
+            self._synchronize_workspace_bidirectional(container_name, workspace_path)
 
         # Execute command
         exec_result = container.exec_run(
@@ -265,10 +408,10 @@ class BuildEnvironmentManager:
             stdin=True
         )
 
-        # Copy files back from container to host after command execution
+        # Synchronize workspace files back from container to host after command execution
         if self._is_docker_in_docker():
             workspace_path = env_vars.get('DEFAULT_WORKSPACE', '/workspace')
-            self._copy_workspace_from_container(container_name, workspace_path)
+            self._synchronize_workspace_bidirectional(container_name, workspace_path)
 
         # Return exit code and output
         return exec_result.exit_code, exec_result.output
