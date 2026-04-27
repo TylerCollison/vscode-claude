@@ -10,6 +10,7 @@ A standalone Python tool that provides persistent Docker container environments 
 
 - **Persistent containers**: Containers remain running between build commands
 - **Environment isolation**: Each workspace gets its own dedicated container
+- **Bidirectional synchronization**: Files are synchronized both from host to container and from container to host
 - **Security filtering**: Only safe environment variables are passed to containers
 - **Automatic cleanup**: Containers can be shutdown cleanly
 - **Docker image validation**: Ensures only valid Docker images are used
@@ -77,6 +78,15 @@ The build environment uses Docker images specified via the `BUILD_CONTAINER` env
 - `python:3.12-slim` for Python projects
 - `node:18-alpine` for Node.js projects
 - `golang:1.21` for Go projects
+
+### Bidirectional Synchronization
+
+When running in Docker-in-Docker scenarios, the tool provides bidirectional file synchronization:
+
+- **Host to Container**: Files are copied from the host workspace to the container before command execution
+- **Container to Host**: After command execution, any changes made in the container are copied back to the host workspace
+- **Automatic**: Synchronization happens automatically for Docker-in-Docker scenarios
+- **Complete**: All files in the workspace directory are synchronized in both directions
 
 ### Security
 

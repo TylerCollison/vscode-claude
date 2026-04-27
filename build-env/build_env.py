@@ -135,6 +135,34 @@ class BuildEnvironmentManager:
         except Exception:
             return False
 
+    def _copy_workspace_from_container(self, container_name: str, workspace_path: str) -> bool:
+        """Copy workspace files from container back to host using docker cp command.
+
+        Args:
+            container_name: Name of the container
+            workspace_path: Path to the workspace
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Use docker cp to copy files from build container back to host
+            import subprocess
+
+            # Ensure the host workspace directory exists
+            os.makedirs(workspace_path, exist_ok=True)
+
+            # Copy all files from container workspace back to host
+            result = subprocess.run(
+                ['docker', 'cp', f'{container_name}:{workspace_path}/.', workspace_path],
+                capture_output=True,
+                text=True
+            )
+
+            return result.returncode == 0
+        except Exception:
+            return False
+
     def _start_container(self, image_name: str, workspace_path: str, env_vars: Dict[str, str]) -> str:
         """Start or create build container.
 
@@ -198,6 +226,11 @@ class BuildEnvironmentManager:
 
         container.start()
 
+        # Copy files back from container to host after container startup
+        # This ensures any initial container setup is reflected back to host
+        if self._is_docker_in_docker():
+            self._copy_workspace_from_container(container_name, workspace_path)
+
         # Store container UUID in file for later shutdown
         self._store_container_uuid(container_name, workspace_path)
 
@@ -231,6 +264,11 @@ class BuildEnvironmentManager:
             tty=True,
             stdin=True
         )
+
+        # Copy files back from container to host after command execution
+        if self._is_docker_in_docker():
+            workspace_path = env_vars.get('DEFAULT_WORKSPACE', '/workspace')
+            self._copy_workspace_from_container(container_name, workspace_path)
 
         # Return exit code and output
         return exec_result.exit_code, exec_result.output
