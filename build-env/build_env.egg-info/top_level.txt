@@ -1,4 +1,0 @@
-build_env
-build_env_cli
-security
-tests

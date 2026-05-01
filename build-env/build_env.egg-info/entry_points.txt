@@ -1,2 +1,0 @@
-[console_scripts]
-build-env = build_env_cli:main
