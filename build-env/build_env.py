@@ -101,7 +101,9 @@ class BuildEnvironmentManager:
             True if running Docker-in-Docker, False otherwise
         """
         # Check if we're inside a container by looking for .dockerenv
-        return os.path.exists('/.dockerenv') and os.path.exists('/var/run/docker.sock')
+        docker_in_docker = os.path.exists('/.dockerenv') and os.path.exists('/var/run/docker.sock')
+        print(f"DEBUG: Docker-in-Docker check: {docker_in_docker}")
+        return docker_in_docker
 
     def _synchronize_host_to_container(self, container_name: str, workspace_path: str) -> bool:
         """Synchronize files from host to container.
@@ -124,15 +126,24 @@ class BuildEnvironmentManager:
             if exec_result.exit_code != 0:
                 return False
 
+            # Remove .build-env directory in container to prevent UUID contamination
+            container.exec_run(f'rm -rf {workspace_path}/.build-env')
+
             # Copy host files to container (host → container)
             result = subprocess.run(
                 ['docker', 'cp', f'{workspace_path}/.', f'{container_name}:{workspace_path}'],
                 capture_output=True,
                 text=True
             )
+
+            # Debug logging
+            print(f"DEBUG: Host→Container sync: workspace_path={workspace_path}, container_name={container_name}")
+            print(f"DEBUG: Sync result: returncode={result.returncode}, stderr={result.stderr}")
+
             return result.returncode == 0
 
-        except Exception:
+        except Exception as e:
+            print(f"DEBUG: Host→Container sync exception: {e}")
             return False
 
     def _synchronize_container_to_host(self, container_name: str, workspace_path: str) -> bool:
@@ -148,15 +159,27 @@ class BuildEnvironmentManager:
         try:
             import subprocess
 
+            # Remove .build-env directory on host to prevent UUID contamination
+            build_env_path = os.path.join(workspace_path, '.build-env')
+            if os.path.exists(build_env_path):
+                import shutil
+                shutil.rmtree(build_env_path)
+
             # Copy container files back to host (container → host)
             result = subprocess.run(
                 ['docker', 'cp', f'{container_name}:{workspace_path}/.', workspace_path],
                 capture_output=True,
                 text=True
             )
+
+            # Debug logging
+            print(f"DEBUG: Container→Host sync: workspace_path={workspace_path}, container_name={container_name}")
+            print(f"DEBUG: Sync result: returncode={result.returncode}, stderr={result.stderr}")
+
             return result.returncode == 0
 
-        except Exception:
+        except Exception as e:
+            print(f"DEBUG: Container→Host sync exception: {e}")
             return False
 
     def _synchronize_workspace_bidirectional(self, container_name: str, workspace_path: str) -> bool:
@@ -299,8 +322,6 @@ class BuildEnvironmentManager:
             # Sync host → container initially
             self._synchronize_host_to_container(container_name, workspace_path)
 
-        container.start()
-
         # Synchronize workspace files after container startup
         # This ensures any initial container setup is reflected back to host
         if self._is_docker_in_docker():
@@ -327,8 +348,11 @@ class BuildEnvironmentManager:
         container = self.docker_client.containers.get(container_name)
 
         # If running Docker-in-Docker, synchronize workspace files before executing command
-        if self._is_docker_in_docker():
+        docker_in_docker = self._is_docker_in_docker()
+        print(f"DEBUG: _execute_command - Docker-in-Docker: {docker_in_docker}")
+        if docker_in_docker:
             workspace_path = env_vars.get('DEFAULT_WORKSPACE', '/workspace')
+            print(f"DEBUG: Syncing host → container before command")
             # Sync host → container before command execution
             self._synchronize_host_to_container(container_name, workspace_path)
 
@@ -338,7 +362,7 @@ class BuildEnvironmentManager:
             detach=False,
             environment=env_vars,
             workdir=env_vars.get('DEFAULT_WORKSPACE', '/workspace'),
-            tty=True,
+            tty=False,
             stdin=True
         )
 

@@ -62,13 +62,19 @@ def main():
         if args.command:
             # Execute command
             command = ' '.join(args.command)
+            print(f"DEBUG: Executing command: {command}", file=sys.stderr)
+            print(f"DEBUG: Environment vars: {env_vars.get('DEFAULT_WORKSPACE', 'N/A')}", file=sys.stderr)
             exit_code, output = manager._execute_command(container_name, command, env_vars)
 
             # Print output if there is any
+            print(f"DEBUG: Command exit code: {exit_code}", file=sys.stderr)
+            print(f"DEBUG: Output type: {type(output)}", file=sys.stderr)
+            print(f"DEBUG: Output length: {len(output) if output else 0}", file=sys.stderr)
             if output:
                 # Docker exec_run returns bytes, decode to string
                 if isinstance(output, bytes):
                     output = output.decode('utf-8')
+                print(f"DEBUG: Output content: {repr(output)}", file=sys.stderr)
                 print(output.strip())
 
             return exit_code
