@@ -84,18 +84,18 @@ The build environment uses Docker images specified via the `BUILD_CONTAINER` env
 When running in Docker-in-Docker scenarios, the tool provides advanced bidirectional file synchronization:
 
 - **Smart Synchronization**: Files are intelligently synchronized based on content comparison
-- **Deletion Handling**: Properly handles file deletions in both directions
+- **Deletion Handling**: Properly handles file deletions in both directions - files deleted on one side are deleted on the other
 - **Conflict Resolution**: Uses modification timestamps to resolve conflicts
-- **Host to Container**: Files are synchronized from host to container before command execution
-- **Container to Host**: After command execution, any changes made in the container are synchronized back to the host
+- **Host to Container**: Files are synchronized from host to container before command execution, including deletion of files that exist only in the container
+- **Container to Host**: After command execution, any changes made in the container are synchronized back to the host, including deletion of files that exist only on the host
 - **Automatic**: Synchronization happens automatically for Docker-in-Docker scenarios
 - **Complete**: All files in the workspace directory are synchronized in both directions
 
 The synchronization algorithm:
 1. **Compare Files**: Identifies files that exist in only one location
-2. **Copy Missing Files**: Copies files that exist in one location but not the other
-3. **Resolve Conflicts**: For files that exist in both locations, compares content and uses newer version
-4. **Handle Deletions**: Files deleted in one location are properly handled in the synchronization
+2. **Delete Orphaned Files**: Deletes files that exist in destination but not source
+3. **Copy Missing Files**: Copies files that exist in one location but not the other
+4. **Resolve Conflicts**: For files that exist in both locations, compares content and uses newer version
 
 ### Security
 
