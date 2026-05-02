@@ -241,13 +241,13 @@ class BuildEnvironmentManager:
         return host_to_container and container_to_host
 
     def _get_file_list(self, directory: str) -> set[str]:
-        """Get recursive file list from directory, skipping .build-env directories.
+        """Get recursive file and directory list from directory, skipping .build-env directories.
 
         Args:
             directory: Path to directory
 
         Returns:
-            Set of relative file paths
+            Set of relative file and directory paths
 
         Raises:
             FileNotFoundError: If directory doesn't exist
@@ -267,8 +267,14 @@ class BuildEnvironmentManager:
                 if '.build-env' in dirs:
                     dirs.remove('.build-env')
 
+                # Add directories to the list
+                for dir_name in dirs:
+                    abs_path = os.path.join(root, dir_name)
+                    rel_path = os.path.relpath(abs_path, directory)
+                    file_list.add(rel_path)
+
+                # Add files to the list
                 for file in files:
-                    # Get relative path from the specified directory
                     abs_path = os.path.join(root, file)
                     rel_path = os.path.relpath(abs_path, directory)
                     file_list.add(rel_path)

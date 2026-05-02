@@ -549,7 +549,7 @@ git commit -m "test: add integration test for bidirectional deletion sync"
 When running in Docker-in-Docker scenarios, the tool provides advanced bidirectional file synchronization:
 
 - **Smart Synchronization**: Files are intelligently synchronized based on content comparison
-- **Deletion Handling**: Properly handles file deletions in both directions - files deleted on one side are deleted on the other
+- **Deletion Handling**: Properly handles file and folder deletions in both directions - files and folders deleted on one side are deleted on the other
 - **Conflict Resolution**: Uses modification timestamps to resolve conflicts
 - **Host to Container**: Files are synchronized from host to container before command execution, including deletion of files that exist only in the container
 - **Container to Host**: After command execution, any changes made in the container are synchronized back to the host, including deletion of files that exist only on the host
@@ -557,9 +557,9 @@ When running in Docker-in-Docker scenarios, the tool provides advanced bidirecti
 - **Complete**: All files in the workspace directory are synchronized in both directions
 
 The synchronization algorithm:
-1. **Compare Files**: Identifies files that exist in only one location
-2. **Delete Orphaned Files**: Deletes files that exist in destination but not source
-3. **Copy Missing Files**: Copies files that exist in one location but not the other
+1. **Compare Files and Folders**: Identifies files and folders that exist in only one location
+2. **Delete Orphaned Items**: Deletes files and folders that exist in destination but not source
+3. **Copy Missing Items**: Copies files and folders that exist in one location but not the other
 4. **Resolve Conflicts**: For files that exist in both locations, compares content and uses newer version
 ```
 

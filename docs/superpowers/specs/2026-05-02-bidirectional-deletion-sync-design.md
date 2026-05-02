@@ -1,7 +1,7 @@
 # Bidirectional Deletion Synchronization Design
 
 ## Overview
-This design specifies the implementation of proper bidirectional file deletion synchronization for the build-env tool. The goal is to ensure that files deleted on one side (host or container) are properly deleted on the other side before command execution.
+This design specifies the implementation of proper bidirectional file and folder deletion synchronization for the build-env tool. The goal is to ensure that files and folders deleted on one side (host or container) are properly deleted on the other side before command execution.
 
 ## Current State Analysis
 - The build-env tool currently uses simple `docker cp` commands for synchronization
@@ -46,7 +46,7 @@ This design specifies the implementation of proper bidirectional file deletion s
 ### File Comparison Strategy
 - Use simple filename-based comparison for efficiency
 - Skip `.build-env/` directories to avoid UUID contamination
-- Handle both files and directories recursively
+- Handle both files and directories (folders) recursively
 
 ### Error Handling
 - Continue sync even if individual file operations fail
@@ -54,7 +54,7 @@ This design specifies the implementation of proper bidirectional file deletion s
 - Provide debug output for troubleshooting
 
 ### Testing Strategy
-- Test file creation/deletion synchronization
+- Test file and folder creation/deletion synchronization
 - Test nested directory structures
 - Test edge cases (empty directories, symlinks)
 - Verify existing functionality remains intact
@@ -65,7 +65,7 @@ This design specifies the implementation of proper bidirectional file deletion s
 - Ensure backward compatibility with existing workflows
 
 ## Success Criteria
-- Files deleted on host are deleted in container before command execution
-- Files deleted in container are deleted on host after command execution
+- Files and folders deleted on host are deleted in container before command execution
+- Files and folders deleted in container are deleted on host after command execution
 - No performance regression in sync operations
 - All existing functionality continues to work
