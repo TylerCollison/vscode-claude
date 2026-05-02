@@ -135,31 +135,39 @@ def test_start_container_creates_new_container(manager, mock_docker_client):
     mock_image = Mock()
     mock_container = Mock()
 
-    mock_docker_client.containers.get.side_effect = Exception("Not found")
+    # Use correct Docker exception
+    from docker.errors import NotFound
+    mock_docker_client.containers.get.side_effect = NotFound("Not found")
     mock_docker_client.images.get.return_value = mock_image
     mock_docker_client.containers.create.return_value = mock_container
     mock_container.start.return_value = None
 
-    # Mock security functions
-    sys.modules['security'].validate_image_name.return_value = True
+    # Mock security functions using patch
+    with patch('build_env.validate_image_name') as mock_validate:
+        mock_validate.return_value = True
+        # Mock container name generation to get consistent container name
+        with patch.object(manager, '_generate_container_name') as mock_name:
+            mock_name.return_value = "build-env-12345678-1234-5678-1234-567812345678"
+            # Call method
+            result = manager._start_container("test-image:latest", "/workspace", {"TEST_VAR": "test_value"})
 
-    # Call method
-    result = manager._start_container("test-image:latest", "/workspace", {"TEST_VAR": "test_value"})
-
-    # Assertions
-    sys.modules['security'].validate_image_name.assert_called_once_with("test-image:latest")
-    mock_docker_client.containers.get.assert_called_once_with("build-env-12345678-1234-5678-1234-567812345678")
-    mock_docker_client.images.get.assert_called_once_with("test-image:latest")
-    mock_docker_client.containers.create.assert_called_once_with(
-        image="test-image:latest",
-        name="build-env-12345678-1234-5678-1234-567812345678",
-        working_dir="/workspace",
-        volumes={"/workspace": {"bind": "/workspace", "mode": "rw"}},
-        environment={"TEST_VAR": "test_value"},
-        detach=True
-    )
-    mock_container.start.assert_called_once()
-    assert result == "build-env-12345678-1234-5678-1234-567812345678"
+            # Assertions
+            mock_validate.assert_called_once_with("test-image:latest")
+            mock_name.assert_called_once()
+            # Called twice: once in _start_container and once in _synchronize_host_to_container
+            assert mock_docker_client.containers.get.call_count == 2
+            mock_docker_client.containers.get.assert_any_call("build-env-12345678-1234-5678-1234-567812345678")
+            mock_docker_client.images.get.assert_called_once_with("test-image:latest")
+            mock_docker_client.containers.create.assert_called_once_with(
+                image="test-image:latest",
+                name="build-env-12345678-1234-5678-1234-567812345678",
+                working_dir="/workspace",
+                environment={"TEST_VAR": "test_value"},
+                command=["tail", "-f", "/dev/null"],
+                detach=True
+            )
+            mock_container.start.assert_called_once()
+            assert result == "build-env-12345678-1234-5678-1234-567812345678"
 
 
 def test_start_container_reuses_running_container(manager, mock_docker_client):
@@ -169,15 +177,20 @@ def test_start_container_reuses_running_container(manager, mock_docker_client):
     mock_container.status = "running"
 
     mock_docker_client.containers.get.return_value = mock_container
-    sys.modules['security'].validate_image_name.return_value = True
 
-    # Call method
-    result = manager._start_container("test-image:latest", "/workspace", {"TEST_VAR": "test_value"})
+    # Mock security functions using patch
+    with patch('build_env.validate_image_name') as mock_validate:
+        mock_validate.return_value = True
+        # Mock container name generation to get consistent container name
+        with patch.object(manager, '_generate_container_name') as mock_name:
+            mock_name.return_value = "build-env-12345678-1234-5678-1234-567812345678"
+            # Call method
+            result = manager._start_container("test-image:latest", "/workspace", {"TEST_VAR": "test_value"})
 
-    # Assertions - should reuse existing container
-    sys.modules['security'].validate_image_name.assert_called_once_with("test-image:latest")
-    mock_docker_client.containers.get.assert_called_once_with("build-env-12345678-1234-5678-1234-567812345678")
-    assert result == "build-env-12345678-1234-5678-1234-567812345678"
+            # Assertions - should reuse existing container
+            mock_validate.assert_called_once_with("test-image:latest")
+            mock_docker_client.containers.get.assert_called_once_with("build-env-12345678-1234-5678-1234-567812345678")
+            assert result == "build-env-12345678-1234-5678-1234-567812345678"
 
 
 def test_execute_command(manager, mock_docker_client):
