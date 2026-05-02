@@ -146,7 +146,9 @@ class BuildEnvironmentManager:
                     container_files = self._get_file_list(temp_dir)
 
                     # Delete files in container that don't exist on host
-                    for file_path in container_files - host_files:
+                    # This uses the same logic as _delete_files_in_destination but adapted for Docker containers
+                    files_to_delete = container_files - host_files
+                    for file_path in files_to_delete:
                         container.exec_run(f'rm -rf {workspace_path}/{file_path}')
 
             # Copy host files to container (host → container)
