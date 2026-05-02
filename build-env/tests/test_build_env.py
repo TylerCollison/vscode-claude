@@ -83,7 +83,7 @@ def test_validate_requirements_missing_default_workspace(manager):
 
 def test_get_container_uuid(manager):
     """Test workspace UUID generation."""
-    with patch('security.generate_container_uuid') as mock_generate:
+    with patch('build_env.generate_container_uuid') as mock_generate:
         mock_generate.return_value = "12345678-1234-5678-1234-567812345678"
         uuid = manager._get_container_uuid("/workspace/test")
         assert uuid == "12345678-1234-5678-1234-567812345678"
@@ -97,7 +97,8 @@ def test_container_exists(manager, mock_docker_client):
     assert manager._container_exists("my-container") is True
 
     # Container does not exist
-    mock_docker_client.containers.get.side_effect = Exception("Not found")
+    from docker.errors import NotFound
+    mock_docker_client.containers.get.side_effect = NotFound("Not found")
     assert manager._container_exists("non-existent-container") is False
 
 
@@ -114,17 +115,18 @@ def test_container_running(manager, mock_docker_client):
     assert manager._container_running("exited-container") is False
 
     # Container does not exist
-    mock_docker_client.containers.get.side_effect = Exception("Not found")
+    from docker.errors import NotFound
+    mock_docker_client.containers.get.side_effect = NotFound("Not found")
     assert manager._container_running("non-existent-container") is False
 
 
 def test_get_container_uuid_calls_security_module(manager):
     """Test that get_container_uuid calls the security module."""
-    # Reset the mock call count
-    sys.modules['security'].generate_container_uuid.reset_mock()
-    uuid = manager._get_container_uuid("/workspace/test")
-    assert uuid == "12345678-1234-5678-1234-567812345678"
-    sys.modules['security'].generate_container_uuid.assert_called_once()
+    with patch('build_env.generate_container_uuid') as mock_generate:
+        mock_generate.return_value = "12345678-1234-5678-1234-567812345678"
+        uuid = manager._get_container_uuid("/workspace/test")
+        assert uuid == "12345678-1234-5678-1234-567812345678"
+        mock_generate.assert_called_once()
 
 
 def test_start_container_creates_new_container(manager, mock_docker_client):
@@ -521,11 +523,11 @@ def test_synchronize_container_to_host_with_deletions(manager, mock_docker_clien
         with patch('subprocess.run') as mock_run:
             # Mock docker cp calls
             def mock_subprocess(cmd, **kwargs):
-                if len(cmd) > 2 and cmd[2] == 'cp':
+                if len(cmd) > 2 and cmd[1] == 'cp':
                     # First docker cp: copy container to temp dir
-                    if cmd[3].startswith('test-container:') and cmd[4].startswith('/tmp'):
+                    if cmd[2].startswith('test-container:') and cmd[3].startswith('/tmp'):
                         # Create mock files in temp dir to simulate container contents
-                        temp_dir = cmd[4]
+                        temp_dir = cmd[3]
                         os.makedirs(temp_dir, exist_ok=True)
                         with open(os.path.join(temp_dir, 'container_keep.txt'), 'w') as f:
                             f.write('container')
@@ -548,22 +550,22 @@ def test_synchronize_container_to_host_with_deletions(manager, mock_docker_clien
                     {'delete_on_host.txt', 'common.txt'}    # host files
                 ]
 
-            # Mock delete operation
-            with patch.object(manager, '_delete_files_in_destination') as mock_delete:
-                # Call the method
-                result = manager._synchronize_container_to_host('test-container', tmpdir)
+                # Mock delete operation
+                with patch.object(manager, '_delete_files_in_destination') as mock_delete:
+                    # Call the method
+                    result = manager._synchronize_container_to_host('test-container', tmpdir)
 
-                # Verify deletion was called
-                mock_delete.assert_called_once()
+                    # Verify deletion was called
+                    mock_delete.assert_called_once()
 
-                # Verify method returns True
-                assert result is True
+                    # Verify method returns True
+                    assert result is True
 
-                # Verify the delete call had correct parameters
-                call_args = mock_delete.call_args
-                assert call_args[0][0] == tmpdir  # dest_dir
-                assert call_args[0][1] == {'container_keep.txt', 'common.txt'}  # source_files (container)
-                assert call_args[0][2] == {'delete_on_host.txt', 'common.txt'}  # dest_files (host)
+                    # Verify the delete call had correct parameters
+                    call_args = mock_delete.call_args
+                    assert call_args[0][0] == tmpdir  # dest_dir
+                    assert call_args[0][1] == {'container_keep.txt', 'common.txt'}  # source_files (container)
+                    assert call_args[0][2] == {'delete_on_host.txt', 'common.txt'}  # dest_files (host)
 
 
 def test_container_to_host_sync_with_deletions():
