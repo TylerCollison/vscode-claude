@@ -397,3 +397,37 @@ def test_get_file_list_empty_directory():
     with tempfile.TemporaryDirectory() as tmpdir:
         files = manager._get_file_list(tmpdir)
         assert files == set()
+
+
+def test_delete_files_in_destination():
+    """Test destination file deletion helper method"""
+    import tempfile
+    import os
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create source and destination directories
+        source_dir = os.path.join(tmpdir, 'source')
+        dest_dir = os.path.join(tmpdir, 'dest')
+        os.makedirs(source_dir)
+        os.makedirs(dest_dir)
+
+        # Create files that should exist in both
+        with open(os.path.join(source_dir, 'common.txt'), 'w') as f:
+            f.write('common')
+        with open(os.path.join(dest_dir, 'common.txt'), 'w') as f:
+            f.write('common')
+
+        # Create files that should be deleted from destination
+        with open(os.path.join(dest_dir, 'delete_me.txt'), 'w') as f:
+            f.write('delete')
+
+        manager = BuildEnvironmentManager()
+        source_files = manager._get_file_list(source_dir)
+        dest_files = manager._get_file_list(dest_dir)
+
+        # Delete files that exist in dest but not source
+        manager._delete_files_in_destination(dest_dir, source_files, dest_files)
+
+        # Verify file was deleted
+        assert not os.path.exists(os.path.join(dest_dir, 'delete_me.txt'))
+        assert os.path.exists(os.path.join(dest_dir, 'common.txt'))

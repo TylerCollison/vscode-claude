@@ -235,6 +235,28 @@ class BuildEnvironmentManager:
 
         return file_list
 
+    def _delete_files_in_destination(self, dest_dir: str, source_files: set[str], dest_files: set[str]) -> None:
+        """Delete files in destination that don't exist in source.
+
+        Args:
+            dest_dir: Destination directory path
+            source_files: Set of files in source directory
+            dest_files: Set of files in destination directory
+        """
+        files_to_delete = dest_files - source_files
+
+        for file_path in files_to_delete:
+            full_path = os.path.join(dest_dir, file_path)
+            try:
+                if os.path.isfile(full_path):
+                    os.remove(full_path)
+                elif os.path.isdir(full_path):
+                    import shutil
+                    shutil.rmtree(full_path)
+            except Exception as e:
+                print(f"DEBUG: Failed to delete {full_path}: {e}")
+                # Continue with other files even if one fails
+
     def _copy_workspace_to_container(self, container_name: str, workspace_path: str) -> bool:
         """Copy workspace files to container using docker cp command.
         Maintained for backward compatibility.
