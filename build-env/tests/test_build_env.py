@@ -372,3 +372,28 @@ def test_get_file_list():
         assert 'file1.txt' in files
         assert 'subdir/file2.txt' in files
         assert '.build-env' not in files  # Should skip .build-env directories
+
+
+def test_get_file_list_nonexistent_directory():
+    """Test file listing with non-existent directory"""
+    manager = BuildEnvironmentManager()
+    with pytest.raises(FileNotFoundError):
+        manager._get_file_list('/nonexistent/path')
+
+
+def test_get_file_list_file_not_directory():
+    """Test file listing with file instead of directory"""
+    import tempfile
+    manager = BuildEnvironmentManager()
+    with tempfile.NamedTemporaryFile() as tmpfile:
+        with pytest.raises(NotADirectoryError):
+            manager._get_file_list(tmpfile.name)
+
+
+def test_get_file_list_empty_directory():
+    """Test file listing with empty directory"""
+    import tempfile
+    manager = BuildEnvironmentManager()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        files = manager._get_file_list(tmpdir)
+        assert files == set()

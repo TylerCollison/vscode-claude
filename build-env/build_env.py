@@ -198,7 +198,7 @@ class BuildEnvironmentManager:
         container_to_host = self._synchronize_container_to_host(container_name, workspace_path)
         return host_to_container and container_to_host
 
-    def _get_file_list(self, directory: str) -> set:
+    def _get_file_list(self, directory: str) -> set[str]:
         """Get recursive file list from directory, skipping .build-env directories.
 
         Args:
@@ -206,19 +206,32 @@ class BuildEnvironmentManager:
 
         Returns:
             Set of relative file paths
+
+        Raises:
+            FileNotFoundError: If directory doesn't exist
+            NotADirectoryError: If path is not a directory
+            PermissionError: If access to directory is denied
         """
+        if not os.path.exists(directory):
+            raise FileNotFoundError(f"Directory does not exist: {directory}")
+        if not os.path.isdir(directory):
+            raise NotADirectoryError(f"Path is not a directory: {directory}")
+
         file_list = set()
 
-        for root, dirs, files in os.walk(directory):
-            # Skip .build-env directories
-            if '.build-env' in dirs:
-                dirs.remove('.build-env')
+        try:
+            for root, dirs, files in os.walk(directory):
+                # Skip .build-env directories
+                if '.build-env' in dirs:
+                    dirs.remove('.build-env')
 
-            for file in files:
-                # Get relative path from the specified directory
-                abs_path = os.path.join(root, file)
-                rel_path = os.path.relpath(abs_path, directory)
-                file_list.add(rel_path)
+                for file in files:
+                    # Get relative path from the specified directory
+                    abs_path = os.path.join(root, file)
+                    rel_path = os.path.relpath(abs_path, directory)
+                    file_list.add(rel_path)
+        except PermissionError as e:
+            raise PermissionError(f"Permission denied accessing directory: {directory}") from e
 
         return file_list
 
