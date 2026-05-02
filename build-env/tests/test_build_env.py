@@ -431,3 +431,76 @@ def test_delete_files_in_destination():
         # Verify file was deleted
         assert not os.path.exists(os.path.join(dest_dir, 'delete_me.txt'))
         assert os.path.exists(os.path.join(dest_dir, 'common.txt'))
+
+
+def test_host_to_container_sync_with_deletions():
+    """Test host→container sync handles deletions properly"""
+    import tempfile
+    import os
+
+    # Mock container scenario
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Simulate container workspace
+        container_dir = os.path.join(tmpdir, 'container')
+        host_dir = os.path.join(tmpdir, 'host')
+        os.makedirs(container_dir)
+        os.makedirs(host_dir)
+
+        # Create files that should exist in both
+        with open(os.path.join(host_dir, 'common.txt'), 'w') as f:
+            f.write('common')
+        with open(os.path.join(container_dir, 'common.txt'), 'w') as f:
+            f.write('common')
+
+        # Create file that should be deleted from container
+        with open(os.path.join(container_dir, 'delete_me.txt'), 'w') as f:
+            f.write('delete')
+
+        # Mock the sync process
+        manager = BuildEnvironmentManager()
+
+        # Get file lists
+        host_files = manager._get_file_list(host_dir)
+        container_files = manager._get_file_list(container_dir)
+
+        # Delete files in container that don't exist on host
+        manager._delete_files_in_destination(container_dir, host_files, container_files)
+
+        # Verify deletion
+        assert not os.path.exists(os.path.join(container_dir, 'delete_me.txt'))
+        assert os.path.exists(os.path.join(container_dir, 'common.txt'))
+
+
+def test_synchronize_host_to_container_with_deletions(manager, mock_docker_client):
+    """Test _synchronize_host_to_container method with deletion handling"""
+    import tempfile
+    import os
+
+    # Mock container
+    mock_container = Mock()
+    mock_container.exec_run.return_value = Mock(exit_code=0)
+    mock_docker_client.containers.get.return_value = mock_container
+
+    # Create temporary workspace
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create test files
+        with open(os.path.join(tmpdir, 'keep.txt'), 'w') as f:
+            f.write('keep')
+
+        # Mock docker cp commands
+        with patch('subprocess.run') as mock_run:
+            # Mock successful docker cp operations
+            mock_run.return_value = Mock(returncode=0)
+
+            # Call the method
+            result = manager._synchronize_host_to_container('test-container', tmpdir)
+
+            # Verify method was called
+            mock_docker_client.containers.get.assert_called_once_with('test-container')
+            mock_container.exec_run.assert_called()
+
+            # Should have called docker cp twice (for list and copy)
+            assert mock_run.call_count >= 2
+
+            # Should return True
+            assert result is True
