@@ -348,3 +348,27 @@ def test_cli_missing_environment_variables():
                 result = main()
                 # Should return non-zero exit code
                 assert result == 1
+
+
+def test_get_file_list():
+    """Test file listing helper method"""
+    import tempfile
+    import os
+
+    # Create temporary directory structure
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create test files and directories
+        os.makedirs(os.path.join(tmpdir, 'subdir'))
+        with open(os.path.join(tmpdir, 'file1.txt'), 'w') as f:
+            f.write('test')
+        with open(os.path.join(tmpdir, 'subdir', 'file2.txt'), 'w') as f:
+            f.write('test')
+
+        # Test file listing
+        manager = BuildEnvironmentManager()
+        files = manager._get_file_list(tmpdir)
+
+        # Should contain relative paths
+        assert 'file1.txt' in files
+        assert 'subdir/file2.txt' in files
+        assert '.build-env' not in files  # Should skip .build-env directories

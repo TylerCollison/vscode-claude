@@ -198,6 +198,30 @@ class BuildEnvironmentManager:
         container_to_host = self._synchronize_container_to_host(container_name, workspace_path)
         return host_to_container and container_to_host
 
+    def _get_file_list(self, directory: str) -> set:
+        """Get recursive file list from directory, skipping .build-env directories.
+
+        Args:
+            directory: Path to directory
+
+        Returns:
+            Set of relative file paths
+        """
+        file_list = set()
+
+        for root, dirs, files in os.walk(directory):
+            # Skip .build-env directories
+            if '.build-env' in dirs:
+                dirs.remove('.build-env')
+
+            for file in files:
+                # Get relative path from the specified directory
+                abs_path = os.path.join(root, file)
+                rel_path = os.path.relpath(abs_path, directory)
+                file_list.add(rel_path)
+
+        return file_list
+
     def _copy_workspace_to_container(self, container_name: str, workspace_path: str) -> bool:
         """Copy workspace files to container using docker cp command.
         Maintained for backward compatibility.
