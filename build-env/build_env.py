@@ -169,7 +169,7 @@ class BuildEnvironmentManager:
             return False
 
     def _synchronize_container_to_host(self, container_name: str, workspace_path: str) -> bool:
-        """Synchronize files from container to host.
+        """Synchronize files from container to host with deletion handling.
 
         Args:
             container_name: Name of the container
@@ -180,12 +180,32 @@ class BuildEnvironmentManager:
         """
         try:
             import subprocess
+            import tempfile
 
             # Remove .build-env directory on host to prevent UUID contamination
             build_env_path = os.path.join(workspace_path, '.build-env')
             if os.path.exists(build_env_path):
                 import shutil
                 shutil.rmtree(build_env_path)
+
+            # Get file lists for comparison
+            container_files = set()
+
+            # Get container file list by copying to temp directory
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Copy container files to temp directory
+                result = subprocess.run(
+                    ['docker', 'cp', f'{container_name}:{workspace_path}/.', temp_dir],
+                    capture_output=True,
+                    text=True
+                )
+
+                if result.returncode == 0:
+                    container_files = self._get_file_list(temp_dir)
+                    host_files = self._get_file_list(workspace_path)
+
+                    # Delete files on host that don't exist in container
+                    self._delete_files_in_destination(workspace_path, container_files, host_files)
 
             # Copy container files back to host (container → host)
             result = subprocess.run(
@@ -195,7 +215,7 @@ class BuildEnvironmentManager:
             )
 
             # Debug logging
-            print(f"DEBUG: Container→Host sync: workspace_path={workspace_path}, container_name={container_name}")
+            print(f"DEBUG: Container→Host sync with deletions: workspace_path={workspace_path}, container_name={container_name}")
             print(f"DEBUG: Sync result: returncode={result.returncode}, stderr={result.stderr}")
 
             return result.returncode == 0

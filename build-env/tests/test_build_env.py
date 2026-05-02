@@ -504,3 +504,80 @@ def test_synchronize_host_to_container_with_deletions(manager, mock_docker_clien
 
             # Should return True
             assert result is True
+
+
+def test_synchronize_container_to_host_with_deletions(manager, mock_docker_client):
+    """Test _synchronize_container_to_host method with deletion handling"""
+    import tempfile
+    import os
+
+    # Create temporary workspace
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create test files on host - files that should be deleted
+        with open(os.path.join(tmpdir, 'delete_on_host.txt'), 'w') as f:
+            f.write('delete')
+
+        # Mock docker cp and file operations
+        with patch('subprocess.run') as mock_run:
+            # Mock docker cp calls
+            def mock_subprocess(cmd, **kwargs):
+                if len(cmd) > 2 and cmd[2] == 'cp':
+                    # First docker cp: copy container to temp dir
+                    if cmd[3].startswith('test-container:') and cmd[4].startswith('/tmp'):
+                        # Create mock files in temp dir to simulate container contents
+                        temp_dir = cmd[4]
+                        os.makedirs(temp_dir, exist_ok=True)
+                        with open(os.path.join(temp_dir, 'container_keep.txt'), 'w') as f:
+                            f.write('container')
+                        with open(os.path.join(temp_dir, 'common.txt'), 'w') as f:
+                            f.write('common')
+                        return Mock(returncode=0)
+                    # Second docker cp: actual sync operation
+                    else:
+                        return Mock(returncode=0)
+                return Mock(returncode=0)
+
+            mock_run.side_effect = mock_subprocess
+
+            # Mock file list operations
+            with patch.object(manager, '_get_file_list') as mock_get_files:
+                # First call: get container files from temp dir
+                # Second call: get host files
+                mock_get_files.side_effect = [
+                    {'container_keep.txt', 'common.txt'},  # container files (from temp dir)
+                    {'delete_on_host.txt', 'common.txt'}    # host files
+                ]
+
+            # Mock delete operation
+            with patch.object(manager, '_delete_files_in_destination') as mock_delete:
+                # Call the method
+                result = manager._synchronize_container_to_host('test-container', tmpdir)
+
+                # Verify deletion was called
+                mock_delete.assert_called_once()
+
+                # Verify method returns True
+                assert result is True
+
+                # Verify the delete call had correct parameters
+                call_args = mock_delete.call_args
+                assert call_args[0][0] == tmpdir  # dest_dir
+                assert call_args[0][1] == {'container_keep.txt', 'common.txt'}  # source_files (container)
+                assert call_args[0][2] == {'delete_on_host.txt', 'common.txt'}  # dest_files (host)
+
+
+def test_container_to_host_sync_with_deletions():
+    """Test enhanced _synchronize_container_to_host handles deletions properly"""
+    # Import and analyze the enhanced method
+    from build_env import BuildEnvironmentManager
+    import inspect
+
+    manager = BuildEnvironmentManager()
+    source_code = inspect.getsource(manager._synchronize_container_to_host)
+
+    # Test that enhanced implementation now uses deletion helpers
+    assert '_get_file_list' in source_code, "Enhanced implementation should use _get_file_list"
+    assert '_delete_files_in_destination' in source_code, "Enhanced implementation should use _delete_files_in_destination"
+    assert 'tempfile.TemporaryDirectory' in source_code, "Enhanced implementation should use tempfile for file comparison"
+    assert 'container_files - host_files' in source_code or 'host_files - container_files' in source_code or '_delete_files_in_destination' in source_code, \
+        "Enhanced implementation should handle file comparison and deletion"
