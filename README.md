@@ -31,6 +31,20 @@ This Docker image bundles a web-based IDE (VSCode Server), Claude Code, Claude C
  - WebSocket-based bidirectional communication
  - Multi-platform support (Mattermost)
 
+### Development Tools
+
+- **cconx** - ClaudeConX Docker Management Tool
+ - Command-line interface for managing ClaudeConX instances
+ - Instance lifecycle management (start, stop, delete, status)
+ - DNS and network configuration
+ - Environment variable management with append/override logic
+
+- **build-env** - Persistent Build Environment Manager
+ - Creates and manages persistent Docker containers for build commands
+ - Bidirectional file synchronization between host and container
+ - Environment isolation with dedicated containers per workspace
+ - Smart conflict resolution using modification timestamps
+
 ### Development Stack
 
 - **Node.js 22** - Latest LTS version with npm package manager
@@ -111,6 +125,17 @@ This container supports extensive configuration through environment variables.
 | `THREADS_CHROME` | Chrome executable path |
 | `THREADS_WORKTREE_MODE` | Git worktree mode |
 | `THREADS_SKIP_PERMISSIONS` | Skip permission prompts |
+
+### cconx Configuration
+
+TODO
+
+### build-env Configuration
+
+| Variable | Description |
+|----------|-------------|
+| `BUILD_CONTAINER` | Docker image to use for build environment |
+| `DEFAULT_WORKSPACE` | Path to the workspace directory |
 
 ### Git Repository Setup
 | Variable | Description |
@@ -223,6 +248,45 @@ environment:
 - Automatic channel creation if not exists
 - User session management
 - Support for worktree isolation mode
+
+### cconx Usage
+
+cconx provides command-line management of ClaudeConX instances:
+
+```bash
+# Start a new instance
+cconx start my-instance
+
+# Start with port and environment variable overrides
+cconx start dev-instance --port 8080 --env CLAUDE_CODE_PERMISSION_MODE=bypassPermissions
+
+# Show instance status
+cconx status
+
+# Stop an instance
+cconx stop my-instance
+
+# Delete an instance (container and config)
+cconx delete my-instance
+```
+
+### build-env Usage
+
+build-env creates persistent Docker containers for build commands:
+
+```bash
+# Set required environment variables
+export BUILD_CONTAINER="python:3.12-slim"
+export DEFAULT_WORKSPACE="/path/to/workspace"
+
+# Run commands in the build environment
+build-env python --version
+build-env npm install
+build-env npm run build
+
+# Shutdown the build environment container
+build-env --exit
+```
 
 ### Git Repository Auto-Setup
 
@@ -368,6 +432,16 @@ docker exec claude-dev ls -la /config/.claude-code-router/presets/
 - Verify preset files exist: `ls /ccr-presets/`
 - Check environment variable substitution in `/config/.claude-code-router/presets/`
 
+**cconx Issues:**
+- Verify cconx installation: `which cconx`
+- Check instance configuration: `ls ~/.cconx/instances/`
+- Validate Docker network: `docker network ls`
+
+**build-env Issues:**
+- Verify Docker daemon is running: `docker ps`
+- Check workspace permissions: `ls -la $DEFAULT_WORKSPACE`
+- Validate container image: `docker pull $BUILD_CONTAINER`
+
 ## Credits
 
 - **[linuxserver/code-server](https://hub.docker.com/r/linuxserver/code-server)** - Base VS Code Server environment
@@ -383,6 +457,9 @@ docker exec claude-dev ls -la /config/.claude-code-router/presets/
 - **linuxserver/code-server**: [linuxserver/code-server documentation](https://hub.docker.com/r/linuxserver/code-server)
 - **Claude Code Router**: [Claude Code Router GitHub](https://github.com/musistudio/claude-code-router)
 - **Claude Threads**: [Claude Threads GitHub](https://github.com/anneschuth/claude-threads)
+- **cconx**: [cconx GitHub](https://github.com/TylerCollison/vscode-claude/tree/main)
+- **build-env**: [build-env GitHub](https://github.com/TylerCollison/vscode-claude/tree/main)
+- **tylercollison2089/vscode-claude**: [ClaudeConX GitHub](https://github.com/TylerCollison/vscode-claude/tree/main)
 
 ### Issues
 - **VS Code**: [vscode GitHub issue tracker](https://github.com/microsoft/vscode/issues)
@@ -390,8 +467,10 @@ docker exec claude-dev ls -la /config/.claude-code-router/presets/
 - **Claude Code**: [Claude Code GitHub issue tracker](https://github.com/anthropics/claude-code/issues)
 - **Claude Code Router**: [Claude Code Router GitHub issue tracker](https://github.com/musistudio/claude-code-router/issues)
 - **Claude Threads**: [Claude Threads GitHub issue tracker](https://github.com/anneschuth/claude-threads/issues)
-- **tylercollison2089/claude-conx**: [ClaudeConX GitHub issue tracker](https://github.com/TylerCollison/claude-conx/issues)
+- **cconx**: [cconx GitHub issue tracker](https://github.com/TylerCollison/vscode-claude/issues)
+- **build-env**: [build-env GitHub issue tracker](https://github.com/TylerCollison/vscode-claude/issues)
+- **tylercollison2089/vscode-claude**: [ClaudeConX GitHub issue tracker](https://github.com/TylerCollison/vscode-claude/issues)
 
 ## License
 
-This Docker image is provided as-is. Please refer to the individual component licenses for linuxserver/code-server, Claude Code, Claude Code Router, and Claude Threads.
+This Docker image is provided as-is. Please refer to the individual component licenses for linuxserver/code-server, Claude Code, Claude Code Router, Claude Threads, cconx, and build-env.

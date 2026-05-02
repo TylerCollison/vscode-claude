@@ -102,7 +102,6 @@ class BuildEnvironmentManager:
         """
         # Check if we're inside a container by looking for .dockerenv
         docker_in_docker = os.path.exists('/.dockerenv') and os.path.exists('/var/run/docker.sock')
-        print(f"DEBUG: Docker-in-Docker check: {docker_in_docker}")
         return docker_in_docker
 
     def _synchronize_host_to_container(self, container_name: str, workspace_path: str) -> bool:
@@ -158,14 +157,9 @@ class BuildEnvironmentManager:
                 text=True
             )
 
-            # Debug logging
-            print(f"DEBUG: Host→Container sync with deletions: workspace_path={workspace_path}, container_name={container_name}")
-            print(f"DEBUG: Sync result: returncode={result.returncode}, stderr={result.stderr}")
-
             return result.returncode == 0
 
         except Exception as e:
-            print(f"DEBUG: Host→Container sync exception: {e}")
             return False
 
     def _synchronize_container_to_host(self, container_name: str, workspace_path: str) -> bool:
@@ -214,14 +208,9 @@ class BuildEnvironmentManager:
                 text=True
             )
 
-            # Debug logging
-            print(f"DEBUG: Container→Host sync with deletions: workspace_path={workspace_path}, container_name={container_name}")
-            print(f"DEBUG: Sync result: returncode={result.returncode}, stderr={result.stderr}")
-
             return result.returncode == 0
 
         except Exception as e:
-            print(f"DEBUG: Container→Host sync exception: {e}")
             return False
 
     def _synchronize_workspace_bidirectional(self, container_name: str, workspace_path: str) -> bool:
@@ -302,7 +291,7 @@ class BuildEnvironmentManager:
                     import shutil
                     shutil.rmtree(full_path)
             except Exception as e:
-                print(f"DEBUG: Failed to delete {full_path}: {e}")
+                print(f"Error: Failed to delete {full_path}: {e}")
                 # Continue with other files even if one fails
 
     def _copy_workspace_to_container(self, container_name: str, workspace_path: str) -> bool:
@@ -456,10 +445,8 @@ class BuildEnvironmentManager:
 
         # If running Docker-in-Docker, synchronize workspace files before executing command
         docker_in_docker = self._is_docker_in_docker()
-        print(f"DEBUG: _execute_command - Docker-in-Docker: {docker_in_docker}")
         if docker_in_docker:
             workspace_path = env_vars.get('DEFAULT_WORKSPACE', '/workspace')
-            print(f"DEBUG: Syncing host → container before command")
             # Sync host → container before command execution
             self._synchronize_host_to_container(container_name, workspace_path)
 

@@ -11,9 +11,6 @@ A standalone Python tool that provides persistent Docker container environments 
 - **Persistent containers**: Containers remain running between build commands
 - **Environment isolation**: Each workspace gets its own dedicated container
 - **Bidirectional synchronization**: Files are synchronized both from host to container and from container to host
-- **Security filtering**: Only safe environment variables are passed to containers
-- **Automatic cleanup**: Containers can be shutdown cleanly
-- **Docker image validation**: Ensures only valid Docker images are used
 
 ## Installation
 
@@ -29,8 +26,8 @@ Note: The package installs the `docker` dependency automatically via `requiremen
 
 ```bash
 # Clone the repository
-git clone https://github.com/anthropic/cconx.git
-cd cconx/build-env
+git clone https://github.com/TylerCollison/vscode-claude.git
+cd vscode-claude/build-env
 
 # Install in development mode
 pip install -e .
@@ -66,8 +63,7 @@ build-env --exit
 
 ### Optional
 
-- Any other environment variables you want to pass to the container (filtered for security)
-- Environment variables starting with `BUILD_` will be passed through safely
+- Any other environment variables you want to pass to the container
 
 ## Configuration
 
@@ -81,14 +77,14 @@ The build environment uses Docker images specified via the `BUILD_CONTAINER` env
 
 ### Bidirectional Synchronization
 
-When running in Docker-in-Docker scenarios, the tool provides advanced bidirectional file synchronization:
+The tool provides advanced bidirectional file synchronization:
 
 - **Smart Synchronization**: Files are intelligently synchronized based on content comparison
 - **Deletion Handling**: Properly handles file deletions in both directions - files deleted on one side are deleted on the other
 - **Conflict Resolution**: Uses modification timestamps to resolve conflicts
 - **Host to Container**: Files are synchronized from host to container before command execution, including deletion of files that exist only in the container
 - **Container to Host**: After command execution, any changes made in the container are synchronized back to the host, including deletion of files that exist only on the host
-- **Automatic**: Synchronization happens automatically for Docker-in-Docker scenarios
+- **Automatic**: Synchronization happens automatically
 - **Complete**: All files in the workspace directory are synchronized in both directions
 
 The synchronization algorithm:
@@ -99,28 +95,10 @@ The synchronization algorithm:
 
 ### Security
 
-The tool filters environment variables passed to containers to prevent exposure of sensitive information:
-
-- **Safe environment variables**: `PATH`, `HOME`, `USER`, `PWD`, `SHELL`, `TERM`, `LANG`, `LC_ALL`, `BUILD_CONTAINER`, `DEFAULT_WORKSPACE`
-- **Always filtered**: Environment variables containing "SECRET", "KEY", "PASSWORD", "TOKEN" patterns
-- **Allowed patterns**: Variables starting with `BUILD_` are passed through
 - **Docker image validation**: Ensures image names follow safe patterns
 - **Container isolation**: Unique containers per workspace based on UUID generation
 
 ## Development
-
-### Project Structure
-
-```
-build-env/
-├── build_env.py          # Core build environment manager
-├── build_env_cli.py      # CLI entry point
-├── security.py          # Security utilities
-├── setup.py            # Installation script
-├── requirements.txt    # Dependencies
-├── tests/              # Test suite
-└── README.md           # This file
-```
 
 ### Running Tests
 
@@ -141,15 +119,3 @@ python setup.py sdist bdist_wheel
 # Install locally
 pip install dist/build_env-0.1.0-py3-none-any.whl
 ```
-
-## License
-
-This project is part of the cconx toolset. See the main repository for licensing information.
-
-## Contributing
-
-Please follow the contribution guidelines in the main cconx repository.
-
-## Support
-
-For issues and feature requests, please create an issue in the main cconx repository.
