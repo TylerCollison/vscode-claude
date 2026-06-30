@@ -54,7 +54,7 @@ RUN python3 -m venv /opt/build-env-venv \
     && ln -sf /opt/build-env-venv/bin/build-env /usr/local/bin/build-env
 
 # Install LiteLLM along with proxy features
-RUN pip install 'litellm[proxy]'
+RUN pip install --break-system-packages 'litellm[proxy]'
 
 # Copy LiteLLM config files
 COPY ccr-presets/default/lite-llm-default.yaml /lite-llm/
@@ -67,7 +67,7 @@ COPY start-lite-llm.sh /96-start-lite-llm
 COPY configure-claude-permissions.sh /97-configure-claude-permissions
 COPY configure-claude-plugins.sh /98-configure-claude-plugins
 COPY mattermost-create-channel.sh /99-mattermost-create-channel
-COPY configure-threads-settings.sh /10-configure-threads-settings
+COPY configure-threads-settings.sh /100-configure-threads-settings
 COPY start-claude-threads.sh /101-start-claude-threads
 
 # Copy master startup script to cont-init.d (so it runs automatically)
