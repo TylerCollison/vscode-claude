@@ -1,11 +1,10 @@
 {
   "name": "default",
-  "version": "1.0.0",
-  "description": "Tyler Collison's default config",
+  "version": "2.0.0",
+  "description": "Recommended default configuration that uses a Lite LLM backend with a composition of models",
   "author": "Tyler Collison",
   "keywords": [
-    "google",
-    "nim",
+    "lite-llm",
     "default"
   ],
   "LOG": false,
@@ -18,25 +17,17 @@
   "transformers": [],
   "Providers": [
     {
-      "name": "nim",
-      "api_base_url": "https://integrate.api.nvidia.com/v1/chat/completions",
-      "api_key": "${NIM_API_KEY}",
+      "name": "lite-llm",
+      "api_base_url": "https://127.0.0.1/v1/chat/completions",
+      "api_key": "unused-api-key",
       "models": [
-        "deepseek-ai/deepseek-v4-pro"
+        "lite-llm/default",
+        "lite-llm/background",
+        "lite-llm/think",
+        "lite-llm/longContext",
+        "lite-llm/webSearch",
+        "lite-llm/image"
       ]
-    },
-    {
-      "name": "google",
-      "api_base_url": "https://generativelanguage.googleapis.com/v1beta/models/",
-      "api_key": "${GOOGLE_API_KEY}",
-      "models": [
-        "gemini-2.5-flash"
-      ],
-      "transformer": {
-        "use": [
-          "gemini"
-        ]
-      }
     }
   ],
   "StatusLine": {
@@ -50,13 +41,13 @@
     }
   },
   "Router": {
-    "default": "nim,deepseek-ai/deepseek-v4-pro",
-    "background": "nim,deepseek-ai/deepseek-v4-pro",
-    "think": "nim,deepseek-ai/deepseek-v4-pro",
-    "longContext": "nim,deepseek-ai/deepseek-v4-pro",
+    "default": "lite-llm,lite-llm/default",
+    "background": "lite-llm,lite-llm/background",
+    "think": "lite-llm,lite-llm/think",
+    "longContext": "lite-llm,lite-llm/longContext",
     "longContextThreshold": 60000,
-    "webSearch": "nim,deepseek-ai/deepseek-v4-pro",
-    "image": "google,gemini-2.5-flash"
+    "webSearch": "lite-llm,lite-llm/webSearch",
+    "image": "lite-llm/image"
   },
   "CUSTOM_ROUTER_PATH": ""
 }

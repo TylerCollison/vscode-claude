@@ -23,11 +23,12 @@ STARTUP_SCRIPTS=(
     "/93-git-repo-setup"
     "/94-combine-markdowns"
     "/95-configure-ccr-settings"
-    "/96-configure-claude-permissions"
-    "/97-configure-claude-plugins"
-    "/98-mattermost-create-channel"
-    "/99-configure-threads-settings"
-    "/100-start-claude-threads"
+    "/96-start-lite-llm"
+    "/97-configure-claude-permissions"
+    "/98-configure-claude-plugins"
+    "/99-mattermost-create-channel"
+    "/100-configure-threads-settings"
+    "/101-start-claude-threads"
 )
 
 log "Starting master startup sequence..."

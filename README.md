@@ -66,6 +66,10 @@ docker run -d \
  -e PWA_APPNAME=code-server \
  -e NIM_API_KEY=your-nvidia-nim-api-key \
  -e GOOGLE_API_KEY=your-google-ai-studio-api-key \
+ -e MISTRAL_API_KEY=your-mistral-api-key \
+ -e OPENROUTER_API_KEY=your-openrouter-api-key \
+ -e CEREBRAS_API_KEY=your-cerebras-api-key \
+ -e OPENCODE_ZEN_API_KEY=your-opencode-zen-api-key \
  -p 8443:8443 \
  -v /var/run/docker.sock:/var/run/docker.sock \
  -v /path/to/your/code:/workspace \
@@ -112,6 +116,8 @@ This container supports extensive configuration through environment variables.
 | `GOOGLE_API_KEY` | Google AI Studio API key |
 | `MISTRAL_API_KEY` | Mistral AI API key |
 | `OPENROUTER_API_KEY` | OpenRouter API key |
+| `CEREBRAS_API_KEY` | Cerebras API key |
+| `OPENCODE_ZEN_API_KEY` | OpenCode Zen API key | 
 
 ### Claude Threads Configuration
 | Variable | Description |
@@ -171,6 +177,8 @@ services:
  - GOOGLE_API_KEY=your-google-ai-studio-api-key # Only required if using Google models
  - MISTRAL_API_KEY=your-mistral-api-key # Only required if using Mistral models
  - OPENROUTER_API_KEY=your-openrouter-api-key # Only required if using OpenRouter models
+ - CEREBRAS_API_KEY=your-cerebras-api-key #Only required if using Cerebras models
+ - OPENCODE_ZEN_API_KEY=your-opencode-zen-api-key #Only required if using OpenCode Zen models
  - CCR_PROFILE=default # Optional
  # Claude Code Plugins (optional)
  - CLAUDE_MARKETPLACES=anthropics/claude-plugins-official

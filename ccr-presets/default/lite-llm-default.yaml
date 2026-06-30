@@ -1,0 +1,143 @@
+model_list:
+  # =========================================================================
+  # 1) UNDERLYING MODELS (DEPLOYMENTS)
+  # =========================================================================
+
+  # --- Google AI Studio Models ---
+  - model_name: gemini-3.1-pro-preview
+    litellm_params:
+      model: gemini/gemini-3.1-pro-preview
+      api_base: https://generativelanguage.googleapis.com/v1beta/models/
+      api_key: os.environ/GOOGLE_API_KEY
+
+  - model_name: gemini-3.5-flash
+    litellm_params:
+      model: gemini/gemini-3.5-flash
+      api_base: https://generativelanguage.googleapis.com/v1beta/models/
+      api_key: os.environ/GOOGLE_API_KEY
+
+  - model_name: gemini-3-flash-preview
+    litellm_params:
+      model: gemini/gemini-3-flash-preview
+      api_base: https://generativelanguage.googleapis.com/v1beta/models/
+      api_key: os.environ/GOOGLE_API_KEY
+
+  - model_name: gemini-2.5-flash
+    litellm_params:
+      model: gemini/gemini-2.5-flash
+      api_base: https://generativelanguage.googleapis.com/v1beta/models/
+      api_key: os.environ/GOOGLE_API_KEY
+
+  - model_name: gemini-2.5-pro
+    litellm_params:
+      model: gemini/gemini-2.5-pro
+      api_base: https://generativelanguage.googleapis.com/v1beta/models/
+      api_key: os.environ/GOOGLE_API_KEY
+
+  # --- Cerebras Models ---
+  - model_name: zai-glm-4.7
+    litellm_params:
+      model: cerebras/zai-glm-4.7
+      api_base: https://api.cerebras.ai/v1/chat/completions
+      api_key: os.environ/CEREBRAS_API_KEY
+
+  # --- Nvidia NIM Models ---
+  - model_name: minimaxai/minimax-m3
+    litellm_params:
+      model: nvidia_nim/minimaxai/minimax-m3
+      api_base: https://integrate.api.nvidia.com/v1/chat/completions
+      api_key: os.environ/NIM_API_KEY
+
+  - model_name: moonshotai/kimi-k2.6
+    litellm_params:
+      model: nvidia_nim/moonshotai/kimi-k2.6
+      api_base: https://integrate.api.nvidia.com/v1/chat/completions
+      api_key: os.environ/NIM_API_KEY
+
+  - model_name: deepseek-ai/deepseek-v4-flash
+    litellm_params:
+      model: nvidia_nim/deepseek-ai/deepseek-v4-flash
+      api_base: https://integrate.api.nvidia.com/v1/chat/completions
+      api_key: os.environ/NIM_API_KEY
+
+  - model_name: deepseek-ai/deepseek-v4-pro
+    litellm_params:
+      model: nvidia_nim/deepseek-ai/deepseek-v4-pro
+      api_base: https://integrate.api.nvidia.com/v1/chat/completions
+      api_key: os.environ/NIM_API_KEY
+
+  - model_name: z-ai/glm-5.1
+    litellm_params:
+      model: nvidia_nim/z-ai/glm-5.1
+      api_base: https://integrate.api.nvidia.com/v1/chat/completions
+      api_key: os.environ/NIM_API_KEY
+
+  # --- OpenAI Compatible (OpenCode Zen) ---
+  - model_name: minimax-m3-free
+    litellm_params:
+      model: openai/minimax-m3-free
+      api_base: https://opencode.ai/zen/v1/chat/completions
+      api_key: os.environ/OPENCODE_ZEN_API_KEY
+
+  - model_name: qwen3.6-plus-free
+    litellm_params:
+      model: openai/qwen3.6-plus-free
+      api_base: https://opencode.ai/zen/v1/chat/completions
+      api_key: os.environ/OPENCODE_ZEN_API_KEY
+
+  - model_name: deepseek-v4-flash-free
+    litellm_params:
+      model: openai/deepseek-v4-flash-free
+      api_base: https://opencode.ai/zen/v1/chat/completions
+      api_key: os.environ/OPENCODE_ZEN_API_KEY
+
+  # --- Mistral Models ---
+  - model_name: mistral-medium-latest
+    litellm_params:
+      model: mistral/mistral-medium-latest
+      api_base: https://api.mistral.ai/v1/chat/completions
+      api_key: os.environ/MISTRAL_API_KEY
+
+  - model_name: mistral-large-latest
+    litellm_params:
+      model: mistral/mistral-large-latest
+      api_base: https://api.mistral.ai/v1/chat/completions
+      api_key: os.environ/MISTRAL_API_KEY
+
+  # =========================================================================
+  # 2) ENTRYPOINT MODEL GROUPS (THE NAMES CLIENTS WILL CALL)
+  # =========================================================================
+
+  - model_name: lite-llm/default
+    litellm_params:
+      model: deepseek-v4-flash-free
+
+  - model_name: lite-llm/background
+    litellm_params:
+      model: minimax-m3-free
+
+  - model_name: lite-llm/think
+    litellm_params:
+      model: deepseek-ai/deepseek-v4-pro
+
+  - model_name: lite-llm/longContext
+    litellm_params:
+      model: deepseek-ai/deepseek-v4-pro
+
+  - model_name: lite-llm/webSearch
+    litellm_params:
+      model: gemini-3.5-flash
+
+  - model_name: lite-llm/image
+    litellm_params:
+      model: gemini-3.1-pro-preview
+
+router_settings:
+  # Documented format: List[Dict[str, List[str]]]
+  fallbacks:
+    - {"lite-llm/default": ["gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "minimax-m3-free", "zai-glm-4.7", "qwen3.6-plus-free", "mistral-medium-latest", "deepseek-ai/deepseek-v4-flash", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3"]}
+    - {"lite-llm/background": ["zai-glm-4.7", "qwen3.6-plus-free", "deepseek-v4-flash-free", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "mistral-medium-latest", "deepseek-ai/deepseek-v4-flash", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3"]}
+    - {"lite-llm/think": ["gemini-3.1-pro-preview", "gemini-2.5-pro", "z-ai/glm-5.1", "minimax-m3-free", "minimaxai/minimax-m3", "deepseek-v4-flash-free", "deepseek-ai/deepseek-v4-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "moonshotai/kimi-k2.6", "qwen3.6-plus-free", "zai-glm-4.7", "mistral-large-latest"]}
+    - {"lite-llm/longContext": ["gemini-3.1-pro-preview", "gemini-2.5-pro", "minimax-m3-free", "minimaxai/minimax-m3", "qwen3.6-plus-free", "deepseek-v4-flash-free", "deepseek-ai/deepseek-v4-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash"]}
+    - {"lite-llm/webSearch": ["gemini-3-flash-preview", "gemini-2.5-flash", "minimax-m3-free", "zai-glm-4.7", "qwen3.6-plus-free", "deepseek-v4-flash-free", "mistral-medium-latest", "deepseek-ai/deepseek-v4-flash", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3"]}
+    - {"lite-llm/image": ["gemini-2.5-pro", "moonshotai/kimi-k2.6", "minimax-m3-free", "minimaxai/minimax-m3", "qwen3.6-plus-free", "deepseek-v4-flash-free", "deepseek-ai/deepseek-v4-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash"]}

@@ -53,15 +53,22 @@ RUN python3 -m venv /opt/build-env-venv \
     && /opt/build-env-venv/bin/pip install /build-env \
     && ln -sf /opt/build-env-venv/bin/build-env /usr/local/bin/build-env
 
+# Install LiteLLM along with proxy features
+RUN pip install 'litellm[proxy]'
+
+# Copy LiteLLM config files
+COPY ccr-presets/default/lite-llm-default.yaml /lite-llm/
+
 # Copy startup scripts to root directory
 COPY git-repo-setup.sh /93-git-repo-setup
 COPY combine-markdowns.sh /94-combine-markdowns
 COPY configure-ccr-settings.sh /95-configure-ccr-settings
-COPY configure-claude-permissions.sh /96-configure-claude-permissions
-COPY configure-claude-plugins.sh /97-configure-claude-plugins
-COPY mattermost-create-channel.sh /98-mattermost-create-channel
-COPY configure-threads-settings.sh /99-configure-threads-settings
-COPY start-claude-threads.sh /100-start-claude-threads
+COPY start-lite-llm.sh /96-start-lite-llm
+COPY configure-claude-permissions.sh /97-configure-claude-permissions
+COPY configure-claude-plugins.sh /98-configure-claude-plugins
+COPY mattermost-create-channel.sh /99-mattermost-create-channel
+COPY configure-threads-settings.sh /10-configure-threads-settings
+COPY start-claude-threads.sh /101-start-claude-threads
 
 # Copy master startup script to cont-init.d (so it runs automatically)
 COPY master-startup.sh /etc/cont-init.d/90-master-startup
@@ -70,11 +77,12 @@ COPY master-startup.sh /etc/cont-init.d/90-master-startup
 RUN chmod +x /93-git-repo-setup \
     /94-combine-markdowns \
     /95-configure-ccr-settings \
-    /96-configure-claude-permissions \
-    /97-configure-claude-plugins \
-    /98-mattermost-create-channel \
-    /99-configure-threads-settings \
-    /100-start-claude-threads \
+    /96-start-lite-llm \
+    /97-configure-claude-permissions \
+    /98-configure-claude-plugins \
+    /99-mattermost-create-channel \
+    /100-configure-threads-settings \
+    /101-start-claude-threads \
     /etc/cont-init.d/90-master-startup
 
 # Docker socket volume mount (to be used when running the container)
