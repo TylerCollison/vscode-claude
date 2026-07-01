@@ -7,31 +7,31 @@ model_list:
   - model_name: gemini-3.1-pro-preview
     litellm_params:
       model: gemini/gemini-3.1-pro-preview
-      api_base: https://generativelanguage.googleapis.com/v1beta/models/
+      api_base: https://generativelanguage.googleapis.com/v1beta
       api_key: os.environ/GOOGLE_API_KEY
 
   - model_name: gemini-3.5-flash
     litellm_params:
       model: gemini/gemini-3.5-flash
-      api_base: https://generativelanguage.googleapis.com/v1beta/models/
+      api_base: https://generativelanguage.googleapis.com/v1beta
       api_key: os.environ/GOOGLE_API_KEY
 
   - model_name: gemini-3-flash-preview
     litellm_params:
       model: gemini/gemini-3-flash-preview
-      api_base: https://generativelanguage.googleapis.com/v1beta/models/
+      api_base: https://generativelanguage.googleapis.com/v1beta
       api_key: os.environ/GOOGLE_API_KEY
 
   - model_name: gemini-2.5-flash
     litellm_params:
       model: gemini/gemini-2.5-flash
-      api_base: https://generativelanguage.googleapis.com/v1beta/models/
+      api_base: https://generativelanguage.googleapis.com/v1beta
       api_key: os.environ/GOOGLE_API_KEY
 
   - model_name: gemini-2.5-pro
     litellm_params:
       model: gemini/gemini-2.5-pro
-      api_base: https://generativelanguage.googleapis.com/v1beta/models/
+      api_base: https://generativelanguage.googleapis.com/v1beta
       api_key: os.environ/GOOGLE_API_KEY
 
   # --- Cerebras Models ---
@@ -135,13 +135,13 @@ model_list:
   - model_name: lite-llm/webSearch
     litellm_params:
       model: gemini/gemini-3.5-flash
-      api_base: https://generativelanguage.googleapis.com/v1beta/models/
+      api_base: https://generativelanguage.googleapis.com/v1beta
       api_key: os.environ/GOOGLE_API_KEY
 
   - model_name: lite-llm/image
     litellm_params:
       model: gemini/gemini-3.1-pro-preview
-      api_base: https://generativelanguage.googleapis.com/v1beta/models/
+      api_base: https://generativelanguage.googleapis.com/v1beta
       api_key: os.environ/GOOGLE_API_KEY
 
 router_settings:
