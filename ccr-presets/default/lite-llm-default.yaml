@@ -110,27 +110,39 @@ model_list:
 
   - model_name: lite-llm/default
     litellm_params:
-      model: deepseek-v4-flash-free
+      model: openai/deepseek-v4-flash-free
+      api_base: https://opencode.ai/zen/v1/chat/completions
+      api_key: os.environ/OPENCODE_ZEN_API_KEY
 
   - model_name: lite-llm/background
     litellm_params:
-      model: minimax-m3-free
+      model: openai/minimax-m3-free
+      api_base: https://opencode.ai/zen/v1/chat/completions
+      api_key: os.environ/OPENCODE_ZEN_API_KEY
 
   - model_name: lite-llm/think
     litellm_params:
-      model: deepseek-ai/deepseek-v4-pro
+      model: nvidia_nim/deepseek-ai/deepseek-v4-pro
+      api_base: https://integrate.api.nvidia.com/v1/chat/completions
+      api_key: os.environ/NIM_API_KEY
 
   - model_name: lite-llm/longContext
     litellm_params:
-      model: deepseek-ai/deepseek-v4-pro
+      model: nvidia_nim/deepseek-ai/deepseek-v4-pro
+      api_base: https://integrate.api.nvidia.com/v1/chat/completions
+      api_key: os.environ/NIM_API_KEY
 
   - model_name: lite-llm/webSearch
     litellm_params:
-      model: gemini-3.5-flash
+      model: gemini/gemini-3.5-flash
+      api_base: https://generativelanguage.googleapis.com/v1beta/models/
+      api_key: os.environ/GOOGLE_API_KEY
 
   - model_name: lite-llm/image
     litellm_params:
-      model: gemini-3.1-pro-preview
+      model: gemini/gemini-3.1-pro-preview
+      api_base: https://generativelanguage.googleapis.com/v1beta/models/
+      api_key: os.environ/GOOGLE_API_KEY
 
 router_settings:
   # Documented format: List[Dict[str, List[str]]]
