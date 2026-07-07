@@ -18,7 +18,7 @@
   "Providers": [
     {
       "name": "lite-llm",
-      "api_base_url": "http://127.0.0.1:5090/v1/chat/completions",
+      "api_base_url": "http://127.0.0.1:5090/v1/messages",
       "api_key": "unused-api-key",
       "models": [
         "lite-llm/default",
@@ -27,7 +27,12 @@
         "lite-llm/longContext",
         "lite-llm/webSearch",
         "lite-llm/image"
-      ]
+      ],
+      "transformer": {
+        "use": [
+          "Anthropic"
+        ]
+      }
     }
   ],
   "StatusLine": {
@@ -43,9 +48,9 @@
   "Router": {
     "default": "lite-llm,lite-llm/default",
     "background": "lite-llm,lite-llm/background",
-    "think": "lite-llm,lite-llm/think",
+    "think": "lite-llm,lite-llm/default",
     "longContext": "lite-llm,lite-llm/longContext",
-    "longContextThreshold": 60000,
+    "longContextThreshold": 128000,
     "webSearch": "lite-llm,lite-llm/webSearch",
     "image": "lite-llm/image"
   },

@@ -22,7 +22,7 @@
       "api_base_url": "https://integrate.api.nvidia.com/v1/chat/completions",
       "api_key": "${NIM_API_KEY}",
       "models": [
-        "deepseek-ai/deepseek-v3.1-terminus"
+        "deepseek-ai/deepseek-v4-pro"
       ]
     }
   ],
@@ -37,13 +37,13 @@
     }
   },
   "Router": {
-    "default": "nim,deepseek-ai/deepseek-v3.1-terminus",
-    "background": "nim,deepseek-ai/deepseek-v3.1-terminus",
-    "think": "nim,deepseek-ai/deepseek-v3.1-terminus",
-    "longContext": "nim,deepseek-ai/deepseek-v3.1-terminus",
+    "default": "nim,deepseek-ai/deepseek-v4-pro",
+    "background": "nim,deepseek-ai/deepseek-v4-pro",
+    "think": "nim,deepseek-ai/deepseek-v4-pro",
+    "longContext": "nim,deepseek-ai/deepseek-v4-pro",
     "longContextThreshold": 60000,
-    "webSearch": "nim,deepseek-ai/deepseek-v3.1-terminus",
-    "image": "nim,deepseek-ai/deepseek-v3.1-terminus"
+    "webSearch": "nim,deepseek-ai/deepseek-v4-pro",
+    "image": "nim,deepseek-ai/deepseek-v4-pro"
   },
   "CUSTOM_ROUTER_PATH": ""
 }

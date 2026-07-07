@@ -4,105 +4,101 @@ model_list:
   # =========================================================================
 
   # --- Google AI Studio Models ---
-  - model_name: gemini-3.1-pro-preview
-    litellm_params:
-      model: gemini/gemini-3.1-pro-preview
-      api_base: https://generativelanguage.googleapis.com/v1beta
-      api_key: os.environ/GOOGLE_API_KEY
-
+  # Note: all of the models from this provider respond quickly
   - model_name: gemini-3.5-flash
     litellm_params:
       model: gemini/gemini-3.5-flash
-      api_base: https://generativelanguage.googleapis.com/v1beta
       api_key: os.environ/GOOGLE_API_KEY
+      stream_timeout: 30.0
 
   - model_name: gemini-3-flash-preview
     litellm_params:
       model: gemini/gemini-3-flash-preview
-      api_base: https://generativelanguage.googleapis.com/v1beta
       api_key: os.environ/GOOGLE_API_KEY
+      stream_timeout: 30.0
 
   - model_name: gemini-2.5-flash
     litellm_params:
       model: gemini/gemini-2.5-flash
-      api_base: https://generativelanguage.googleapis.com/v1beta
       api_key: os.environ/GOOGLE_API_KEY
-
-  - model_name: gemini-2.5-pro
-    litellm_params:
-      model: gemini/gemini-2.5-pro
-      api_base: https://generativelanguage.googleapis.com/v1beta
-      api_key: os.environ/GOOGLE_API_KEY
+      stream_timeout: 30.0
 
   # --- Cerebras Models ---
+  # Note: all of the models from this provider respond very slowly
   - model_name: zai-glm-4.7
     litellm_params:
       model: cerebras/zai-glm-4.7
-      api_base: https://api.cerebras.ai/v1/chat/completions
       api_key: os.environ/CEREBRAS_API_KEY
+      stream_timeout: 30.0
 
   # --- Nvidia NIM Models ---
+  # Note: All of the models from this provider respond rather slowly
   - model_name: minimaxai/minimax-m3
     litellm_params:
       model: nvidia_nim/minimaxai/minimax-m3
-      api_base: https://integrate.api.nvidia.com/v1/chat/completions
       api_key: os.environ/NIM_API_KEY
+      stream_timeout: 30.0
 
   - model_name: moonshotai/kimi-k2.6
     litellm_params:
       model: nvidia_nim/moonshotai/kimi-k2.6
-      api_base: https://integrate.api.nvidia.com/v1/chat/completions
       api_key: os.environ/NIM_API_KEY
+      stream_timeout: 30.0
 
   - model_name: deepseek-ai/deepseek-v4-flash
     litellm_params:
       model: nvidia_nim/deepseek-ai/deepseek-v4-flash
-      api_base: https://integrate.api.nvidia.com/v1/chat/completions
       api_key: os.environ/NIM_API_KEY
+      stream_timeout: 30.0
 
   - model_name: deepseek-ai/deepseek-v4-pro
     litellm_params:
       model: nvidia_nim/deepseek-ai/deepseek-v4-pro
-      api_base: https://integrate.api.nvidia.com/v1/chat/completions
       api_key: os.environ/NIM_API_KEY
+      stream_timeout: 30.0
 
   - model_name: z-ai/glm-5.1
     litellm_params:
       model: nvidia_nim/z-ai/glm-5.1
-      api_base: https://integrate.api.nvidia.com/v1/chat/completions
       api_key: os.environ/NIM_API_KEY
+      stream_timeout: 30.0
 
   # --- OpenAI Compatible (OpenCode Zen) ---
-  - model_name: minimax-m3-free
+  # Note: All of the models from this provider respond very quickly
+  - model_name: nemotron-3-ultra-free
     litellm_params:
-      model: openai/minimax-m3-free
-      api_base: https://opencode.ai/zen/v1/chat/completions
+      model: openai/nemotron-3-ultra-free
+      api_base: https://opencode.ai/zen/v1
       api_key: os.environ/OPENCODE_ZEN_API_KEY
+      stream_timeout: 30.0
 
-  - model_name: qwen3.6-plus-free
+  - model_name: big-pickle
     litellm_params:
-      model: openai/qwen3.6-plus-free
-      api_base: https://opencode.ai/zen/v1/chat/completions
+      model: openai/big-pickle
+      api_base: https://opencode.ai/zen/v1
       api_key: os.environ/OPENCODE_ZEN_API_KEY
+      stream_timeout: 30.0
 
   - model_name: deepseek-v4-flash-free
     litellm_params:
       model: openai/deepseek-v4-flash-free
-      api_base: https://opencode.ai/zen/v1/chat/completions
+      api_base: https://opencode.ai/zen/v1
       api_key: os.environ/OPENCODE_ZEN_API_KEY
+      stream_timeout: 30.0
 
   # --- Mistral Models ---
+  # Note: all of the models from this provider respond quickly
   - model_name: mistral-medium-latest
     litellm_params:
       model: mistral/mistral-medium-latest
-      api_base: https://api.mistral.ai/v1/chat/completions
       api_key: os.environ/MISTRAL_API_KEY
+      stream_timeout: 30.0
 
   - model_name: mistral-large-latest
     litellm_params:
       model: mistral/mistral-large-latest
-      api_base: https://api.mistral.ai/v1/chat/completions
       api_key: os.environ/MISTRAL_API_KEY
+      stream_timeout: 30.0
 
   # =========================================================================
   # 2) ENTRYPOINT MODEL GROUPS (THE NAMES CLIENTS WILL CALL)
@@ -111,45 +107,59 @@ model_list:
   - model_name: lite-llm/default
     litellm_params:
       model: openai/deepseek-v4-flash-free
-      api_base: https://opencode.ai/zen/v1/chat/completions
+      api_base: https://opencode.ai/zen/v1
       api_key: os.environ/OPENCODE_ZEN_API_KEY
+      stream_timeout: 30.0
 
   - model_name: lite-llm/background
     litellm_params:
-      model: openai/minimax-m3-free
-      api_base: https://opencode.ai/zen/v1/chat/completions
+      model: openai/deepseek-v4-flash-free
+      api_base: https://opencode.ai/zen/v1
       api_key: os.environ/OPENCODE_ZEN_API_KEY
+      stream_timeout: 30.0
 
   - model_name: lite-llm/think
     litellm_params:
       model: nvidia_nim/deepseek-ai/deepseek-v4-pro
-      api_base: https://integrate.api.nvidia.com/v1/chat/completions
       api_key: os.environ/NIM_API_KEY
+      stream_timeout: 30.0
 
   - model_name: lite-llm/longContext
     litellm_params:
       model: nvidia_nim/deepseek-ai/deepseek-v4-pro
-      api_base: https://integrate.api.nvidia.com/v1/chat/completions
       api_key: os.environ/NIM_API_KEY
+      stream_timeout: 30.0
 
   - model_name: lite-llm/webSearch
     litellm_params:
       model: gemini/gemini-3.5-flash
-      api_base: https://generativelanguage.googleapis.com/v1beta
       api_key: os.environ/GOOGLE_API_KEY
+      stream_timeout: 30.0
 
   - model_name: lite-llm/image
     litellm_params:
-      model: gemini/gemini-3.1-pro-preview
-      api_base: https://generativelanguage.googleapis.com/v1beta
+      model: gemini/gemini-3.5-flash
       api_key: os.environ/GOOGLE_API_KEY
+      stream_timeout: 30.0
+
+litellm_settings:
+  # Fixes a bug in translating between an Anthropic client and an OpenAI provider
+  use_chat_completions_url_for_anthropic_messages: true
 
 router_settings:
+  retry_policy:
+    # Set all retries to 0 to prioritize use of the fallback models
+    AuthenticationErrorRetries: 0
+    TimeoutErrorRetries: 0
+    RateLimitErrorRetries: 0
+    ContentPolicyViolationErrorRetries: 0
+    InternalServerErrorRetries: 0
+
   # Documented format: List[Dict[str, List[str]]]
   fallbacks:
-    - {"lite-llm/default": ["gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "minimax-m3-free", "zai-glm-4.7", "qwen3.6-plus-free", "mistral-medium-latest", "deepseek-ai/deepseek-v4-flash", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3"]}
-    - {"lite-llm/background": ["zai-glm-4.7", "qwen3.6-plus-free", "deepseek-v4-flash-free", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "mistral-medium-latest", "deepseek-ai/deepseek-v4-flash", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3"]}
-    - {"lite-llm/think": ["gemini-3.1-pro-preview", "gemini-2.5-pro", "z-ai/glm-5.1", "minimax-m3-free", "minimaxai/minimax-m3", "deepseek-v4-flash-free", "deepseek-ai/deepseek-v4-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "moonshotai/kimi-k2.6", "qwen3.6-plus-free", "zai-glm-4.7", "mistral-large-latest"]}
-    - {"lite-llm/longContext": ["gemini-3.1-pro-preview", "gemini-2.5-pro", "minimax-m3-free", "minimaxai/minimax-m3", "qwen3.6-plus-free", "deepseek-v4-flash-free", "deepseek-ai/deepseek-v4-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash"]}
-    - {"lite-llm/webSearch": ["gemini-3-flash-preview", "gemini-2.5-flash", "minimax-m3-free", "zai-glm-4.7", "qwen3.6-plus-free", "deepseek-v4-flash-free", "mistral-medium-latest", "deepseek-ai/deepseek-v4-flash", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3"]}
-    - {"lite-llm/image": ["gemini-2.5-pro", "moonshotai/kimi-k2.6", "minimax-m3-free", "minimaxai/minimax-m3", "qwen3.6-plus-free", "deepseek-v4-flash-free", "deepseek-ai/deepseek-v4-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash"]}
+    - {"lite-llm/default": ["deepseek-v4-flash-free", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "zai-glm-4.7", "nemotron-3-ultra-free", "mistral-medium-latest", "big-pickle", "deepseek-ai/deepseek-v4-flash", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3"]}
+    - {"lite-llm/background": ["deepseek-v4-flash-free", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "zai-glm-4.7", "nemotron-3-ultra-free", "mistral-medium-latest", "big-pickle", "deepseek-ai/deepseek-v4-flash", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3"]}
+    - {"lite-llm/think": ["deepseek-ai/deepseek-v4-pro", "z-ai/glm-5.1", "minimaxai/minimax-m3", "moonshotai/kimi-k2.6", "nemotron-3-ultra-free", "deepseek-v4-flash-free", "deepseek-ai/deepseek-v4-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "zai-glm-4.7", "mistral-large-latest", "big-pickle"]}
+    - {"lite-llm/longContext": ["deepseek-ai/deepseek-v4-pro", "minimaxai/minimax-m3", "nemotron-3-ultra-free", "deepseek-v4-flash-free", "deepseek-ai/deepseek-v4-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash"]}
+    - {"lite-llm/webSearch": ["gemini-3-flash-preview", "gemini-2.5-flash", "nemotron-3-ultra-free", "big-pickle", "zai-glm-4.7", "deepseek-v4-flash-free", "mistral-medium-latest", "deepseek-ai/deepseek-v4-flash", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3"]}
+    - {"lite-llm/image": ["gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3", "deepseek-v4-flash-free", "deepseek-ai/deepseek-v4-flash"]}

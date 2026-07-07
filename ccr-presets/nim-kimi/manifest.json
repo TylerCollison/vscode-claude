@@ -24,7 +24,7 @@
       "api_base_url": "https://integrate.api.nvidia.com/v1/chat/completions",
       "api_key": "${NIM_API_KEY}",
       "models": [
-        "moonshotai/kimi-k2.5"
+        "moonshotai/kimi-k2.6"
       ]
     },
     {
@@ -52,12 +52,12 @@
     }
   },
   "Router": {
-    "default": "nim,moonshotai/kimi-k2.5",
-    "background": "nim,moonshotai/kimi-k2.5",
-    "think": "nim,moonshotai/kimi-k2.5",
-    "longContext": "nim,moonshotai/kimi-k2.5",
+    "default": "nim,moonshotai/kimi-k2.6",
+    "background": "nim,moonshotai/kimi-k2.6",
+    "think": "nim,moonshotai/kimi-k2.6",
+    "longContext": "nim,moonshotai/kimi-k2.6",
     "longContextThreshold": 60000,
-    "webSearch": "nim,moonshotai/kimi-k2.5",
+    "webSearch": "nim,moonshotai/kimi-k2.6",
     "image": "google,gemini-2.5-flash"
   },
   "CUSTOM_ROUTER_PATH": ""
