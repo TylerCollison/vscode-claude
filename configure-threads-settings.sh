@@ -18,7 +18,7 @@ if [ -z "$MM_CHANNEL_ID" ]; then
 fi
 
 # Use temporary files to track counts
-mkdir /tmp/threads
+mkdir -p /tmp/threads
 processed_file="/tmp/threads/processed_count.$$"
 failed_file="/tmp/threads/failed_count.$$"
 echo "0" > "$processed_file"
@@ -70,5 +70,5 @@ if [ $processed_count -eq 0 ]; then
     echo "Warning: No files were successfully processed"
 fi
 
-# Grant open permissions for the config folder
-chmod -R 777 /config
+# Ensure config folder is owned by the abc user (PUID/PGID) for non-root access
+lsiown -R abc:abc /config

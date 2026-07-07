@@ -132,10 +132,6 @@ fi
 
 log "Branch '$GIT_BRANCH_NAME' is now active"
 
-# Set workspace permissions (following existing pattern)
-log "Setting workspace permissions..."
-chmod -R 777 "$DEFAULT_WORKSPACE/"
-
 # Output success information
 log_success "Git repository setup completed successfully"
 log "Repository location: $TARGET_DIR"
