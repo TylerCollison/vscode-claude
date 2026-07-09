@@ -23,6 +23,18 @@ model_list:
       api_key: os.environ/GOOGLE_API_KEY
       stream_timeout: 30.0
 
+  - model_name: gemini-embedding-2
+    litellm_params:
+      model: gemini/gemini-embedding-2
+      api_key: os.environ/GOOGLE_API_KEY
+      stream_timeout: 30.0
+
+  - model_name: gemini-embedding-001
+    litellm_params:
+      model: gemini/gemini-embedding-001
+      api_key: os.environ/GOOGLE_API_KEY
+      stream_timeout: 30.0
+
   # --- Cerebras Models ---
   # Note: all of the models from this provider respond very slowly
   - model_name: zai-glm-4.7
@@ -63,6 +75,12 @@ model_list:
       api_key: os.environ/NIM_API_KEY
       stream_timeout: 30.0
 
+  - model_name: nvidia/nv-embed-v1
+    litellm_params:
+      model: nvidia_nim/nvidia/nv-embed-v1
+      api_key: os.environ/NIM_API_KEY
+      stream_timeout: 30.0
+
   # --- OpenAI Compatible (OpenCode Zen) ---
   # Note: All of the models from this provider respond very quickly
   - model_name: nemotron-3-ultra-free
@@ -100,8 +118,62 @@ model_list:
       api_key: os.environ/MISTRAL_API_KEY
       stream_timeout: 30.0
 
+  - model_name: mistral-embed
+    litellm_params:
+      model: mistral/mistral-embed
+      api_key: os.environ/MISTRAL_API_KEY
+      stream_timeout: 30.0
+
   # =========================================================================
-  # 2) ENTRYPOINT MODEL GROUPS (THE NAMES CLIENTS WILL CALL)
+  # 2) UNIFIED ROUTER (THREE-STAGE PIPELINE)
+  # =========================================================================
+  #
+  # "lite-llm/router" is a single endpoint that pipelines three routing
+  # stages:
+  #
+  #   1. Content-based  (callback)        → lite-llm/image
+  #   2. Semantic       (auto_router_1)   → lite-llm/webSearch  if web intent
+  #   3. Complexity     (complexity_router)  → lite-llm/default or lite-llm/think
+  #
+  # The callback only handles image detection; it then delegates to
+  # lite-llm/semantic-router, which checks web-search utterances and
+  # falls back to lite-llm/complexity (the complexity router) for the
+  # final stage — both are native LiteLLM routers.
+
+  - model_name: lite-llm/router
+    litellm_params:
+      # The callback (router_callback.py) intercepts every request and
+      # rewrites the model to lite-llm/image (if images present) or
+      # lite-llm/semantic-router (for all other requests).
+      model: openai/deepseek-v4-flash-free
+      api_base: https://opencode.ai/zen/v1
+      api_key: os.environ/OPENCODE_ZEN_API_KEY
+      stream_timeout: 30.0
+
+  - model_name: lite-llm/semantic-router
+    litellm_params:
+      model: auto_router/auto_router_1
+      auto_router_config_path: /lite-llm/router.json
+      # Requests that don't match a web-search utterance cascade to
+      # lite-llm/complexity for LiteLLM's built-in complexity routing.
+      auto_router_default_model: lite-llm/complexity
+      auto_router_embedding_model: lite-llm/embedding
+      stream_timeout: 30.0
+
+  - model_name: lite-llm/complexity
+    litellm_params:
+      model: auto_router/complexity_router
+      complexity_router_config:
+        tiers:
+          SIMPLE: lite-llm/default
+          MEDIUM: lite-llm/default
+          COMPLEX: lite-llm/think
+          REASONING: lite-llm/think
+      complexity_router_default_model: lite-llm/default
+      stream_timeout: 30.0
+
+  # =========================================================================
+  # 3) ENTRYPOINT MODEL GROUPS (THE NAMES CLIENTS WILL CALL)
   # =========================================================================
 
   - model_name: lite-llm/default
@@ -142,9 +214,21 @@ model_list:
       api_key: os.environ/GOOGLE_API_KEY
       stream_timeout: 30.0
 
+  - model_name: lite-llm/embedding
+    litellm_params:
+      model: gemini/gemini-embedding-2
+      api_key: os.environ/GOOGLE_API_KEY
+      stream_timeout: 30.0
+
 litellm_settings:
   # Fixes a bug in translating between an Anthropic client and an OpenAI provider
   use_chat_completions_url_for_anthropic_messages: true
+
+  # Content-aware callback: detects images and routes to lite-llm/image.
+  # All other requests are forwarded to lite-llm/semantic-router, which
+  # uses LiteLLM's built-in auto_router for web-search intent detection
+  # and complexity scoring.  The module is loaded relative to this file.
+  callbacks: router_callback.router_handler
 
 router_settings:
   retry_policy:
@@ -157,9 +241,12 @@ router_settings:
 
   # Documented format: List[Dict[str, List[str]]]
   fallbacks:
+    - {"lite-llm/router": ["deepseek-v4-flash-free", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "zai-glm-4.7", "nemotron-3-ultra-free", "mistral-medium-latest", "big-pickle", "deepseek-ai/deepseek-v4-flash", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3"]}
     - {"lite-llm/default": ["deepseek-v4-flash-free", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "zai-glm-4.7", "nemotron-3-ultra-free", "mistral-medium-latest", "big-pickle", "deepseek-ai/deepseek-v4-flash", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3"]}
-    - {"lite-llm/background": ["deepseek-v4-flash-free", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "zai-glm-4.7", "nemotron-3-ultra-free", "mistral-medium-latest", "big-pickle", "deepseek-ai/deepseek-v4-flash", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3"]}
     - {"lite-llm/think": ["deepseek-ai/deepseek-v4-pro", "z-ai/glm-5.1", "minimaxai/minimax-m3", "moonshotai/kimi-k2.6", "nemotron-3-ultra-free", "deepseek-v4-flash-free", "deepseek-ai/deepseek-v4-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "zai-glm-4.7", "mistral-large-latest", "big-pickle"]}
     - {"lite-llm/longContext": ["deepseek-ai/deepseek-v4-pro", "minimaxai/minimax-m3", "nemotron-3-ultra-free", "deepseek-v4-flash-free", "deepseek-ai/deepseek-v4-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash"]}
     - {"lite-llm/webSearch": ["gemini-3-flash-preview", "gemini-2.5-flash", "nemotron-3-ultra-free", "big-pickle", "zai-glm-4.7", "deepseek-v4-flash-free", "mistral-medium-latest", "deepseek-ai/deepseek-v4-flash", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3"]}
     - {"lite-llm/image": ["gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3", "deepseek-v4-flash-free", "deepseek-ai/deepseek-v4-flash"]}
+    - {"lite-llm/complexity": ["deepseek-v4-flash-free", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "zai-glm-4.7", "nemotron-3-ultra-free", "mistral-medium-latest", "big-pickle", "deepseek-ai/deepseek-v4-flash", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3"]}
+    - {"lite-llm/semantic-router": ["gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "deepseek-v4-flash-free", "zai-glm-4.7", "nemotron-3-ultra-free", "mistral-medium-latest", "big-pickle", "deepseek-ai/deepseek-v4-flash", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3"]}
+    - {"lite-llm/embedding": ["gemini-embedding-001", "mistral-embed", "nvidia/nv-embed-v1"]}

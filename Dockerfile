@@ -56,8 +56,10 @@ RUN python3 -m venv /opt/build-env-venv \
 # Install LiteLLM along with proxy features
 RUN pip install --break-system-packages 'litellm[proxy]'
 
-# Copy LiteLLM config files
+# Copy LiteLLM config files and custom routing callback
 COPY ccr-presets/default/lite-llm-default.yaml /lite-llm/
+COPY lite-llm/router_callback.py /lite-llm/
+COPY lite-llm/router.json /lite-llm/
 
 # Copy startup scripts to root directory
 COPY git-repo-setup.sh /93-git-repo-setup
