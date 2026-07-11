@@ -1,0 +1,45 @@
+{
+  "encoder_type": "mistral",
+  "encoder_name": "mistral-embed",
+  "routes": [
+    {
+      "name": "lite-llm/webSearch",
+      "utterances": [
+        "search the web for [topic]",
+        "look up [topic] online",
+        "find information about [topic]",
+        "what is the latest news on [topic]",
+        "research [topic] on the internet",
+        "find recent articles about [topic]",
+        "check online for [query]",
+        "browse the internet for [topic]",
+        "look up current events",
+        "search for recent developments in [field]",
+        "find the latest research on [topic]",
+        "what are recent findings about [topic]",
+        "pull up information from the web",
+        "fetch online results for [query]",
+        "what is happening with [topic] right now",
+        "get the latest updates on [topic]",
+        "scrape data from [source]",
+        "find sources about [topic]",
+        "look for references on [topic]",
+        "search academic papers about [topic]",
+        "find documentation for [tool]",
+        "look up the documentation for [library]",
+        "check the official docs for [tool]",
+        "browse the web for tutorials on [topic]",
+        "do a web search for [topic]",
+        "google [query] for me",
+        "use a search engine to find [topic]",
+        "retrieve current information on [topic]",
+        "find me the top results for [query]"
+      ],
+      "description": "Web search and online research queries that require fetching external information",
+      "score_threshold": 0.55,
+      "metadata": {
+        "category": "web_search"
+      }
+    }
+  ]
+}

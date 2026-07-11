@@ -1,6 +1,6 @@
 {
   "encoder_type": "gemini",
-  "encoder_name": "lite-llm/embedding",
+  "encoder_name": "gemini-embedding-001",
   "routes": [
     {
       "name": "lite-llm/webSearch",

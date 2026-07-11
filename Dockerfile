@@ -31,6 +31,16 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
 # Install Claude Code, Claude Code Router, and Claude Threads
 RUN npm install -g @anthropic-ai/claude-code @musistudio/claude-code-router claude-threads
 
+# Configure Claude Code default environment variables
+ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1"
+ENV CLAUDE_CODE_ENABLE_AWAY_SUMMARY="0"
+ENV IS_SANDBOX="1"
+ENV ANTHROPIC_BASE_URL="http://127.0.0.1:5090"
+ENV ANTHROPIC_DEFAULT_OPUS_MODEL="lite-llm/router"
+ENV ANTHROPIC_DEFAULT_SONNET_MODEL="lite-llm/router"
+ENV ANTHROPIC_DEFAULT_HAIKU_MODEL="lite-llm/router"
+ENV CLAUDE_CODE_SUBAGENT_MODEL="lite-llm/router"
+
 # Copy ccr-presets to the container
 COPY ccr-presets /ccr-presets
 
