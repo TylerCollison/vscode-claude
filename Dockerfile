@@ -28,8 +28,8 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
     && apt-get install -y gh \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Claude Code, Claude Code Router, and Claude Threads
-RUN npm install -g @anthropic-ai/claude-code @musistudio/claude-code-router claude-threads
+# Install Claude Code and Claude Threads
+RUN npm install -g @anthropic-ai/claude-code claude-threads
 
 # Configure Claude Code default environment variables
 ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1"

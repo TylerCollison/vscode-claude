@@ -20,7 +20,6 @@ def test_generate_basic_config():
     env_vars = {item.split('=')[0]: item.split('=')[1] for item in service["environment"]}
     assert env_vars["IDE_ADDRESS"] == "http://localhost:8443"
     assert env_vars["PASSWORD"] == "password"
-    assert env_vars["CCR_PROFILE"] == "default"
 
     # Check volumes
     volumes = config["volumes"]
@@ -32,7 +31,6 @@ def test_generate_with_custom_parameters():
     """Test generating configuration with custom parameters"""
     environment_vars = {
         "PASSWORD": "custom-password",
-        "CCR_PROFILE": "custom-profile",
         "EXTRA_VAR": "extra-value"
     }
 
@@ -57,7 +55,6 @@ def test_generate_with_custom_parameters():
     env_vars = {item.split('=')[0]: item.split('=')[1] for item in service["environment"]}
     assert env_vars["IDE_ADDRESS"] == "http://localhost:9000"
     assert env_vars["PASSWORD"] == "custom-password"  # Custom value should override
-    assert env_vars["CCR_PROFILE"] == "custom-profile"  # Custom value should override
     assert env_vars["EXTRA_VAR"] == "extra-value"
 
     # Check volumes (Docker socket should be excluded)
@@ -75,7 +72,6 @@ def test_generate_with_none_environment_vars():
     env_vars = {item.split('=')[0]: item.split('=')[1] for item in service["environment"]}
     assert env_vars["IDE_ADDRESS"] == "http://localhost:8443"
     assert env_vars["PASSWORD"] == "password"
-    assert env_vars["CCR_PROFILE"] == "default"
 
 
 def test_generate_with_empty_environment_vars():
@@ -90,13 +86,12 @@ def test_generate_with_empty_environment_vars():
 def test_environment_variable_merging():
     """Test that environment variables merge correctly"""
     # Override default variables
-    env_vars = {"PASSWORD": "new-password", "CCR_PROFILE": "custom"}
+    env_vars = {"PASSWORD": "new-password"}
     config = generate("test-instance", 8443, env_vars, enabled_volumes=["/config", "/workspace"])
     service = config["services"]["vscode-claude"]
 
     env_vars_dict = {item.split('=')[0]: item.split('=')[1] for item in service["environment"]}
     assert env_vars_dict["PASSWORD"] == "new-password"
-    assert env_vars_dict["CCR_PROFILE"] == "custom"
     assert env_vars_dict["IDE_ADDRESS"] == "http://localhost:8443"
 
 
@@ -229,7 +224,6 @@ def test_integration_style_tests():
     # Complex environment setup
     complex_env = {
         "PASSWORD": "very-long-password-with-special-chars!@#$%",
-        "CCR_PROFILE": "production",
         "LOG_LEVEL": "debug",
         "CUSTOM_SETTING": "custom-value"
     }
@@ -253,7 +247,6 @@ def test_integration_style_tests():
     # Verify environment variables
     env_vars = {item.split('=')[0]: item.split('=')[1] for item in service["environment"]}
     assert env_vars["PASSWORD"] == "very-long-password-with-special-chars!@#$%"
-    assert env_vars["CCR_PROFILE"] == "production"
     assert env_vars["LOG_LEVEL"] == "debug"
     assert env_vars["CUSTOM_SETTING"] == "custom-value"
     assert env_vars["IDE_ADDRESS"] == "http://localhost:443"

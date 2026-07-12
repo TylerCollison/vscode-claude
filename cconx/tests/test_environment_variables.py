@@ -3,7 +3,6 @@ def test_environment_variable_passthrough():
     from cconx.cconx.compose import generate
     environment_vars = {
         "PASSWORD": "mypassword",
-        "CCR_PROFILE": "custom",
         "CUSTOM_VAR": "custom_value",
         "UNKNOWN_VAR": "unknown_value"
     }
