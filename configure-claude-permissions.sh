@@ -15,6 +15,7 @@ mkdir -p /config/.claude
 # Create new settings file
 cat > /config/.claude/settings.json << EOF
 {
+  "skipDangerousModePermissionPrompt": true,
   "permissions": {
     "defaultMode": "$CLAUDE_MODE"
   }

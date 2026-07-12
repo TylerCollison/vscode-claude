@@ -4,46 +4,47 @@ A Docker image providing a complete web-based development environment for Claude
 
 ## Overview
 
-This Docker image bundles a web-based IDE (VSCode Server), Claude Code, Claude Code Router, and Claude Threads into a comprehensive development environment accessible from any web browser and Mattermost client. Perfect for developers who want a self-contained, and highly flexible Claude Code workspace. 
+This Docker image bundles a web-based IDE (VS Code Server), Claude Code, a LiteLLM-powered model router, and Claude Threads into a comprehensive development environment accessible from any web browser and Mattermost client. Perfect for developers who want a self-contained, and highly flexible Claude Code workspace.
 
 ## What's Included
 
 ### Core Components
 
 - **VS Code Server** - Full-featured VS Code running in your browser
- - Based on [linuxserver/code-server](https://hub.docker.com/r/linuxserver/code-server)
- - Complete VS Code experience with extensions, terminal, and debugging
- - Responsive design supporting mobile, tablet, and desktop screens
+  - Based on [linuxserver/code-server](https://hub.docker.com/r/linuxserver/code-server)
+  - Complete VS Code experience with extensions, terminal, and debugging
+  - Responsive design supporting mobile, tablet, and desktop screens
 
 - **Claude Code** - Anthropic's agentic coding tool
- - [Claude Code Documentation](https://code.claude.com/docs/en/overview)
- - AI-powered code generation, debugging, and automation
- - Direct terminal integration for seamless development workflows
+  - [Claude Code Documentation](https://code.claude.com/docs/en/overview)
+  - AI-powered code generation, debugging, and automation
+  - Direct terminal integration for seamless development workflows
 
-- **Claude Code Router (CCR)** - Advanced model routing and customization
- - [GitHub Repository](https://github.com/musistudio/claude-code-router)
- - Multi-provider support (OpenRouter, NVIDIA NIM, Google, Ollama, Mistral, etc.)
- - Dynamic model switching and request/response transformation
- - Pre-configured profiles: `default`, `nim-kimi`, `nim-deepseek`, `google-gemini`, `mistral-devstral`, `mistral-mistral-large`
+- **LiteLLM Router** - Advanced model routing and provider proxy
+  - [LiteLLM Documentation](https://docs.litellm.ai)
+  - Multi-provider support (Google AI Studio, NVIDIA NIM, Mistral, OpenCode Zen, Cerebras, EXA AI)
+  - Content-aware routing (images → vision model, web search → search-capable model, complexity-based tiering)
+  - Automatically routes requests to a curated collection of the most capable free models available based on API keys set (see "LiteLLM Router Configuration")
+  - Fallback chains to overcome server side errors, availability, and rate limits
 
 - **Claude Threads** - Real-time chat integration for Mattermost
- - [GitHub Repository](https://github.com/anneschuth/claude-threads)
- - WebSocket-based bidirectional communication
- - Multi-platform support (Mattermost)
+  - [GitHub Repository](https://github.com/anneschuth/claude-threads)
+  - WebSocket-based bidirectional communication
+  - Multi-platform support (Mattermost)
 
 ### Development Tools
 
 - **cconx** - ClaudeConX Docker Management Tool
- - Command-line interface for managing ClaudeConX instances
- - Instance lifecycle management (start, stop, delete, status)
- - DNS and network configuration
- - Environment variable management with append/override logic
+  - Command-line interface for managing ClaudeConX instances
+  - Instance lifecycle management (start, stop, delete, status)
+  - DNS and network configuration
+  - Environment variable management with append/override logic
 
 - **build-env** - Persistent Build Environment Manager
- - Creates and manages persistent Docker containers for build commands
- - Bidirectional file synchronization between host and container
- - Environment isolation with dedicated containers per workspace
- - Smart conflict resolution using modification timestamps
+  - Creates and manages persistent Docker containers for build commands
+  - Bidirectional file synchronization between host and container
+  - Environment isolation with dedicated containers per workspace
+  - Smart conflict resolution using modification timestamps
 
 ### Development Stack
 
@@ -57,24 +58,24 @@ This Docker image bundles a web-based IDE (VSCode Server), Claude Code, Claude C
 ```bash
 # Run the container
 docker run -d \
- --name=claude-dev \
- -e PUID=1000 \
- -e PGID=1000 \
- -e TZ=Etc/UTC \
- -e SUDO_PASSWORD=password \
- -e DEFAULT_WORKSPACE=/workspace \
- -e PWA_APPNAME=code-server \
- -e NIM_API_KEY=your-nvidia-nim-api-key \
- -e GOOGLE_API_KEY=your-google-ai-studio-api-key \
- -e MISTRAL_API_KEY=your-mistral-api-key \
- -e OPENROUTER_API_KEY=your-openrouter-api-key \
- -e CEREBRAS_API_KEY=your-cerebras-api-key \
- -e OPENCODE_ZEN_API_KEY=your-opencode-zen-api-key \
- -p 8443:8443 \
- -v /var/run/docker.sock:/var/run/docker.sock \
- -v /path/to/your/code:/workspace \
- --restart unless-stopped \
- tylercollison2089/claude-conx
+  --name=claude-dev \
+  -e PUID=1000 \
+  -e PGID=1000 \
+  -e TZ=Etc/UTC \
+  -e SUDO_PASSWORD=password \
+  -e DEFAULT_WORKSPACE=/workspace \
+  -e PWA_APPNAME=code-server \
+  -e NIM_API_KEY=your-nvidia-nim-api-key \
+  -e GOOGLE_API_KEY=your-google-ai-studio-api-key \
+  -e MISTRAL_API_KEY=your-mistral-api-key \
+  -e CEREBRAS_API_KEY=your-cerebras-api-key \
+  -e OPENCODE_ZEN_API_KEY=your-opencode-zen-api-key \
+  -e EXA_API_KEY=your-exa-api-key \
+  -p 8443:8443 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /path/to/your/code:/workspace \
+  --restart unless-stopped \
+  tylercollison2089/claude-conx
 
 # Access at http://localhost:8443
 ```
@@ -108,16 +109,26 @@ This container supports extensive configuration through environment variables.
 | `CLAUDE_MARKETPLACES` | Comma-separated list of plugin marketplaces |
 | `CLAUDE_PLUGINS` | Comma-separated list of plugins to install |
 
-### Claude Code Router Configuration
+### LiteLLM Router Configuration
 | Variable | Description |
 |----------|-------------|
-| `CCR_PROFILE` | Claude Code Router profile to activate automatically |
-| `NIM_API_KEY` | NVIDIA NIM API key |
-| `GOOGLE_API_KEY` | Google AI Studio API key |
-| `MISTRAL_API_KEY` | Mistral AI API key |
-| `OPENROUTER_API_KEY` | OpenRouter API key |
-| `CEREBRAS_API_KEY` | Cerebras API key |
-| `OPENCODE_ZEN_API_KEY` | OpenCode Zen API key | 
+| `NIM_API_KEY` | Nvidia NIM API key (enables Nvidia NIM models, if set) |
+| `GOOGLE_API_KEY` | Google AI Studio API key (enables Google AI Studio models, if set)  |
+| `MISTRAL_API_KEY` | Mistral AI API key (enables Mistral models, if set)  |
+| `CEREBRAS_API_KEY` | Cerebras API key (enables Cerebras models, if set)  |
+| `OPENCODE_ZEN_API_KEY` | OpenCode Zen API key (enables OpenCode Zen models, if set)  |
+| `EXA_API_KEY` | EXA AI web search API key (enables EXA AI web search, if set)  |
+
+Claude Code is pre-configured to route all requests through the LiteLLM proxy at `http://127.0.0.1:5090`. The router automatically selects models based on request content:
+
+| Model Group | Purpose | Default Provider |
+|-------------|---------|-----------------|
+| `lite-llm/router` | Main entry point — multi-stage routing pipeline | Auto-routed |
+| `lite-llm/default` | Standard chat and coding tasks | OpenCode Zen  (DeepSeek v4 Flash) |
+| `lite-llm/think` | Complex reasoning and deep analysis | NVIDIA NIM  (DeepSeek v4 Pro) |
+| `lite-llm/webSearch` | Queries requiring web search | Google AI Studio (Gemini 3.5 Flash) |
+| `lite-llm/image` | Image analysis and vision tasks | Google AI Studio (Gemini 3.5 Flash) |
+| `lite-llm/longContext` | Long-context tasks | NVIDIA NIM (DeepSeek v4 Pro) |
 
 ### Claude Threads Configuration
 | Variable | Description |
@@ -131,10 +142,6 @@ This container supports extensive configuration through environment variables.
 | `THREADS_CHROME` | Chrome executable path |
 | `THREADS_WORKTREE_MODE` | Git worktree mode |
 | `THREADS_SKIP_PERMISSIONS` | Skip permission prompts |
-
-### cconx Configuration
-
-TODO
 
 ### build-env Configuration
 
@@ -158,83 +165,89 @@ TODO
 
 ```yaml
 services:
- claude-dev:
- image: tylercollison2089/claude-conx:latest
- container_name: claude-dev
- environment:
- - PUID=1000
- - PGID=1000
- - TZ=Etc/UTC
- - PASSWORD=password # Optional
- - HASHED_PASSWORD= # Optional
- - SUDO_PASSWORD=password # Optional
- - SUDO_PASSWORD_HASH= # Optional
- - PROXY_DOMAIN=code-server.my.domain # Optional
- - DEFAULT_WORKSPACE=/workspace
- - PWA_APPNAME=code-server # Optional
- - CLAUDE_CODE_PERMISSION_MODE=acceptEdits
- - NIM_API_KEY=your-nvidia-nim-api-key # Only required if using NIM models
- - GOOGLE_API_KEY=your-google-ai-studio-api-key # Only required if using Google models
- - MISTRAL_API_KEY=your-mistral-api-key # Only required if using Mistral models
- - OPENROUTER_API_KEY=your-openrouter-api-key # Only required if using OpenRouter models
- - CEREBRAS_API_KEY=your-cerebras-api-key #Only required if using Cerebras models
- - OPENCODE_ZEN_API_KEY=your-opencode-zen-api-key #Only required if using OpenCode Zen models
- - CCR_PROFILE=default # Optional
- # Claude Code Plugins (optional)
- - CLAUDE_MARKETPLACES=anthropics/claude-plugins-official
- - CLAUDE_PLUGINS=ralph-loop,superpowers
- # Git repository setup (optional)
- - GIT_REPO_URL=https://github.com/user/repo.git
- - GIT_BRANCH_NAME=feature-branch
- # Knowledge repositories (optional)
- - KNOWLEDGE_REPOS=https://github.com/user/docs.git:main:README.md,docs/guide.md
- # Claude Threads (optional)
- - ENABLE_THREADS=true
- - IDE_ADDRESS=http://localhost:8443
- - MM_ADDRESS=http://mattermost.example.com:8065
- - MM_CHANNEL=claude-code
- - MM_TOKEN=your-bot-token
- - MM_TEAM=engineering
- - MM_BOT_NAME=claude-code
- - THREADS_CHROME=true
- - THREADS_WORKTREE_MODE=off
- - THREADS_SKIP_PERMISSIONS=true
- ports:
- - "8443:8443"
- volumes:
- - /var/run/docker.sock:/var/run/docker.sock # Optional for docker support
- - /path/to/code-server/config:/config # Only specify if using existing configuration
- - /path/to/your/code:/workspace # Only specify if GIT_REPO_URL is unset
- restart: unless-stopped
+  claude-dev:
+    image: tylercollison2089/claude-conx:latest
+    container_name: claude-dev
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+      - PASSWORD=password # Optional
+      - HASHED_PASSWORD= # Optional
+      - SUDO_PASSWORD=password # Optional
+      - SUDO_PASSWORD_HASH= # Optional
+      - PROXY_DOMAIN=code-server.my.domain # Optional
+      - DEFAULT_WORKSPACE=/workspace
+      - PWA_APPNAME=code-server # Optional
+      - CLAUDE_CODE_PERMISSION_MODE=acceptEdits
+      - NIM_API_KEY=your-nvidia-nim-api-key # Required to use NIM models
+      - GOOGLE_API_KEY=your-google-ai-studio-api-key # Required to use Google models
+      - MISTRAL_API_KEY=your-mistral-api-key # Required to use Mistral models
+      - CEREBRAS_API_KEY=your-cerebras-api-key # Required to use Cerebras models
+      - OPENCODE_ZEN_API_KEY=your-opencode-zen-api-key # Required to use OpenCode Zen models
+      - EXA_API_KEY=your-exa-api-key # Required for EXA AI websearch
+      # Claude Code Plugins (optional)
+      - CLAUDE_MARKETPLACES=anthropics/claude-plugins-official
+      - CLAUDE_PLUGINS=ralph-loop,superpowers
+      # Git repository setup (optional)
+      - GIT_REPO_URL=https://github.com/user/repo.git
+      - GIT_BRANCH_NAME=feature-branch
+      # Knowledge repositories (optional)
+      - KNOWLEDGE_REPOS=https://github.com/user/docs.git:main:README.md,docs/guide.md
+      # Claude Threads (optional)
+      - ENABLE_THREADS=true
+      - IDE_ADDRESS=http://localhost:8443
+      - MM_ADDRESS=http://mattermost.example.com:8065
+      - MM_CHANNEL=claude-code
+      - MM_TOKEN=your-bot-token
+      - MM_TEAM=engineering
+      - MM_BOT_NAME=claude-code
+      - THREADS_CHROME=true
+      - THREADS_WORKTREE_MODE=off
+      - THREADS_SKIP_PERMISSIONS=true
+    ports:
+      - "8443:8443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock # Optional for docker support
+      - /path/to/code-server/config:/config # Only specify if using existing configuration
+      - /path/to/your/code:/workspace # Only specify if GIT_REPO_URL is unset
+    restart: unless-stopped
 ```
 
 ## Configuration
 
 ### Claude Code Setup
 
-To run Claude Code directly without Claude Code Router, after starting the container:
-1. Open the terminal in VS Code
-2. Run `claude` to start Claude Code
-3. Follow the authentication prompts for your Claude account
+Claude Code is pre-configured to route all requests through the LiteLLM proxy at `http://127.0.0.1:5090`. No additional setup is needed — just open the terminal in VS Code and run `claude`.
 
-### Claude Code Router
+To override the default routing and use a specific model directly, set the model environment variable to the desired LiteLLM model or model group:
 
-To use CCR with a specific profile:
-
-```bash
-ccr nim-kimi
-ccr google
-ccr openrouter-free
-ccr devstral
+```yaml
+environment:
+  - ANTHROPIC_DEFAULT_SONNET_MODEL=lite-llm/think # Use complex-reasoning tier
+  - ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-ai/deepseek-v4-flash # Use a fast model
 ```
 
-Available profiles:
-- `default` - NIM DeepSeek v3.1 Terminus + Google Gemini (for images)
-- `nim-kimi` - NVIDIA NIM with Kimi K2.5
-- `nim-deepseek` - NVIDIA NIM with DeepSeek v3.1 Terminus
-- `google-gemini` - Google Gemini 2.5 Flash
-- `mistral-devstral` - Mistral Devstral + Mistral Large (for images)
-- `mistral-mistral-large` - Mistral Large
+### LiteLLM Router
+
+The LiteLLM proxy provides a three-stage routing pipeline:
+
+1. **Image detection** — requests with image data automatically route to `lite-llm/image` (Google Gemini 3.5 Flash)
+2. **Web search detection** — requests with web search tools route to `lite-llm/webSearch` (Google Gemini 3.5 Flash)
+3. **Complexity routing** — all other requests are scored by complexity and routed to either `lite-llm/default` (OpenCode Zen DeepSeek v4 Flash) for simple tasks or `lite-llm/think` (NVIDIA NIM DeepSeek v4 Pro) for complex reasoning
+
+The routing configuration lives in `/lite-llm/lite-llm-default.yaml`. Key model groups:
+
+| Group | Model | Provider |
+|-------|-------|----------|
+| `lite-llm/default` | DeepSeek V4 Flash | OpenCode Zen |
+| `lite-llm/think` | DeepSeek V4 Pro | NVIDIA NIM |
+| `lite-llm/webSearch` | Gemini 3.5 Flash | Google AI Studio |
+| `lite-llm/image` | Gemini 3.5 Flash | Google AI Studio |
+| `lite-llm/longContext` | DeepSeek V4 Pro | NVIDIA NIM |
+| `lite-llm/background` | DeepSeek V4 Flash | OpenCode Zen |
+
+Each model group has a fallback chain defined in the YAML config, so if the primary model is unavailable, traffic routes to alternative providers automatically.
 
 ### Claude Threads
 
@@ -242,13 +255,12 @@ Enable real-time Mattermost integration:
 
 ```yaml
 environment:
- - ENABLE_THREADS=true
- - MM_ADDRESS=http://mattermost.example.com:8065
- - MM_TOKEN=your-bot-token
- - MM_CHANNEL=claude-code
- - MM_TEAM=engineering
- - MM_BOT_NAME=claude-code
- - CCR_PROFILE=default # Optional: use CCR profile
+  - ENABLE_THREADS=true
+  - MM_ADDRESS=http://mattermost.example.com:8065
+  - MM_TOKEN=your-bot-token
+  - MM_CHANNEL=claude-code
+  - MM_TEAM=engineering
+  - MM_BOT_NAME=claude-code
 ```
 
 **Features:**
@@ -302,8 +314,8 @@ Automatically clone and configure a repository on startup:
 
 ```yaml
 environment:
- - GIT_REPO_URL=https://github.com/user/repo.git
- - GIT_BRANCH_NAME=feature/my-branch # Optional: auto-generated if not set
+  - GIT_REPO_URL=https://github.com/user/repo.git
+  - GIT_BRANCH_NAME=feature/my-branch # Optional: auto-generated if not set
 ```
 
 The container will:
@@ -317,7 +329,7 @@ Combine markdown documentation from multiple repositories:
 
 ```yaml
 environment:
- - KNOWLEDGE_REPOS=https://github.com/user/repo1.git:main:README.md,docs/guide.md;https://github.com/user/repo2.git:develop:docs/api.md
+  - KNOWLEDGE_REPOS=https://github.com/user/repo1.git:main:README.md,docs/guide.md;https://github.com/user/repo2.git:develop:docs/api.md
 ```
 
 The combined documentation is saved as `/workspace/CLAUDE.md`.
@@ -333,7 +345,7 @@ Configure Claude Code security settings:
 
 | Mode | Description |
 |------|-------------|
-| `acceptEdits` | Default - balanced security with user confirmation |
+| `acceptEdits` | Default — balanced security with user confirmation |
 | `bypassPermissions` | Full access for trusted environments |
 | `default` | Claude's default permission behavior |
 | `plan` | Planning mode without execution |
@@ -368,29 +380,23 @@ docker build -t my-app .
 - Automated testing and documentation
 
 ### Model Flexibility
-- Multiple AI provider support via CCR
-- Dynamic model switching based on task requirements
-- Custom request/response transformations
+- Multiple AI provider support via LiteLLM
+- Content-aware routing (images, web search, complexity-based tiering)
+- Automatic fallback chains for high availability
 
 ### Auto-Configuration
 - Git repository cloning and branch setup
 - Knowledge repository markdown combination
-- CCR preset configuration with environment substitution
+- LiteLLM routing configuration loaded on startup
 - Claude Code plugin and marketplace setup
 - Mattermost channel auto-creation
 
 ## Building Locally
 
 ```bash
-git clone https://github.com/TylerCollison/claude-conx.git
+git clone https://github.com/TylerCollison/vscode-claude.git
 cd claude-conx
-docker build \
- --no-cache \
- --pull \
- -t tylercollison2089/claude-conx:latest .
-
-# Test the container starts properly
-./test-container.sh
+docker build -t tylercollison2089/vscode-claude:latest .
 ```
 
 ## Troubleshooting
@@ -417,8 +423,8 @@ docker exec claude-dev ps aux | grep code-server
 # Claude Code functionality
 docker exec claude-dev claude --version
 
-# Check CCR profiles
-docker exec claude-dev ls -la /config/.claude-code-router/presets/
+# Check LiteLLM proxy status
+docker exec claude-dev curl -s http://127.0.0.1:5090/health
 ```
 
 ### Common Issues
@@ -436,9 +442,8 @@ docker exec claude-dev ls -la /config/.claude-code-router/presets/
 - Verify bot permissions for channel access
 - Check WebSocket connectivity if using Claude Threads
 
-**CCR Configuration:**
-- Verify preset files exist: `ls /ccr-presets/`
-- Check environment variable substitution in `/config/.claude-code-router/presets/`
+**LiteLLM Configuration:**
+- Verify LiteLLM is running: `curl -s http://127.0.0.1:5090/health`
 
 **cconx Issues:**
 - Verify cconx installation: `which cconx`
@@ -452,10 +457,10 @@ docker exec claude-dev ls -la /config/.claude-code-router/presets/
 
 ## Credits
 
-- **[linuxserver/code-server](https://hub.docker.com/r/linuxserver/code-server)** - Base VS Code Server environment
-- **[Anthropic Claude Code](https://code.claude.com/docs/en/overview)** - AI coding assistant
-- **[Claude Code Router](https://github.com/musistudio/claude-code-router)** - Model routing and customization
-- **[Claude Threads](https://github.com/anneschuth/claude-threads)** - Real-time chat integration
+- **[linuxserver/code-server](https://hub.docker.com/r/linuxserver/code-server)** — Base VS Code Server environment
+- **[Anthropic Claude Code](https://code.claude.com/docs/en/overview)** — AI coding assistant
+- **[LiteLLM](https://github.com/BerriAI/litellm)** — Model routing and provider proxy
+- **[Claude Threads](https://github.com/anneschuth/claude-threads)** — Real-time chat integration
 
 ## Support
 
@@ -463,7 +468,7 @@ docker exec claude-dev ls -la /config/.claude-code-router/presets/
 - **VS Code**: [vscode server documentation](https://code.visualstudio.com/docs/remote/vscode-server)
 - **Claude Code**: [Claude Code documentation](https://code.claude.com/docs/en/overview)
 - **linuxserver/code-server**: [linuxserver/code-server documentation](https://hub.docker.com/r/linuxserver/code-server)
-- **Claude Code Router**: [Claude Code Router GitHub](https://github.com/musistudio/claude-code-router)
+- **LiteLLM**: [LiteLLM Documentation](https://docs.litellm.ai)
 - **Claude Threads**: [Claude Threads GitHub](https://github.com/anneschuth/claude-threads)
 - **cconx**: [cconx GitHub](https://github.com/TylerCollison/vscode-claude/tree/main)
 - **build-env**: [build-env GitHub](https://github.com/TylerCollison/vscode-claude/tree/main)
@@ -473,7 +478,7 @@ docker exec claude-dev ls -la /config/.claude-code-router/presets/
 - **VS Code**: [vscode GitHub issue tracker](https://github.com/microsoft/vscode/issues)
 - **linuxserver/code-server**: [linuxserver/code-server GitHub issue tracker](https://github.com/linuxserver/docker-code-server/issues)
 - **Claude Code**: [Claude Code GitHub issue tracker](https://github.com/anthropics/claude-code/issues)
-- **Claude Code Router**: [Claude Code Router GitHub issue tracker](https://github.com/musistudio/claude-code-router/issues)
+- **LiteLLM**: [LiteLLM GitHub issue tracker](https://github.com/BerriAI/litellm/issues)
 - **Claude Threads**: [Claude Threads GitHub issue tracker](https://github.com/anneschuth/claude-threads/issues)
 - **cconx**: [cconx GitHub issue tracker](https://github.com/TylerCollison/vscode-claude/issues)
 - **build-env**: [build-env GitHub issue tracker](https://github.com/TylerCollison/vscode-claude/issues)
@@ -481,4 +486,4 @@ docker exec claude-dev ls -la /config/.claude-code-router/presets/
 
 ## License
 
-This Docker image is provided as-is. Please refer to the individual component licenses for linuxserver/code-server, Claude Code, Claude Code Router, Claude Threads, cconx, and build-env.
+This Docker image is provided as-is. Please refer to the individual component licenses for linuxserver/code-server, Claude Code, LiteLLM, and Claude Threads. 

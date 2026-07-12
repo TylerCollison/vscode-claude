@@ -1,15 +1,31 @@
 """
-LiteLLM Proxy Custom Callback: Content-Aware Router (image detection only)
+LiteLLM Proxy Custom Callback: Tool-Aware Router
 
-Stage-1 of the lite-llm/router pipeline: detect image data and route to
-lite-llm/image.  All non-image requests are forwarded to
-lite-llm/semantic-router, which handles stages 2 and 3 natively.
+Three-stage routing pipeline implemented as a LiteLLM pre-call hook:
+
+  1. Image content detected         → lite-llm/image
+  2. LLM is equipped with a web-    → lite-llm/webSearch
+     search tool (matches LiteLLM's
+     websearch_interception logic)
+  3. All other                      → lite-llm/complexity
+                                      (gemini embedding semantic router)
+
+Stage 2 delegates to LiteLLM's own ``is_web_search_tool()`` so that the
+routing callback and the ``websearch_interception`` callback use *exactly*
+the same criteria to decide whether a tool is a search tool.  This keeps
+the two layers in sync: a request is routed to the webSearch model group
+iff the ``websearch_interception`` callback would actually intercept it.
 """
 
 from litellm.integrations.custom_logger import CustomLogger
+from litellm.integrations.websearch_interception import is_web_search_tool
 from litellm.proxy.proxy_server import UserAPIKeyAuth, DualCache
 from typing import Literal
 
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _contains_images(messages: list) -> bool:
     """Return True if any message contains image data."""
@@ -28,12 +44,34 @@ def _contains_images(messages: list) -> bool:
     return False
 
 
+def _has_search_tool(data: dict) -> bool:
+    """Return True when *data* contains at least one web-search tool.
+
+    Uses the exact same detection logic as LiteLLM's built-in
+    ``websearch_interception`` callback (``is_web_search_tool``).
+    Supports all formats — Anthropic native (``web_search_*`` types),
+    Claude Code (``web_search``), OpenAI ``tools``, and legacy
+    ``functions``.
+    """
+    for tool in data.get("tools") or data.get("functions") or []:
+        if isinstance(tool, dict) and is_web_search_tool(tool):
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Router
+# ---------------------------------------------------------------------------
+
 class MultiStageRouter(CustomLogger):
     """
     Routes incoming requests:
 
-      1. Image data present  → lite-llm/image
-      2. All other           → lite-llm/semantic-router
+      1. Image data present         → lite-llm/image
+      2. Web-search tool present    → lite-llm/webSearch
+         (using LiteLLM's detection)
+      3. All other                  → lite-llm/complexity
+                                       (handles complexity routing natively)
     """
 
     def __init__(self):
@@ -51,9 +89,13 @@ class MultiStageRouter(CustomLogger):
             "image_generation",
             "moderation",
             "audio_transcription",
+            "anthropic_messages",
         ],
     ) -> dict:
-        if call_type != "completion":
+        # Both the /v1/chat/completions (call_type="completion") and
+        # /v1/messages / Anthropic passthrough (call_type="anthropic_messages")
+        # paths should go through the routing pipeline.
+        if call_type not in ("completion", "anthropic_messages"):
             return data
 
         original_model = data.get("model", "")
@@ -67,9 +109,13 @@ class MultiStageRouter(CustomLogger):
             data["model"] = "lite-llm/image"
             return data
 
-        # Stage 2-3: Delegate to LiteLLM's semantic router, which checks
-        # web search utterances and falls back to the complexity router.
-        data["model"] = "lite-llm/semantic-router"
+        # Stage 2: Web-search tool present → route to webSearch model
+        if _has_search_tool(data):
+            data["model"] = "lite-llm/webSearch"
+            return data
+
+        # Stage 3: Delegate to semantic router for complexity routing
+        data["model"] = "lite-llm/complexity"
         return data
 
 

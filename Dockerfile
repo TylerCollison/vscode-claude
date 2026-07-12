@@ -36,13 +36,11 @@ ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1"
 ENV CLAUDE_CODE_ENABLE_AWAY_SUMMARY="0"
 ENV IS_SANDBOX="1"
 ENV ANTHROPIC_BASE_URL="http://127.0.0.1:5090"
+ENV ANTHROPIC_AUTH_TOKEN="bypass_token"
 ENV ANTHROPIC_DEFAULT_OPUS_MODEL="lite-llm/router"
 ENV ANTHROPIC_DEFAULT_SONNET_MODEL="lite-llm/router"
 ENV ANTHROPIC_DEFAULT_HAIKU_MODEL="lite-llm/router"
 ENV CLAUDE_CODE_SUBAGENT_MODEL="lite-llm/router"
-
-# Copy ccr-presets to the container
-COPY ccr-presets /ccr-presets
 
 # Copy cconx to the container
 COPY cconx /cconx
@@ -64,17 +62,15 @@ RUN python3 -m venv /opt/build-env-venv \
     && ln -sf /opt/build-env-venv/bin/build-env /usr/local/bin/build-env
 
 # Install LiteLLM along with proxy features
-RUN pip install --break-system-packages 'litellm[proxy]'
+RUN pip install --break-system-packages 'litellm[proxy]' 'semantic-router'
 
 # Copy LiteLLM config files and custom routing callback
-COPY ccr-presets/default/lite-llm-default.yaml /lite-llm/
-COPY lite-llm/router_callback.py /lite-llm/
-COPY lite-llm/router.json /lite-llm/
+COPY lite-llm/ /lite-llm/
 
 # Copy startup scripts to root directory
 COPY git-repo-setup.sh /93-git-repo-setup
 COPY combine-markdowns.sh /94-combine-markdowns
-COPY configure-ccr-settings.sh /95-configure-ccr-settings
+COPY configure-claude-skip-onboarding.sh /95-configure-claude-skip-onboarding
 COPY start-lite-llm.sh /96-start-lite-llm
 COPY configure-claude-permissions.sh /97-configure-claude-permissions
 COPY configure-claude-plugins.sh /98-configure-claude-plugins
@@ -88,7 +84,7 @@ COPY master-startup.sh /etc/cont-init.d/90-master-startup
 # Set execute permissions
 RUN chmod +x /93-git-repo-setup \
     /94-combine-markdowns \
-    /95-configure-ccr-settings \
+    /95-configure-claude-skip-onboarding \
     /96-start-lite-llm \
     /97-configure-claude-permissions \
     /98-configure-claude-plugins \

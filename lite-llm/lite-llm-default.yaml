@@ -125,69 +125,23 @@ model_list:
       stream_timeout: 30.0
 
   # =========================================================================
-  # 2) UNIFIED ROUTER (THREE-STAGE PIPELINE)
+  # 2) UNIFIED ROUTER (TWO-STAGE PIPELINE)
   # =========================================================================
   #
-  # "lite-llm/router" is a single endpoint that pipelines three routing
+  # "lite-llm/router" is a single endpoint that pipelines two routing
   # stages:
   #
   #   1. Content-based  (callback)        → lite-llm/image
-  #   2. Semantic       (auto_router_1)   → lite-llm/webSearch  if web intent
-  #   3. Complexity     (complexity_router)  → lite-llm/default or lite-llm/think
+  #   2. Complexity     (complexity_router)  → lite-llm/default or lite-llm/think
   #
-  # The callback only handles image detection; it then delegates to
-  # lite-llm/semantic-router, which checks web-search utterances and
-  # falls back to lite-llm/complexity (the complexity router) for the
-  # final stage — both are native LiteLLM routers.
 
   - model_name: lite-llm/router
     litellm_params:
       # The callback (router_callback.py) intercepts every request and
-      # rewrites the model to lite-llm/image (if images present) or
-      # lite-llm/semantic-router (for all other requests).
+      # rewrites the model
       model: openai/deepseek-v4-flash-free
       api_base: https://opencode.ai/zen/v1
       api_key: os.environ/OPENCODE_ZEN_API_KEY
-      stream_timeout: 30.0
-
-  - model_name: lite-llm/gemini-embedding-2-semantic-router
-    litellm_params:
-      model: auto_router/auto_router_1
-      auto_router_config_path: /lite-llm/gemini-embedding-2-semantic-router.json
-      # Requests that don't match a web-search utterance cascade to
-      # lite-llm/complexity for LiteLLM's built-in complexity routing.
-      auto_router_default_model: lite-llm/complexity
-      auto_router_embedding_model: gemini-embedding-2
-      stream_timeout: 30.0
-
-  - model_name: lite-llm/gemini-embedding-1-semantic-router
-    litellm_params:
-      model: auto_router/auto_router_1
-      auto_router_config_path: /lite-llm/gemini-embedding-1-semantic-router.json
-      # Requests that don't match a web-search utterance cascade to
-      # lite-llm/complexity for LiteLLM's built-in complexity routing.
-      auto_router_default_model: lite-llm/complexity
-      auto_router_embedding_model: gemini-embedding-001
-      stream_timeout: 30.0
-
-  - model_name: lite-llm/mistral-embedding-semantic-router
-    litellm_params:
-      model: auto_router/auto_router_1
-      auto_router_config_path: /lite-llm/mistral-embedding-semantic-router.json
-      # Requests that don't match a web-search utterance cascade to
-      # lite-llm/complexity for LiteLLM's built-in complexity routing.
-      auto_router_default_model: lite-llm/complexity
-      auto_router_embedding_model: mistral-embed
-      stream_timeout: 30.0
-
-  - model_name: lite-llm/nvidia-embedding-semantic-router
-    litellm_params:
-      model: auto_router/auto_router_1
-      auto_router_config_path: /lite-llm/nvidia-embedding-semantic-router.json
-      # Requests that don't match a web-search utterance cascade to
-      # lite-llm/complexity for LiteLLM's built-in complexity routing.
-      auto_router_default_model: lite-llm/complexity
-      auto_router_embedding_model: nvidia/nv-embed-v1
       stream_timeout: 30.0
 
   - model_name: lite-llm/complexity
@@ -207,13 +161,6 @@ model_list:
   # =========================================================================
 
   - model_name: lite-llm/default
-    litellm_params:
-      model: openai/deepseek-v4-flash-free
-      api_base: https://opencode.ai/zen/v1
-      api_key: os.environ/OPENCODE_ZEN_API_KEY
-      stream_timeout: 30.0
-
-  - model_name: lite-llm/background
     litellm_params:
       model: openai/deepseek-v4-flash-free
       api_base: https://opencode.ai/zen/v1
@@ -248,10 +195,6 @@ litellm_settings:
   # Fixes a bug in translating between an Anthropic client and an OpenAI provider
   use_chat_completions_url_for_anthropic_messages: true
 
-  # Content-aware callback: detects images and routes to lite-llm/image.
-  # All other requests are forwarded to lite-llm/semantic-router, which
-  # uses LiteLLM's built-in auto_router for web-search intent detection
-  # and complexity scoring.  The module is loaded relative to this file.
   callbacks: ["router_callback.router_handler", "websearch_interception"]
   websearch_interception_params:
     enabled_providers:
@@ -286,4 +229,3 @@ router_settings:
     - {"lite-llm/webSearch": ["gemini-3-flash-preview", "gemini-2.5-flash", "nemotron-3-ultra-free", "big-pickle", "zai-glm-4.7", "deepseek-v4-flash-free", "mistral-medium-latest", "deepseek-ai/deepseek-v4-flash", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3"]}
     - {"lite-llm/image": ["gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3", "deepseek-v4-flash-free", "deepseek-ai/deepseek-v4-flash"]}
     - {"lite-llm/complexity": ["deepseek-v4-flash-free", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "zai-glm-4.7", "nemotron-3-ultra-free", "mistral-medium-latest", "big-pickle", "deepseek-ai/deepseek-v4-flash", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3"]}
-    - {"lite-llm/gemini-embedding-2-semantic-router": ["lite-llm/gemini-embedding-1-semantic-router", "lite-llm/mistral-embedding-semantic-router", "lite-llm/nvidia-embedding-semantic-router", "lite-llm/complexity"]}
