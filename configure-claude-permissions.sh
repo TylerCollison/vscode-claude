@@ -24,5 +24,3 @@ EOF
 
 # Ensure config folder is owned by the abc user (PUID/PGID) for non-root access
 lsiown -R abc:abc /config
-
-# This script runs as a pre-start hook, no need to exec commands

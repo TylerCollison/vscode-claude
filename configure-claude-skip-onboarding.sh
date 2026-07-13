@@ -6,7 +6,7 @@ WORKSPACE="${DEFAULT_WORKSPACE:-/workspace}"
 # Generate .claude.json that skips onboarding
 cat > /config/.claude.json << EOF
 {
-  "hasCompletedOnboarding": true
+  "hasCompletedOnboarding": true,
   "projects": {
     "$WORKSPACE": {
       "hasTrustDialogAccepted": true,
