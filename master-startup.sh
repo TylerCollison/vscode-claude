@@ -28,7 +28,8 @@ STARTUP_SCRIPTS=(
     "/98-configure-claude-plugins"
     "/99-mattermost-create-channel"
     "/100-configure-threads-settings"
-    "/101-start-claude-threads"
+    "/101-start-claude-threads", 
+    "/102-start-happier"
 )
 
 log "Starting master startup sequence..."

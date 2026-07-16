@@ -31,6 +31,16 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
 # Install Claude Code and Claude Threads
 RUN npm install -g @anthropic-ai/claude-code claude-threads
 
+# Install Happier
+WORKDIR /app
+
+# Configure persistent internal paths for the cache and UI
+ENV HOME=/app
+ENV HAPPIER_SERVER_CACHE_DIR=/app/.cache/happier
+ENV HAPPIER_SERVER_UI_DIR=/app/.cache/happier_ui
+RUN mkdir -p /app/.npm ${HAPPIER_SERVER_CACHE_DIR} ${HAPPIER_SERVER_UI_DIR}
+RUN npx --yes --package @happier-dev/relay-server happier-server --ui --help
+
 # Configure Claude Code default environment variables
 ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1"
 ENV CLAUDE_CODE_ENABLE_AWAY_SUMMARY="0"
@@ -77,6 +87,7 @@ COPY configure-claude-plugins.sh /98-configure-claude-plugins
 COPY mattermost-create-channel.sh /99-mattermost-create-channel
 COPY configure-threads-settings.sh /100-configure-threads-settings
 COPY start-claude-threads.sh /101-start-claude-threads
+COPY start-happier.sh /102-start-happier
 
 # Copy master startup script to cont-init.d (so it runs automatically)
 COPY master-startup.sh /etc/cont-init.d/90-master-startup
@@ -91,6 +102,7 @@ RUN chmod +x /93-git-repo-setup \
     /99-mattermost-create-channel \
     /100-configure-threads-settings \
     /101-start-claude-threads \
+    /102-start-happier \
     /etc/cont-init.d/90-master-startup
 
 # Docker socket volume mount (to be used when running the container)
