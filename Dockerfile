@@ -34,12 +34,42 @@ RUN npm install -g @anthropic-ai/claude-code claude-threads
 # Install Happier
 WORKDIR /app
 
-# Configure persistent internal paths for the cache and UI
+# Configure persistent internal paths
+# HOME must be writable; the runner resolves $HOME/.cache by default
 ENV HOME=/app
-ENV HAPPIER_SERVER_CACHE_DIR=/app/.cache/happier
-ENV HAPPIER_SERVER_UI_DIR=/app/.cache/happier_ui
-RUN mkdir -p /app/.npm ${HAPPIER_SERVER_CACHE_DIR} ${HAPPIER_SERVER_UI_DIR}
-RUN npx --yes --package @happier-dev/relay-server happier-server --ui --help
+ENV HAPPIER_CACHE_DIR=/app/.cache
+RUN mkdir -p /app/.npm /app/.cache /app/.happy
+
+# Install the happier-server runner (provides happier-server on PATH)
+RUN npm install -g @happier-dev/relay-server
+
+# Install the Happier CLI (provides happier, happier daemon, auth, etc.)
+RUN npm install -g @happier-dev/cli
+
+# Pre-download the server binary and UI web bundle.
+# The runner downloads + extracts both to the cache dir, then spawns the server.
+# We timeout after 2 min — the binary and UI persist in cache even though
+# the server is killed (it cannot fully initialise without a database yet).
+RUN timeout 120 happier-server --ui > /dev/null 2>&1; \
+    echo "Pre-download attempt done"
+
+# Copy the Prisma SQLite migration files from the extracted binary
+# to a stable path in the data dir.  This allows auto-migrate to work
+# at every container start without needing network access or the
+# exact cache path (which contains a version tag).
+RUN HAPPIER_CACHE_DIR="/app/.cache" && \
+    MIGRATIONS_SRC=$(find "$HAPPIER_CACHE_DIR/happier/server" -path "*/prisma/sqlite/migrations" -type d 2>/dev/null | head -1) && \
+    if [ -n "$MIGRATIONS_SRC" ] && [ -d "$MIGRATIONS_SRC" ]; then \
+      mkdir -p /app/.happy/server-light/migrations && \
+      cp -r "$MIGRATIONS_SRC" /app/.happy/server-light/migrations/sqlite && \
+      echo "Migrations pre-copied ($(find "$MIGRATIONS_SRC" -type f | wc -l) files)"; \
+    else \
+      echo "WARNING: migrations not found in cache, auto-migrate will require fallback at runtime"; \
+    fi
+
+# Remove any SQLite database created during build — each container
+# initialises its own database on first start via auto-migrate.
+RUN rm -f /app/.happy/server-light/happier-server-light.sqlite
 
 # Configure Claude Code default environment variables
 ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1"
