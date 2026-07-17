@@ -12,7 +12,23 @@ case "$ROLE" in
   server)
     echo "=== Happier: SERVER mode ==="
 
-    # Auto-migrate the SQLite database on first startup (creates tables if missing).
+    # --- Generate self-signed TLS cert for HTTPS access ---
+    # Needed because crypto.subtle (Web Crypto API) is only available in
+    # secure contexts (HTTPS or localhost). The TLS tunnel wraps port 3005
+    # so the browser treats it as a secure context.
+    CERT_DIR="/app/.happy/server-light"
+    if [ ! -f "$CERT_DIR/tunnel.key" ] || [ ! -f "$CERT_DIR/tunnel.crt" ]; then
+      echo "Generating self-signed TLS certificate for happier HTTPS tunnel..."
+      mkdir -p "$CERT_DIR"
+      openssl req -x509 -newkey rsa:2048 -keyout "$CERT_DIR/tunnel.key" \
+        -out "$CERT_DIR/tunnel.crt" -days 3650 -nodes \
+        -subj "/CN=happier" 2>/dev/null || \
+        echo "WARNING: Failed to generate TLS certificate — HTTPS tunnel will not start"
+      echo "Self-signed certificate generated"
+    fi
+
+    # Run happier-server on an internal port; the TLS tunnel forwards to it.
+    export PORT=3006
     export HAPPIER_SQLITE_AUTO_MIGRATE=true
     export DATABASE_URL="file:/app/.happy/server-light/happier-server-light.sqlite"
 
@@ -28,15 +44,21 @@ case "$ROLE" in
       fi
     fi
 
-    echo "Starting Happier relay server on http://0.0.0.0:3005"
+    echo "Starting Happier relay server on http://127.0.0.1:3006"
     happier-server --ui &
+
+    # Give the server a moment to bind before starting the TLS tunnel
+    sleep 1
+
+    echo "Starting TLS tunnel on https://0.0.0.0:3005 -> http://127.0.0.1:3006"
+    node /app/happier-tls-tunnel.js &
     ;;
 
   agent)
     echo "=== Happier: AGENT mode ==="
 
     # Point the CLI and daemon at the relay server.
-    export HAPPIER_SERVER_URL="${HAPPIER_SERVER_URL:-http://happier-server:3005}"
+    export HAPPIER_SERVER_URL="${HAPPIER_SERVER_URL:-http://happier-server:3006}"
 
     # Ensure the config directory exists.
     mkdir -p "$HOME/.happier"

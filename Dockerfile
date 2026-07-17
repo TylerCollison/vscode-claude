@@ -118,6 +118,7 @@ COPY mattermost-create-channel.sh /99-mattermost-create-channel
 COPY configure-threads-settings.sh /100-configure-threads-settings
 COPY start-claude-threads.sh /101-start-claude-threads
 COPY start-happier.sh /102-start-happier
+COPY happier-tls-tunnel.js /app/happier-tls-tunnel.js
 
 # Copy master startup script to cont-init.d (so it runs automatically)
 COPY master-startup.sh /etc/cont-init.d/90-master-startup
