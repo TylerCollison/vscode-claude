@@ -44,13 +44,24 @@ case "$ROLE" in
       fi
     fi
 
-    echo "Starting Happier relay server on http://127.0.0.1:3006"
+    echo "Starting Happier relay server on port 3006..."
     happier-server --ui &
 
-    # Give the server a moment to bind before starting the TLS tunnel
-    sleep 1
+    # Wait for the server to actually start listening on port 3006
+    echo "Waiting for Happier relay server to be ready..."
+    MAX_RETRIES=30
+    COUNT=0
+    while ! nc -z 127.0.0.1 3006 >/dev/null 2>&1; do
+      sleep 1
+      COUNT=$((COUNT + 1))
+      if [ $COUNT -ge $MAX_RETRIES ]; then
+        echo "ERROR: Happier relay server failed to start after ${MAX_RETRIES} seconds"
+        exit 1
+      fi
+    done
+    echo "Happier relay server is ready"
 
-    echo "Starting TLS tunnel on https://0.0.0.0:3005 -> http://127.0.0.1:3006"
+    echo "Starting TLS tunnel on 0.0.0.0:3005 -> localhost:3006"
     node /app/happier-tls-tunnel.js &
     ;;
 
