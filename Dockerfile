@@ -44,7 +44,7 @@ RUN mkdir -p /app/.npm /app/.cache /app/.happy
 RUN npm install -g @happier-dev/relay-server
 
 # Install the Happier CLI (provides happier, happier daemon, auth, etc.)
-RUN npm install -g @happier-dev/cli
+RUN npm install -g @happier-dev/cli@dev
 
 # Pre-download the server binary and UI web bundle.
 # The runner downloads + extracts both to the cache dir, then spawns the server.

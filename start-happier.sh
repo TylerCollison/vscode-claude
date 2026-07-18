@@ -63,6 +63,42 @@ case "$ROLE" in
 
     echo "Starting TLS tunnel on 0.0.0.0:3005 -> localhost:3006"
     node /app/happier-tls-tunnel.js &
+
+    # Configure the CLI environment for local use within the container.
+    # The TLS tunnel uses a self-signed cert, so NODE_TLS_REJECT_UNAUTHORIZED=0 is needed.
+    export HAPPIER_SERVER_URL="${HAPPIER_SERVER_URL:-https://localhost:3005}"
+    export NODE_TLS_REJECT_UNAUTHORIZED=0
+
+    # Ensure the config directory exists.
+    mkdir -p "$HOME/.happier"
+
+    # Check whether this instance has already been authenticated with the server.
+    if [ -f "$HOME/.happier/access.key" ]; then
+      echo "Happier CLI is authenticated with $HAPPIER_SERVER_URL"
+      echo "Starting Happier daemon for local use..."
+      happier --server-url "$HAPPIER_SERVER_URL" daemon start || true
+    else
+      echo ""
+      echo "============================================================"
+      echo "  Happier Server — Local CLI Access"
+      echo "============================================================"
+      echo ""
+      echo "To use the happier CLI from within this container,"
+      echo "authenticate with the local relay server:"
+      echo ""
+      echo "  NODE_TLS_REJECT_UNAUTHORIZED=0 happier --server-url $HAPPIER_SERVER_URL auth login"
+      echo ""
+      echo "After authenticating, start the daemon:"
+      echo ""
+      echo "  happier --server-url $HAPPIER_SERVER_URL daemon start"
+      echo ""
+      echo "Then launch a Claude Code session through Happier:"
+      echo ""
+      echo "  happier --server-url $HAPPIER_SERVER_URL claude"
+      echo ""
+      echo "============================================================"
+      echo ""
+    fi
     ;;
 
   agent)
@@ -70,6 +106,15 @@ case "$ROLE" in
 
     # Point the CLI and daemon at the relay server.
     export HAPPIER_SERVER_URL="${HAPPIER_SERVER_URL:-http://happier-server:3006}"
+
+    # If the URL uses HTTPS, enable support for self-signed certificates (such as our TLS tunnel)
+    # by setting NODE_TLS_REJECT_UNAUTHORIZED to 0.
+    NODE_TLS_PREFIX=""
+    if [[ "$HAPPIER_SERVER_URL" == https://* ]]; then
+      echo "HTTPS server URL detected. Enabling support for self-signed TLS certificates..."
+      export NODE_TLS_REJECT_UNAUTHORIZED=0
+      NODE_TLS_PREFIX="NODE_TLS_REJECT_UNAUTHORIZED=0 "
+    fi
 
     # Ensure the config directory exists.
     mkdir -p "$HOME/.happier"
@@ -90,15 +135,15 @@ case "$ROLE" in
       echo "Connect this agent to the relay server:"
       echo ""
       echo "  1. Run the interactive auth command:"
-      echo "     happier --server-url $HAPPIER_SERVER_URL auth login"
+      echo "     ${NODE_TLS_PREFIX}happier --server-url $HAPPIER_SERVER_URL auth login"
       echo ""
       echo "  2. Follow the pairing instructions shown on screen."
       echo ""
       echo "  3. Start the daemon (persistent background sync):"
-      echo "     happier --server-url $HAPPIER_SERVER_URL daemon start"
+      echo "     ${NODE_TLS_PREFIX}happier --server-url $HAPPIER_SERVER_URL daemon start"
       echo ""
       echo "  4. Launch a Claude Code session through Happier:"
-      echo "     happier --server-url $HAPPIER_SERVER_URL claude"
+      echo "     ${NODE_TLS_PREFIX}happier --server-url $HAPPIER_SERVER_URL claude"
       echo ""
       echo "These steps only need to be done once per agent container."
       echo "============================================================"

@@ -42,13 +42,26 @@ const server = tls.createServer(options, (tlsSocket) => {
 
   let target;
   let retries = 3;
+  let isCleanedUp = false;
 
   const connectToBackend = () => {
+    if (isCleanedUp) return;
+
     target = net.createConnection(TARGET_PORT, TARGET_HOST, () => {
+      if (isCleanedUp) {
+        try { target.destroy(); } catch (_) {}
+        return;
+      }
+      // Only pipe and register stream events on target after connection is established
       tlsSocket.pipe(target).pipe(tlsSocket);
+
+      target.on('end', () => { try { tlsSocket.end(); } catch (_) {} });
+      target.on('close', cleanup);
     });
 
     target.on('error', (err) => {
+      if (isCleanedUp) return;
+
       if (retries > 0 && (err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT')) {
         console.warn(`[${remoteAddr}] Backend connection failed (${err.code}), retrying... (${retries} left)`);
         retries--;
@@ -58,15 +71,14 @@ const server = tls.createServer(options, (tlsSocket) => {
       console.error(`[${remoteAddr}] Backend error (${TARGET_HOST}:${TARGET_PORT}): ${err.message}`);
       cleanup();
     });
-
-    target.on('end', () => { try { tlsSocket.end(); } catch (_) {} });
-    target.on('close', cleanup);
   };
 
   const cleanup = () => {
+    if (isCleanedUp) return;
+    isCleanedUp = true;
     activeConnections--;
     try { tlsSocket.destroy(); } catch (_) {}
-    try { target.destroy(); } catch (_) {}
+    try { if (target) target.destroy(); } catch (_) {}
   };
 
   tlsSocket.on('error', (err) => {
@@ -74,7 +86,7 @@ const server = tls.createServer(options, (tlsSocket) => {
     cleanup();
   });
 
-  tlsSocket.on('end', () => { try { target.end(); } catch (_) {} });
+  tlsSocket.on('end', () => { try { if (target) target.end(); } catch (_) {} });
   tlsSocket.on('close', cleanup);
 
   connectToBackend();
