@@ -168,12 +168,12 @@ The container can act as a Happier relay server (hub) or an agent (client connec
 
 **Data persistence for `HAPPIER_MODE=server`:**
 
-To persist Happier server data across container restarts (SQLite database, TLS certificates, and CLI credentials), mount these paths as volumes:
+To persist Happier server data and CLI credentials across container restarts, mount **both** of these paths as volumes:
 
 | Container Path | Purpose | Contents |
 |---------------|---------|----------|
-| `/config/.happier` | CLI credentials and server profiles | `servers/<id>/access.key` files, pairing approvals |
-| `/app/.happy/server-light` | Server data and TLS certs | `happier-server-light.sqlite` database, `tunnel.key`/`tunnel.crt` TLS certificate, Prisma migrations |
+| `/app/.happier` | CLI credentials and server profiles | `servers/<id>/access.key` files, pairing approvals |
+| `/app/.happy` | Server data and TLS certs | `happier-server-light.sqlite` database, `tunnel.key`/`tunnel.crt` TLS certificate, Prisma migrations |
 
 Without these mounts, the server loses all state on restart — registered agents, pairing approvals, and the SQLite database will be recreated from scratch and you'll need to re-pair every client.
 
@@ -259,8 +259,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock # Optional for docker support
       - /path/to/code-server/config:/config # Only specify if using existing configuration
       - /path/to/your/code:/workspace # Only specify if GIT_REPO_URL is unset
-      - /path/to/happier-config:/config/.happier # Persist Happier CLI credentials & profiles
-      - /path/to/happier-server:/app/.happy/server-light # Persist Happier server DB & TLS cert (server mode)
+      - /path/to/happier-cli-credentials:/app/.happier # Persist Happier CLI credentials & profiles
+      - /path/to/happier-server:/app/.happy # Persist Happier server DB & TLS cert (server mode)
     restart: unless-stopped
 ```
 
