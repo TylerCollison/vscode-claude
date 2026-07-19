@@ -72,6 +72,7 @@ docker run -d \
   -e OPENCODE_ZEN_API_KEY=your-opencode-zen-api-key \
   -e EXA_API_KEY=your-exa-api-key \
   -p 8443:8443 \
+  -p 3005:3005 \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /path/to/your/code:/workspace \
   --restart unless-stopped \
@@ -143,13 +144,13 @@ Claude Code is pre-configured to route all requests through the LiteLLM proxy at
 | `THREADS_WORKTREE_MODE` | Git worktree mode |
 | `THREADS_SKIP_PERMISSIONS` | Skip permission prompts |
 
-### Happier Relay Server Configuration
+### Happier UI Configuration
 
 The container can act as a Happier relay server (hub) or an agent (client connecting to a remote server). When `HAPPIER_SERVER_URL` is set, the container automatically authenticates with the relay server and starts the Happier daemon on startup.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `HAPPIER_MODE` | `server` | Role of this container: `server` starts the relay server and web UI, `agent` connects to a remote relay server |
+| `HAPPIER_MODE` | *(not set)* | Role of this container: `server` starts the relay server and web UI, `agent` connects to a remote relay server |
 | `HAPPIER_SERVER_URL` | `https://localhost:3005` (server) / `http://happier-server:3006` (agent) | URL of the Happier relay server to connect to |
 | `HAPPIER_ACCESS_KEY` | *(not set)* | **Fully automated authentication.** Set to the full JSON content of an `access.key` file (obtained from a previous `happier auth login` session). The script writes it to the correct location and starts the daemon — no manual approval needed. |
 | `TUNNEL_PORT` | `3005` | (Server mode only) External port the TLS tunnel listens on — the port you access in the browser |
@@ -216,6 +217,8 @@ services:
       - GIT_BRANCH_NAME=feature-branch
       # Knowledge repositories (optional)
       - KNOWLEDGE_REPOS=https://github.com/user/docs.git:main:README.md,docs/guide.md
+      - HAPPIER_MODE=server
+      - HAPPIER_SERVER_URL=https://localhost:3005
       # Claude Threads (optional)
       - ENABLE_THREADS=true
       - IDE_ADDRESS=http://localhost:8443
@@ -229,6 +232,7 @@ services:
       - THREADS_SKIP_PERMISSIONS=true
     ports:
       - "8443:8443"
+      - "3005:3005"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock # Optional for docker support
       - /path/to/code-server/config:/config # Only specify if using existing configuration
