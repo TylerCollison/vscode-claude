@@ -11,7 +11,9 @@ set -euo pipefail
 
 # Logging function with timestamps
 log() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
+    if [[ "${LOGGING:-}" == "verbose" ]] || [[ "$1" == *"ERROR"* ]] || [[ "$1" == *"WARNING"* ]]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
+    fi
 }
 
 # Error handling function

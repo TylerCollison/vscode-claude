@@ -18,6 +18,13 @@ error_exit() {
     exit 1
 }
 
+# Verbose-only logging (hidden unless LOGGING=verbose)
+debug_log() {
+    if [[ "${LOGGING:-}" == "verbose" ]]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
+    fi
+}
+
 # List of scripts to execute in order
 STARTUP_SCRIPTS=(
     "/93-git-repo-setup"
@@ -64,11 +71,11 @@ log "Container startup sequence finished"
 DEFAULT_WORKSPACE="${DEFAULT_WORKSPACE:-/workspace}"
 if [ -d "$DEFAULT_WORKSPACE" ]; then
     lsiown -R abc:abc "$DEFAULT_WORKSPACE" 2>/dev/null || true
-    log "Workspace permissions set for $DEFAULT_WORKSPACE"
+    debug_log "Workspace permissions set for $DEFAULT_WORKSPACE"
 fi
 
 # Ensure config directory is owned by the abc user (catch any remaining paths)
 if [ -d /config ]; then
     lsiown -R abc:abc /config 2>/dev/null || true
-    log "Config permissions set for /config"
+    debug_log "Config permissions set for /config"
 fi

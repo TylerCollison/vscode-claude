@@ -3,16 +3,22 @@
 mkdir -p /config/.config/claude-threads
 cp -r /claude-threads/* /config/.config/claude-threads/
 
-echo "Starting environment variable substitution for Claude Threads settings..."
+log() {
+    if [[ "${LOGGING:-}" == "verbose" ]] || [[ "$*" == *"Error"* ]] || [[ "$*" == *"Warning"* ]]; then
+        echo "$*"
+    fi
+}
+
+log "Starting environment variable substitution for Claude Threads settings..."
 
 # Set MM_CHANNEL_ID from file if not already set
 if [ -z "$MM_CHANNEL_ID" ]; then
     if [ -f /tmp/mm_channel_id ]; then
         MM_CHANNEL_ID=$(cat /tmp/mm_channel_id)
         export MM_CHANNEL_ID
-        echo "MM_CHANNEL_ID set from /tmp/mm_channel_id"
+        log "MM_CHANNEL_ID set from /tmp/mm_channel_id"
     else
-        echo "Error: MM_CHANNEL_ID is not set and /tmp/mm_channel_id does not exist" >&2
+        log "Error: MM_CHANNEL_ID is not set and /tmp/mm_channel_id does not exist" >&2
         exit 1
     fi
 fi
@@ -34,20 +40,20 @@ find /config/.config/claude-threads/ -name "*.yaml" -type f | while read -r file
         # Basic validation: check if the file contains text (not empty)
         if [ -s "$temp_file" ] && grep -q '[^[:space:]]' "$temp_file"; then
             mv "$temp_file" "$file"
-            echo "✓ Processed: $(basename "$file")"
+            log "✓ Processed: $(basename "$file")"
             # Increment processed count
             count=$(cat "$processed_file")
             echo "$((count + 1))" > "$processed_file"
         else
             rm -f "$temp_file"
-            echo "✗ Empty output: $(basename "$file")"
+            log "✗ Empty output: $(basename "$file")"
             # Increment failed count
             count=$(cat "$failed_file")
             echo "$((count + 1))" > "$failed_file"
         fi
     else
         rm -f "$temp_file"
-        echo "✗ Processing failed: $(basename "$file")"
+        log "✗ Processing failed: $(basename "$file")"
         # Increment failed count
         count=$(cat "$failed_file")
         echo "$((count + 1))" > "$failed_file"
@@ -61,13 +67,13 @@ failed_count=$(cat "$failed_file")
 # Clean up temporary files
 rm -f "$processed_file" "$failed_file"
 
-echo "Environment variable substitution completed:"
-echo "- Successfully processed: $processed_count files"
-echo "- Failed: $failed_count files"
+log "Environment variable substitution completed:"
+log "- Successfully processed: $processed_count files"
+log "- Failed: $failed_count files"
 
 # Verify at least one file was processed successfully
 if [ $processed_count -eq 0 ]; then
-    echo "Warning: No files were successfully processed"
+    log "Warning: No files were successfully processed"
 fi
 
 # Ensure config folder is owned by the abc user (PUID/PGID) for non-root access

@@ -12,7 +12,9 @@ fi
 
 # Logging function following existing patterns
 log() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $*"
+    if [[ "${LOGGING:-}" == "verbose" ]] || [[ "$*" == *"ERROR"* ]] || [[ "$*" == *"WARNING"* ]]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - $*"
+    fi
 }
 
 # Error logging function
@@ -22,7 +24,9 @@ log_error() {
 
 # Success logging function
 log_success() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - SUCCESS: $*"
+    if [[ "${LOGGING:-}" == "verbose" ]]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - SUCCESS: $*"
+    fi
 }
 
 # Check if Claude CLI is available

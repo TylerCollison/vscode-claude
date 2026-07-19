@@ -4,9 +4,15 @@
 # Explicitly handle environment variables with fallbacks
 CLAUDE_MODE="${CLAUDE_CODE_PERMISSION_MODE:-acceptEdits}"
 
+log() {
+    if [[ "${LOGGING:-}" == "verbose" ]] || [[ "$*" == *"ERROR"* ]] || [[ "$*" == *"WARNING"* ]]; then
+        echo "$*"
+    fi
+}
+
 # Debug: log environment variable status
-echo "Claude configuration:"
-echo "  MODE: $CLAUDE_MODE"
+log "Claude configuration:"
+log "  MODE: $CLAUDE_MODE"
 
 # Create Claude Code settings directory
 mkdir -p /config/.claude

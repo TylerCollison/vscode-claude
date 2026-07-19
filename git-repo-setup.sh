@@ -9,7 +9,9 @@ set -euo pipefail
 
 # Use existing logging patterns from codebase
 log() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
+    if [[ "${LOGGING:-}" == "verbose" ]] || [[ "$1" == *"ERROR"* ]] || [[ "$1" == *"WARNING"* ]]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
+    fi
 }
 
 # Error handling function
@@ -20,7 +22,9 @@ error_exit() {
 
 # Success logging function
 log_success() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - SUCCESS: $1"
+    if [[ "${LOGGING:-}" == "verbose" ]]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - SUCCESS: $1"
+    fi
 }
 
 # Generate procedural branch name (YYYYMMDD-HHMMSS format)

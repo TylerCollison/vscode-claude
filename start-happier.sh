@@ -14,6 +14,12 @@ set -euo pipefail
 
 ROLE="${CONTAINER_ROLE:-server}"
 
+log() {
+  if [[ "${LOGGING:-}" == "verbose" ]] || [[ "$*" == *"ERROR"* ]] || [[ "$*" == *"WARNING"* ]]; then
+    echo "$*"
+  fi
+}
+
 # Derive a filesystem-safe server ID from HAPPIER_SERVER_URL
 get_server_id() {
   local url="$1"
@@ -52,6 +58,26 @@ write_access_key() {
   echo "$key_json" > "$key_dir/access.key"
   chmod 600 "$key_dir/access.key"
   echo "$key_dir/access.key"
+}
+
+# Log the access key so the user can copy it for future HAPPIER_ACCESS_KEY use
+log_access_key() {
+  local server_url="$1"
+  local key_file
+  key_file=$(find_access_key "$server_url" || true)
+  if [ -n "$key_file" ] && [ -f "$key_file" ]; then
+    echo ""
+    echo "============================================================"
+    echo "  Save this access key for future fully-automated setups:"
+    echo "============================================================"
+    echo ""
+    echo "  HAPPIER_ACCESS_KEY='$(cat "$key_file")'"
+    echo ""
+    echo "Set that environment variable on future containers to skip"
+    echo "the pairing step entirely."
+    echo "============================================================"
+    echo ""
+  fi
 }
 
 # Submit a pairing request, print the connect URL, and wait for approval.
@@ -110,7 +136,7 @@ do_pairing() {
 
 case "$ROLE" in
   server)
-    echo "=== Happier: SERVER mode ==="
+    log "=== Happier: SERVER mode ==="
 
     # --- Generate self-signed TLS cert for HTTPS access ---
     # Needed because crypto.subtle (Web Crypto API) is only available in
@@ -118,13 +144,13 @@ case "$ROLE" in
     # so the browser treats it as a secure context.
     CERT_DIR="/app/.happy/server-light"
     if [ ! -f "$CERT_DIR/tunnel.key" ] || [ ! -f "$CERT_DIR/tunnel.crt" ]; then
-      echo "Generating self-signed TLS certificate for happier HTTPS tunnel..."
+      log "Generating self-signed TLS certificate for happier HTTPS tunnel..."
       mkdir -p "$CERT_DIR"
       openssl req -x509 -newkey rsa:2048 -keyout "$CERT_DIR/tunnel.key" \
         -out "$CERT_DIR/tunnel.crt" -days 3650 -nodes \
         -subj "/CN=happier" 2>/dev/null || \
-        echo "WARNING: Failed to generate TLS certificate — HTTPS tunnel will not start"
-      echo "Self-signed certificate generated"
+        log "WARNING: Failed to generate TLS certificate — HTTPS tunnel will not start"
+      log "Self-signed certificate generated"
     fi
 
     # The TLS tunnel uses a self-signed cert, so disable TLS verification
@@ -135,16 +161,16 @@ case "$ROLE" in
     XHR_FILE="/usr/lib/node_modules/@happier-dev/cli/node_modules/xmlhttprequest-ssl/lib/XMLHttpRequest.js"
     if [ -f "$XHR_FILE" ]; then
       if grep -q "NODE_TLS_REJECT_UNAUTHORIZED" "$XHR_FILE" 2>/dev/null; then
-        echo "xmlhttprequest-ssl already patched"
+        log "xmlhttprequest-ssl already patched"
       else
-        echo "Patching xmlhttprequest-ssl to respect NODE_TLS_REJECT_UNAUTHORIZED=0..."
+        log "Patching xmlhttprequest-ssl to respect NODE_TLS_REJECT_UNAUTHORIZED=0..."
         sed -i \
           's/rejectUnauthorized === false ? false : true/rejectUnauthorized === false ? false : (process.env.NODE_TLS_REJECT_UNAUTHORIZED === '\''0'\'' ? false : true)/g' \
           "$XHR_FILE"
-        echo "xmlhttprequest-ssl patched successfully"
+        log "xmlhttprequest-ssl patched successfully"
       fi
     else
-      echo "WARNING: xmlhttprequest-ssl not found at $XHR_FILE — daemon machine sync may not work"
+      log "WARNING: xmlhttprequest-ssl not found at $XHR_FILE — daemon machine sync may not work"
     fi
 
     # Run happier-server on an internal port; the TLS tunnel forwards to it.
@@ -159,14 +185,14 @@ case "$ROLE" in
       if [ -n "$MIGRATIONS_SRC" ]; then
         mkdir -p /app/.happy/server-light/migrations
         cp -r "$MIGRATIONS_SRC" /app/.happy/server-light/migrations/sqlite
-        echo "Migrations copied at runtime (fallback)"
+        log "Migrations copied at runtime (fallback)"
       fi
     fi
 
     # --- SQLite WAL keeper ---
     if [ -f "$DATABASE_FILE" ]; then
       if command -v sqlite3 &>/dev/null; then
-        echo "Checkpointing SQLite WAL before server start..."
+        log "Checkpointing SQLite WAL before server start..."
         sqlite3 "$DATABASE_FILE" "PRAGMA wal_checkpoint(TRUNCATE);" 2>/dev/null || true
       fi
     fi
@@ -174,29 +200,33 @@ case "$ROLE" in
     # PID file to prevent duplicate server starts
     SERVER_PID_FILE="/var/run/happier-server.pid"
     if [ -f "$SERVER_PID_FILE" ] && kill -0 "$(cat "$SERVER_PID_FILE")" 2>/dev/null; then
-      echo "Happier relay server is already running (PID $(cat "$SERVER_PID_FILE"))"
+      log "Happier relay server is already running (PID $(cat "$SERVER_PID_FILE"))"
     else
-      echo "Starting Happier relay server on port 3006..."
-      happier-server --ui &
+      log "Starting Happier relay server on port 3006..."
+      if [[ "${LOGGING:-}" == "verbose" ]]; then
+        happier-server --ui &
+      else
+        happier-server --ui >/dev/null 2>&1 &
+      fi
       echo $! > "$SERVER_PID_FILE"
 
       # Wait for the server to actually start listening on port 3006
-      echo "Waiting for Happier relay server to be ready..."
+      log "Waiting for Happier relay server to be ready..."
       MAX_RETRIES=30
       COUNT=0
       while ! nc -z 127.0.0.1 3006 >/dev/null 2>&1; do
         sleep 1
         COUNT=$((COUNT + 1))
         if [ $COUNT -ge $MAX_RETRIES ]; then
-          echo "ERROR: Happier relay server failed to start after ${MAX_RETRIES} seconds"
+          log "ERROR: Happier relay server failed to start after ${MAX_RETRIES} seconds"
           exit 1
         fi
       done
-      echo "Happier relay server is ready"
+      log "Happier relay server is ready"
     fi
 
     # WAL keeper
-    echo "Starting SQLite WAL keeper..."
+    log "Starting SQLite WAL keeper..."
     python3 -c "
 import sqlite3, time, sys
 db = sys.argv[1]
@@ -215,9 +245,9 @@ except Exception:
     pass
 " "$DATABASE_FILE" &
     WAL_KEEPER_PID=$!
-    echo "WAL keeper started (PID $WAL_KEEPER_PID)"
+    log "WAL keeper started (PID $WAL_KEEPER_PID)"
 
-    echo "Starting TLS tunnel on 0.0.0.0:3005 -> localhost:3006"
+    log "Starting TLS tunnel on 0.0.0.0:3005 -> localhost:3006"
     node /app/happier-tls-tunnel.js &
 
     # Configure the CLI environment for local use within the container.
@@ -226,30 +256,31 @@ except Exception:
     # --- Authentication ---
     ACCESS_KEY_FILE=$(find_access_key "$HAPPIER_SERVER_URL" || true)
     if [ -n "$ACCESS_KEY_FILE" ] && [ -f "$ACCESS_KEY_FILE" ]; then
-      echo "Happier CLI is authenticated with $HAPPIER_SERVER_URL"
-      echo "Starting Happier daemon for local use..."
+      log "Happier CLI is authenticated with $HAPPIER_SERVER_URL"
+      log "Starting Happier daemon for local use..."
       happier --server-url "$HAPPIER_SERVER_URL" daemon start || true
 
     elif [ -n "${HAPPIER_ACCESS_KEY:-}" ]; then
-      echo "HAPPIER_ACCESS_KEY provided — writing access key..."
+      log "HAPPIER_ACCESS_KEY provided — writing access key..."
       ACCESS_KEY_FILE=$(write_access_key "$HAPPIER_SERVER_URL" "$HAPPIER_ACCESS_KEY")
-      echo "Access key written to $ACCESS_KEY_FILE"
-      echo "Starting Happier daemon for local use..."
+      log "Access key written to $ACCESS_KEY_FILE"
+      log "Starting Happier daemon for local use..."
       happier --server-url "$HAPPIER_SERVER_URL" daemon start || true
 
     else
       do_pairing "$HAPPIER_SERVER_URL" "false"
-      # After pairing completes, start daemon
+      # After pairing completes, log the key and start daemon
+      log_access_key "$HAPPIER_SERVER_URL"
       ACCESS_KEY_FILE=$(find_access_key "$HAPPIER_SERVER_URL" || true)
       if [ -n "$ACCESS_KEY_FILE" ] && [ -f "$ACCESS_KEY_FILE" ]; then
-        echo "Happier daemon auto-started after authentication."
+        log "Happier daemon auto-started after authentication."
         happier --server-url "$HAPPIER_SERVER_URL" daemon start || true
       fi
     fi
     ;;
 
   agent)
-    echo "=== Happier: AGENT mode ==="
+    log "=== Happier: AGENT mode ==="
 
     # Point the CLI and daemon at the relay server.
     export HAPPIER_SERVER_URL="${HAPPIER_SERVER_URL:-http://happier-server:3006}"
@@ -257,7 +288,7 @@ except Exception:
     # If the URL uses HTTPS, enable support for self-signed certificates
     NODE_TLS_PREFIX=""
     if [[ "$HAPPIER_SERVER_URL" == https://* ]]; then
-      echo "HTTPS server URL detected. Enabling support for self-signed TLS certificates..."
+      log "HTTPS server URL detected. Enabling support for self-signed TLS certificates..."
       export NODE_TLS_REJECT_UNAUTHORIZED=0
       NODE_TLS_PREFIX="NODE_TLS_REJECT_UNAUTHORIZED=0 "
 
@@ -275,30 +306,31 @@ except Exception:
     # --- Authentication ---
     ACCESS_KEY_FILE=$(find_access_key "$HAPPIER_SERVER_URL" || true)
     if [ -n "$ACCESS_KEY_FILE" ] && [ -f "$ACCESS_KEY_FILE" ]; then
-      echo "Happier agent is authenticated with $HAPPIER_SERVER_URL"
-      echo "Starting Happier daemon..."
+      log "Happier agent is authenticated with $HAPPIER_SERVER_URL"
+      log "Starting Happier daemon..."
       happier --server-url "$HAPPIER_SERVER_URL" daemon start || true
 
     elif [ -n "${HAPPIER_ACCESS_KEY:-}" ]; then
-      echo "HAPPIER_ACCESS_KEY provided — writing access key..."
+      log "HAPPIER_ACCESS_KEY provided — writing access key..."
       ACCESS_KEY_FILE=$(write_access_key "$HAPPIER_SERVER_URL" "$HAPPIER_ACCESS_KEY")
-      echo "Access key written to $ACCESS_KEY_FILE"
-      echo "Starting Happier daemon..."
+      log "Access key written to $ACCESS_KEY_FILE"
+      log "Starting Happier daemon..."
       happier --server-url "$HAPPIER_SERVER_URL" daemon start || true
 
     else
       do_pairing "$HAPPIER_SERVER_URL" "true"
-      # After pairing completes, start daemon
+      # After pairing completes, log the key and start daemon
+      log_access_key "$HAPPIER_SERVER_URL"
       ACCESS_KEY_FILE=$(find_access_key "$HAPPIER_SERVER_URL" || true)
       if [ -n "$ACCESS_KEY_FILE" ] && [ -f "$ACCESS_KEY_FILE" ]; then
-        echo "Happier daemon auto-started after authentication."
+        log "Happier daemon auto-started after authentication."
         happier --server-url "$HAPPIER_SERVER_URL" daemon start || true
       fi
     fi
     ;;
 
   *)
-    echo "ERROR: Unknown CONTAINER_ROLE='$ROLE'. Supported: server, agent"
+    log "ERROR: Unknown CONTAINER_ROLE='$ROLE'. Supported: server, agent"
     exit 1
     ;;
 esac
