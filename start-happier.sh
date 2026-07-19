@@ -1,6 +1,6 @@
 #!/usr/bin/with-contenv bash
 # Happier startup script
-# Supports two roles controlled by the CONTAINER_ROLE env var:
+# Supports two roles controlled by the HAPPIER_MODE env var:
 #   server  — starts the relay server + web UI (default)
 #   agent   — configures the CLI/daemon to connect to a remote relay server
 #
@@ -12,7 +12,12 @@
 
 set -euo pipefail
 
-ROLE="${CONTAINER_ROLE:-server}"
+# If HAPPIER_MODE is not set, the user does not want to use happier
+if [ -z "${HAPPIER_MODE:-}" ]; then
+  exit 0
+fi
+
+ROLE="${HAPPIER_MODE}"
 
 log() {
   if [[ "${LOGGING:-}" == "verbose" ]] || [[ "$*" == *"ERROR"* ]] || [[ "$*" == *"WARNING"* ]]; then
@@ -330,7 +335,7 @@ except Exception:
     ;;
 
   *)
-    log "ERROR: Unknown CONTAINER_ROLE='$ROLE'. Supported: server, agent"
+    log "ERROR: Unknown HAPPIER_MODE='$ROLE'. Supported: server, agent"
     exit 1
     ;;
 esac

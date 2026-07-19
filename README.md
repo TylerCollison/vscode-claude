@@ -149,7 +149,7 @@ The container can act as a Happier relay server (hub) or an agent (client connec
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CONTAINER_ROLE` | `server` | Role of this container: `server` starts the relay server and web UI, `agent` connects to a remote relay server |
+| `HAPPIER_MODE` | `server` | Role of this container: `server` starts the relay server and web UI, `agent` connects to a remote relay server |
 | `HAPPIER_SERVER_URL` | `https://localhost:3005` (server) / `http://happier-server:3006` (agent) | URL of the Happier relay server to connect to |
 | `HAPPIER_ACCESS_KEY` | *(not set)* | **Fully automated authentication.** Set to the full JSON content of an `access.key` file (obtained from a previous `happier auth login` session). The script writes it to the correct location and starts the daemon — no manual approval needed. |
 | `TUNNEL_PORT` | `3005` | (Server mode only) External port the TLS tunnel listens on — the port you access in the browser |
