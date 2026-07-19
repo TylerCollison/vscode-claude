@@ -71,12 +71,15 @@ log_access_key() {
   local key_file
   key_file=$(find_access_key "$server_url" || true)
   if [ -n "$key_file" ] && [ -f "$key_file" ]; then
+    # Read the key and strip all whitespace (including newlines) for easy copy-paste
+    local key
+    key=$(cat "$key_file" | tr -d '[:space:]')
     echo ""
     echo "============================================================"
     echo "  Save this access key for future fully-automated setups:"
     echo "============================================================"
     echo ""
-    echo "  HAPPIER_ACCESS_KEY='$(cat "$key_file")'"
+    echo "  HAPPIER_ACCESS_KEY=$key"
     echo ""
     echo "Set that environment variable on future containers to skip"
     echo "the pairing step entirely."
