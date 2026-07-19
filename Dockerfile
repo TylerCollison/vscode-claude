@@ -41,7 +41,7 @@ ENV HAPPIER_CACHE_DIR=/app/.cache
 RUN mkdir -p /app/.npm /app/.cache /app/.happy
 
 # Install the happier-server runner (provides happier-server on PATH)
-RUN npm install -g @happier-dev/relay-server
+RUN npm install -g @happier-dev/relay-server@dev
 
 # Install the Happier CLI (provides happier, happier daemon, auth, etc.)
 RUN npm install -g @happier-dev/cli@dev
