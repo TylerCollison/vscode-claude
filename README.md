@@ -166,6 +166,28 @@ The container can act as a Happier relay server (hub) or an agent (client connec
   https://<server>:3005/terminal/connect#key=<base64-key>&server=https%3A%2F%2F<server>%3A3005
   ```
 
+**Data persistence for `HAPPIER_MODE=server`:**
+
+To persist Happier server data across container restarts (SQLite database, TLS certificates, and CLI credentials), mount these paths as volumes:
+
+| Container Path | Purpose | Contents |
+|---------------|---------|----------|
+| `/config/.happier` | CLI credentials and server profiles | `servers/<id>/access.key` files, pairing approvals |
+| `/app/.happy/server-light` | Server data and TLS certs | `happier-server-light.sqlite` database, `tunnel.key`/`tunnel.crt` TLS certificate, Prisma migrations |
+
+Without these mounts, the server loses all state on restart — registered agents, pairing approvals, and the SQLite database will be recreated from scratch and you'll need to re-pair every client.
+
+**Using the Happier Cloud Relay (Mobile App Control):**
+
+In addition to running a local relay server, you can connect to the Happier Cloud relay at `https://api.happier.dev` to control your agents through the [Happier mobile app](https://github.com/happier-dev/happier). Run these commands inside the container:
+
+```bash
+happier --server-url https://api.happier.dev auth login
+happier --server-url https://api.happier.dev daemon start
+```
+
+This pairs the container's Happier CLI with the cloud relay, enabling you to approve pairing requests, manage sessions, and interact with your agents from your phone. This works alongside a local relay — you can have agents connected to both simultaneously.
+
 ### build-env Configuration
 
 | Variable | Description |
@@ -237,6 +259,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock # Optional for docker support
       - /path/to/code-server/config:/config # Only specify if using existing configuration
       - /path/to/your/code:/workspace # Only specify if GIT_REPO_URL is unset
+      - /path/to/happier-config:/config/.happier # Persist Happier CLI credentials & profiles
+      - /path/to/happier-server:/app/.happy/server-light # Persist Happier server DB & TLS cert (server mode)
     restart: unless-stopped
 ```
 
