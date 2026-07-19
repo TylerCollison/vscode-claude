@@ -3,10 +3,55 @@
 # Supports two roles controlled by the CONTAINER_ROLE env var:
 #   server  — starts the relay server + web UI (default)
 #   agent   — configures the CLI/daemon to connect to a remote relay server
+#
+# Authentication automatic modes (in priority order):
+#   1. HAPPIER_ACCESS_KEY — pre-provisioned access key JSON content
+#   2. HAPPIER_AUTO_AUTH=true — runs the pairing flow, prints the URL, and waits
+#   3. Manual — prints instructions for interactive auth
 
 set -euo pipefail
 
 ROLE="${CONTAINER_ROLE:-server}"
+
+# Derive a filesystem-safe server ID from HAPPIER_SERVER_URL
+get_server_id() {
+  local url="$1"
+  echo "$url" | sed -E 's/^(http|https):\/\///' | sed 's/\/$//' \
+    | sed 's/[^a-zA-Z0-9._-]/-/g' | sed -E 's/^-+|-+$//g' | tr '[:upper:]' '[:lower:]'
+}
+
+# Locate the existing access key for a given server URL
+find_access_key() {
+  local server_url="$1"
+  local sid
+  sid=$(get_server_id "$server_url")
+  local key_file="$HOME/.happier/servers/$sid/access.key"
+  if [ -f "$key_file" ]; then
+    echo "$key_file"
+    return 0
+  fi
+  # Also search broadly as a fallback
+  local found
+  found=$(find "$HOME/.happier/servers" -name "access.key" -type f 2>/dev/null | head -1)
+  if [ -n "$found" ]; then
+    echo "$found"
+    return 0
+  fi
+  return 1
+}
+
+# Write a pre-provisioned access key
+write_access_key() {
+  local server_url="$1"
+  local key_json="$2"
+  local sid
+  sid=$(get_server_id "$server_url")
+  local key_dir="$HOME/.happier/servers/$sid"
+  mkdir -p "$key_dir"
+  echo "$key_json" > "$key_dir/access.key"
+  chmod 600 "$key_dir/access.key"
+  echo "$key_dir/access.key"
+}
 
 case "$ROLE" in
   server)
@@ -32,17 +77,6 @@ case "$ROLE" in
     export NODE_TLS_REJECT_UNAUTHORIZED=0
 
     # --- Patch xmlhttprequest-ssl to respect NODE_TLS_REJECT_UNAUTHORIZED ---
-    # The socket.io client engine.io-client uses xmlhttprequest-ssl for HTTP
-    # polling in Node.js. This module does NOT check the
-    # NODE_TLS_REJECT_UNAUTHORIZED env var — it defaults rejectUnauthorized to
-    # true. This causes the daemon's machine-sync WebSocket connection to fail
-    # silently ("xhr poll error") when connecting through the TLS tunnel with
-    # a self-signed certificate, because the socket.io client never establishes
-    # its polling transport.
-    #
-    # The REST API (built-in https module) works fine because Node.js does
-    # respect the env var. Only socket.io polling via xmlhttprequest-ssl is
-    # affected.
     XHR_FILE="/usr/lib/node_modules/@happier-dev/cli/node_modules/xmlhttprequest-ssl/lib/XMLHttpRequest.js"
     if [ -f "$XHR_FILE" ]; then
       if grep -q "NODE_TLS_REJECT_UNAUTHORIZED" "$XHR_FILE" 2>/dev/null; then
@@ -65,8 +99,6 @@ case "$ROLE" in
     export DATABASE_URL="file:${DATABASE_FILE}"
 
     # Ensure Prisma migrations are available where the server expects them.
-    # They are pre-copied at build time; this is a runtime fallback for version
-    # bumps where the cache directory contains a newer path.
     if [ ! -d "/app/.happy/server-light/migrations/sqlite" ]; then
       MIGRATIONS_SRC=$(find "/app/.cache/happier/server" -path "*/prisma/sqlite/migrations" -type d 2>/dev/null | head -1)
       if [ -n "$MIGRATIONS_SRC" ]; then
@@ -77,17 +109,6 @@ case "$ROLE" in
     fi
 
     # --- SQLite WAL keeper ---
-    # Root cause: happier-server uses Prisma with SQLite in WAL journal mode.
-    # Prisma's connection pool opens and closes SQLite connections. When the LAST
-    # connection to a WAL-mode database closes, SQLite unlinks (deletes) the
-    # .sqlite-wal and .sqlite-shm files. If the server's long-lived connections
-    # still have open file descriptors to the deleted files, all subsequent writes
-    # go into the invisible deleted WAL — new connections (including the web UI)
-    # see a stale database.
-    #
-    # The fix: keep a permanent SQLite connection open with WAL mode set.
-    # As long as at least one connection holds the WAL/SHM open, SQLite will not
-    # delete them when Prisma recycles its pool.
     if [ -f "$DATABASE_FILE" ]; then
       if command -v sqlite3 &>/dev/null; then
         echo "Checkpointing SQLite WAL before server start..."
@@ -95,7 +116,7 @@ case "$ROLE" in
       fi
     fi
 
-    # PID file to prevent duplicate server starts (s6 may re-run cont-init.d scripts)
+    # PID file to prevent duplicate server starts
     SERVER_PID_FILE="/var/run/happier-server.pid"
     if [ -f "$SERVER_PID_FILE" ] && kill -0 "$(cat "$SERVER_PID_FILE")" 2>/dev/null; then
       echo "Happier relay server is already running (PID $(cat "$SERVER_PID_FILE"))"
@@ -119,9 +140,7 @@ case "$ROLE" in
       echo "Happier relay server is ready"
     fi
 
-    # WAL keeper — holds a permanent SQLite connection in WAL mode to prevent
-    # Prisma pool teardown from unlinking the WAL/SHM files. Runs a checkpoint
-    # every 5 minutes as well.
+    # WAL keeper
     echo "Starting SQLite WAL keeper..."
     python3 -c "
 import sqlite3, time, sys
@@ -134,7 +153,6 @@ try:
     while True:
         time.sleep(15)
         conn.execute(\"SELECT 1\")
-        # Checkpoint every 5 minutes (300 seconds)
         if time.time() - last_checkpoint >= 300:
             conn.execute(\"PRAGMA wal_checkpoint(PASSIVE)\")
             last_checkpoint = time.time()
@@ -148,19 +166,47 @@ except Exception:
     node /app/happier-tls-tunnel.js &
 
     # Configure the CLI environment for local use within the container.
-    # NODE_TLS_REJECT_UNAUTHORIZED=0 already exported above (before the xhr patch).
     export HAPPIER_SERVER_URL="${HAPPIER_SERVER_URL:-https://localhost:3005}"
 
-    # Ensure the config directory exists.
-    mkdir -p "$HOME/.happier"
-
-    # Check whether this instance has already been authenticated with the server.
-    # The access key lives in a per-server subdirectory: $HOME/.happier/servers/<server-id>/access.key
-    ACCESS_KEY_FILE=$(find "$HOME/.happier/servers" -name "access.key" -type f 2>/dev/null | head -1)
-    if [ -n "$ACCESS_KEY_FILE" ]; then
+    # --- Authentication ---
+    ACCESS_KEY_FILE=$(find_access_key "$HAPPIER_SERVER_URL" || true)
+    if [ -n "$ACCESS_KEY_FILE" ] && [ -f "$ACCESS_KEY_FILE" ]; then
       echo "Happier CLI is authenticated with $HAPPIER_SERVER_URL"
       echo "Starting Happier daemon for local use..."
       happier --server-url "$HAPPIER_SERVER_URL" daemon start || true
+
+    elif [ -n "${HAPPIER_ACCESS_KEY:-}" ]; then
+      echo "HAPPIER_ACCESS_KEY provided — writing access key..."
+      ACCESS_KEY_FILE=$(write_access_key "$HAPPIER_SERVER_URL" "$HAPPIER_ACCESS_KEY")
+      echo "Access key written to $ACCESS_KEY_FILE"
+      echo "Starting Happier daemon for local use..."
+      happier --server-url "$HAPPIER_SERVER_URL" daemon start || true
+
+    elif [ "${HAPPIER_AUTO_AUTH:-false}" = "true" ]; then
+      echo ""
+      echo "============================================================"
+      echo "  Happier Server — Automatic Authentication"
+      echo "============================================================"
+      echo ""
+      echo "Starting automated auth flow with $HAPPIER_SERVER_URL..."
+      echo ""
+      echo "Open the web UI and log in, then approve the pairing request."
+      echo "The web UI is available at:"
+      echo ""
+      echo "  https://<this-host>:3005"
+      echo "  (or http://localhost:3006 from inside the container)"
+      echo ""
+      echo "============================================================"
+      echo ""
+      # Use headless-friendly auth flow
+      happier --server-url "$HAPPIER_SERVER_URL" auth login --method web || true
+      # After auth login completes (user approved), start daemon
+      ACCESS_KEY_FILE=$(find_access_key "$HAPPIER_SERVER_URL" || true)
+      if [ -n "$ACCESS_KEY_FILE" ] && [ -f "$ACCESS_KEY_FILE" ]; then
+        echo "Happier daemon auto-started after authentication."
+        happier --server-url "$HAPPIER_SERVER_URL" daemon start || true
+      fi
+
     else
       echo ""
       echo "============================================================"
@@ -180,6 +226,9 @@ except Exception:
       echo ""
       echo "  happier --server-url $HAPPIER_SERVER_URL claude"
       echo ""
+      echo "Or, set HAPPIER_AUTO_AUTH=true to run the pairing flow automatically."
+      echo "For fully automated setups, set HAPPIER_ACCESS_KEY to the access key JSON."
+      echo ""
       echo "============================================================"
       echo ""
     fi
@@ -191,15 +240,14 @@ except Exception:
     # Point the CLI and daemon at the relay server.
     export HAPPIER_SERVER_URL="${HAPPIER_SERVER_URL:-http://happier-server:3006}"
 
-    # If the URL uses HTTPS, enable support for self-signed certificates (such as our TLS tunnel)
-    # by setting NODE_TLS_REJECT_UNAUTHORIZED to 0.
+    # If the URL uses HTTPS, enable support for self-signed certificates
     NODE_TLS_PREFIX=""
     if [[ "$HAPPIER_SERVER_URL" == https://* ]]; then
       echo "HTTPS server URL detected. Enabling support for self-signed TLS certificates..."
       export NODE_TLS_REJECT_UNAUTHORIZED=0
       NODE_TLS_PREFIX="NODE_TLS_REJECT_UNAUTHORIZED=0 "
 
-      # Also patch xmlhttprequest-ssl (see server mode for detailed rationale)
+      # Also patch xmlhttprequest-ssl
       XHR_FILE="/usr/lib/node_modules/@happier-dev/cli/node_modules/xmlhttprequest-ssl/lib/XMLHttpRequest.js"
       if [ -f "$XHR_FILE" ]; then
         if ! grep -q "NODE_TLS_REJECT_UNAUTHORIZED" "$XHR_FILE" 2>/dev/null; then
@@ -210,17 +258,43 @@ except Exception:
       fi
     fi
 
-    # Ensure the config directory exists.
-    mkdir -p "$HOME/.happier"
-
-    # Check whether this agent has already been authenticated with the server
-    # by looking for the local key material generated by `happier auth login`.
-    # The access key lives in a per-server subdirectory: $HOME/.happier/servers/<server-id>/access.key
-    ACCESS_KEY_FILE=$(find "$HOME/.happier/servers" -name "access.key" -type f 2>/dev/null | head -1)
-    if [ -n "$ACCESS_KEY_FILE" ]; then
+    # --- Authentication ---
+    ACCESS_KEY_FILE=$(find_access_key "$HAPPIER_SERVER_URL" || true)
+    if [ -n "$ACCESS_KEY_FILE" ] && [ -f "$ACCESS_KEY_FILE" ]; then
       echo "Happier agent is authenticated with $HAPPIER_SERVER_URL"
       echo "Starting Happier daemon..."
       happier --server-url "$HAPPIER_SERVER_URL" daemon start || true
+
+    elif [ -n "${HAPPIER_ACCESS_KEY:-}" ]; then
+      echo "HAPPIER_ACCESS_KEY provided — writing access key..."
+      ACCESS_KEY_FILE=$(write_access_key "$HAPPIER_SERVER_URL" "$HAPPIER_ACCESS_KEY")
+      echo "Access key written to $ACCESS_KEY_FILE"
+      echo "Starting Happier daemon..."
+      happier --server-url "$HAPPIER_SERVER_URL" daemon start || true
+
+    elif [ "${HAPPIER_AUTO_AUTH:-false}" = "true" ]; then
+      echo ""
+      echo "============================================================"
+      echo "  Happier Agent — Automatic Authentication"
+      echo "============================================================"
+      echo ""
+      echo "Connecting to relay server: $HAPPIER_SERVER_URL"
+      echo ""
+      echo "A pairing request has been submitted to the server."
+      echo "Approve it from the server's web UI to complete authentication."
+      echo ""
+      echo "============================================================"
+      echo ""
+      # Use headless-friendly auth flow
+      # NODE_TLS_REJECT_UNAUTHORIZED is already exported above if needed
+      happier --server-url "$HAPPIER_SERVER_URL" auth login --method web --no-open || true
+      # After auth login completes, start daemon
+      ACCESS_KEY_FILE=$(find_access_key "$HAPPIER_SERVER_URL" || true)
+      if [ -n "$ACCESS_KEY_FILE" ] && [ -f "$ACCESS_KEY_FILE" ]; then
+        echo "Happier daemon auto-started after authentication."
+        happier --server-url "$HAPPIER_SERVER_URL" daemon start || true
+      fi
+
     else
       echo "============================================================"
       echo "  Happier Agent — Not Yet Authenticated"
@@ -240,6 +314,9 @@ except Exception:
       echo ""
       echo "  4. Launch a Claude Code session through Happier:"
       echo "     ${NODE_TLS_PREFIX}happier --server-url $HAPPIER_SERVER_URL claude"
+      echo ""
+      echo "Or, set HAPPIER_AUTO_AUTH=true to run the pairing flow automatically."
+      echo "For fully automated setups, set HAPPIER_ACCESS_KEY to the access key JSON."
       echo ""
       echo "These steps only need to be done once per agent container."
       echo "============================================================"
