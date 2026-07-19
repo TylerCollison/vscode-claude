@@ -4,10 +4,11 @@
 #   server  — starts the relay server + web UI (default)
 #   agent   — configures the CLI/daemon to connect to a remote relay server
 #
-# Authentication automatic modes (in priority order):
-#   1. HAPPIER_ACCESS_KEY — pre-provisioned access key JSON content
-#   2. HAPPIER_AUTO_AUTH=true — runs the pairing flow, prints the URL, and waits
-#   3. Manual — prints instructions for interactive auth
+# Authentication (checked in priority order):
+#   1. Existing access.key → starts the daemon immediately
+#   2. HAPPIER_ACCESS_KEY  → writes the pre-provisioned key, starts daemon
+#   3. Default             → submits a pairing request to the server, prints
+#                            the connect URL, and waits for approval (one-time)
 
 set -euo pipefail
 
@@ -51,6 +52,60 @@ write_access_key() {
   echo "$key_json" > "$key_dir/access.key"
   chmod 600 "$key_dir/access.key"
   echo "$key_dir/access.key"
+}
+
+# Submit a pairing request, print the connect URL, and wait for approval.
+# Uses the headless-friendly auth request/wait flow so the URL is captured
+# and displayed prominently rather than buried in the login command output.
+do_pairing() {
+  local server_url="$1"
+  local no_open="${2:-false}"
+
+  echo ""
+  echo "============================================================"
+  echo "  Happier — Pairing Required"
+  echo "============================================================"
+  echo ""
+  echo "No existing credentials found for $server_url."
+  echo "Submitting a pairing request..."
+  echo ""
+
+  # Submit the request and capture JSON output
+  AUTH_JSON=$(happier --server-url "$server_url" auth request --json 2>/dev/null || true)
+
+  # Extract fields from the JSON response
+  PUBLIC_KEY=$(echo "$AUTH_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('publicKey',''))" 2>/dev/null || true)
+  WEB_URL=$(echo "$AUTH_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('links',{}).get('webUrl',''))" 2>/dev/null || true)
+  MOBILE_URL=$(echo "$AUTH_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('links',{}).get('mobileUrl',''))" 2>/dev/null || true)
+
+  if [ -z "$PUBLIC_KEY" ] || [ -z "$WEB_URL" ]; then
+    echo "ERROR: Failed to create pairing request. Falling back to standard login..."
+    # Fallback: just run auth login and let it print the URL natively
+    open_flag=""
+    if [ "$no_open" = "true" ]; then
+      open_flag=" --no-open"
+    fi
+    happier --server-url "$server_url" auth login --method web${open_flag} || true
+  else
+    echo "Pairing request submitted!"
+    echo ""
+    echo "Open this URL in your browser to approve:"
+    echo ""
+    echo "  ${WEB_URL}"
+    echo ""
+    if [ -n "$MOBILE_URL" ]; then
+      echo "Or use the mobile app:"
+      echo "  ${MOBILE_URL}"
+      echo ""
+    fi
+    echo "============================================================"
+    echo ""
+
+    # Wait for approval — this blocks until the pairing is approved
+    # --persist saves the server URL as the active profile
+    happier --server-url "$server_url" auth wait \
+      --public-key "$PUBLIC_KEY" --json --persist 2>&1 || true
+  fi
 }
 
 case "$ROLE" in
@@ -182,55 +237,14 @@ except Exception:
       echo "Starting Happier daemon for local use..."
       happier --server-url "$HAPPIER_SERVER_URL" daemon start || true
 
-    elif [ "${HAPPIER_AUTO_AUTH:-false}" = "true" ]; then
-      echo ""
-      echo "============================================================"
-      echo "  Happier Server — Automatic Authentication"
-      echo "============================================================"
-      echo ""
-      echo "Starting automated auth flow with $HAPPIER_SERVER_URL..."
-      echo ""
-      echo "Open the web UI and log in, then approve the pairing request."
-      echo "The web UI is available at:"
-      echo ""
-      echo "  https://<this-host>:3005"
-      echo "  (or http://localhost:3006 from inside the container)"
-      echo ""
-      echo "============================================================"
-      echo ""
-      # Use headless-friendly auth flow
-      happier --server-url "$HAPPIER_SERVER_URL" auth login --method web || true
-      # After auth login completes (user approved), start daemon
+    else
+      do_pairing "$HAPPIER_SERVER_URL" "false"
+      # After pairing completes, start daemon
       ACCESS_KEY_FILE=$(find_access_key "$HAPPIER_SERVER_URL" || true)
       if [ -n "$ACCESS_KEY_FILE" ] && [ -f "$ACCESS_KEY_FILE" ]; then
         echo "Happier daemon auto-started after authentication."
         happier --server-url "$HAPPIER_SERVER_URL" daemon start || true
       fi
-
-    else
-      echo ""
-      echo "============================================================"
-      echo "  Happier Server — Local CLI Access"
-      echo "============================================================"
-      echo ""
-      echo "To use the happier CLI from within this container,"
-      echo "authenticate with the local relay server:"
-      echo ""
-      echo "  NODE_TLS_REJECT_UNAUTHORIZED=0 happier --server-url $HAPPIER_SERVER_URL auth login"
-      echo ""
-      echo "After authenticating, start the daemon:"
-      echo ""
-      echo "  happier --server-url $HAPPIER_SERVER_URL daemon start"
-      echo ""
-      echo "Then launch a Claude Code session through Happier:"
-      echo ""
-      echo "  happier --server-url $HAPPIER_SERVER_URL claude"
-      echo ""
-      echo "Or, set HAPPIER_AUTO_AUTH=true to run the pairing flow automatically."
-      echo "For fully automated setups, set HAPPIER_ACCESS_KEY to the access key JSON."
-      echo ""
-      echo "============================================================"
-      echo ""
     fi
     ;;
 
@@ -272,54 +286,14 @@ except Exception:
       echo "Starting Happier daemon..."
       happier --server-url "$HAPPIER_SERVER_URL" daemon start || true
 
-    elif [ "${HAPPIER_AUTO_AUTH:-false}" = "true" ]; then
-      echo ""
-      echo "============================================================"
-      echo "  Happier Agent — Automatic Authentication"
-      echo "============================================================"
-      echo ""
-      echo "Connecting to relay server: $HAPPIER_SERVER_URL"
-      echo ""
-      echo "A pairing request has been submitted to the server."
-      echo "Approve it from the server's web UI to complete authentication."
-      echo ""
-      echo "============================================================"
-      echo ""
-      # Use headless-friendly auth flow
-      # NODE_TLS_REJECT_UNAUTHORIZED is already exported above if needed
-      happier --server-url "$HAPPIER_SERVER_URL" auth login --method web --no-open || true
-      # After auth login completes, start daemon
+    else
+      do_pairing "$HAPPIER_SERVER_URL" "true"
+      # After pairing completes, start daemon
       ACCESS_KEY_FILE=$(find_access_key "$HAPPIER_SERVER_URL" || true)
       if [ -n "$ACCESS_KEY_FILE" ] && [ -f "$ACCESS_KEY_FILE" ]; then
         echo "Happier daemon auto-started after authentication."
         happier --server-url "$HAPPIER_SERVER_URL" daemon start || true
       fi
-
-    else
-      echo "============================================================"
-      echo "  Happier Agent — Not Yet Authenticated"
-      echo "============================================================"
-      echo ""
-      echo "Relay server URL: $HAPPIER_SERVER_URL"
-      echo ""
-      echo "Connect this agent to the relay server:"
-      echo ""
-      echo "  1. Run the interactive auth command:"
-      echo "     ${NODE_TLS_PREFIX}happier --server-url $HAPPIER_SERVER_URL auth login"
-      echo ""
-      echo "  2. Follow the pairing instructions shown on screen."
-      echo ""
-      echo "  3. Start the daemon (persistent background sync):"
-      echo "     ${NODE_TLS_PREFIX}happier --server-url $HAPPIER_SERVER_URL daemon start"
-      echo ""
-      echo "  4. Launch a Claude Code session through Happier:"
-      echo "     ${NODE_TLS_PREFIX}happier --server-url $HAPPIER_SERVER_URL claude"
-      echo ""
-      echo "Or, set HAPPIER_AUTO_AUTH=true to run the pairing flow automatically."
-      echo "For fully automated setups, set HAPPIER_ACCESS_KEY to the access key JSON."
-      echo ""
-      echo "These steps only need to be done once per agent container."
-      echo "============================================================"
     fi
     ;;
 

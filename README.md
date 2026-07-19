@@ -145,22 +145,25 @@ Claude Code is pre-configured to route all requests through the LiteLLM proxy at
 
 ### Happier Relay Server Configuration
 
-The container can act as a Happier relay server (hub) or an agent (client connecting to a remote server). When `HAPPIER_SERVER_URL` is set, the container automatically configures the CLI and starts the Happier daemon on startup.
+The container can act as a Happier relay server (hub) or an agent (client connecting to a remote server). When `HAPPIER_SERVER_URL` is set, the container automatically authenticates with the relay server and starts the Happier daemon on startup.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CONTAINER_ROLE` | `server` | Role of this container: `server` starts the relay server and web UI, `agent` connects to a remote relay server |
 | `HAPPIER_SERVER_URL` | `https://localhost:3005` (server) / `http://happier-server:3006` (agent) | URL of the Happier relay server to connect to |
-| `HAPPIER_ACCESS_KEY` | *(not set)* | **Pre-provisioned authentication.** Set to the full JSON content of an `access.key` file. The script writes it to the correct location and starts the daemon automatically. Obtain this by running `happier auth login` interactively once on any machine, then extracting `$HOME/.happier/servers/<server-id>/access.key`. |
-| `HAPPIER_AUTO_AUTH` | *(not set)* | **Semi-automated authentication.** Set to `true` to have the script submit a pairing request and print a URL. You approve it once from the server's web UI. After approval, credentials persist for future restarts. |
+| `HAPPIER_ACCESS_KEY` | *(not set)* | **Fully automated authentication.** Set to the full JSON content of an `access.key` file (obtained from a previous `happier auth login` session). The script writes it to the correct location and starts the daemon — no manual approval needed. |
 | `TUNNEL_PORT` | `3005` | (Server mode only) External port the TLS tunnel listens on — the port you access in the browser |
 | `TUNNEL_TARGET_HOST` | `localhost` | (Server mode only) Where the TLS tunnel forwards plaintext traffic |
 | `TUNNEL_TARGET_PORT` | `3006` | (Server mode only) Internal port `happier-server` listens on |
 
-**Authentication priority order:**
-1. `HAPPIER_ACCESS_KEY` — pre-provisioned key (fully automated)
-2. `HAPPIER_AUTO_AUTH=true` — pairing flow with one-time browser approval
-3. Neither set — manual instructions printed to the log
+**Authentication flow:**
+- **Existing credentials found** → daemon starts immediately
+- **`HAPPIER_ACCESS_KEY` provided** → key is written, daemon starts immediately
+- **Default** → the container submits a pairing request and prints a one-time connect URL in the logs. Open that URL in your browser to approve. After approval, credentials persist for future restarts. The URL looks like:
+
+  ```
+  https://<server>:3005/terminal/connect#key=<base64-key>&server=https%3A%2F%2F<server>%3A3005
+  ```
 
 ### build-env Configuration
 
