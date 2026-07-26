@@ -219,6 +219,7 @@ model_list:
 litellm_settings:
   # Fixes a bug in translating between an Anthropic client and an OpenAI provider
   use_chat_completions_url_for_anthropic_messages: true
+  drop_params: true
 
   callbacks: ["router_callback.router_handler", "websearch_interception"]
   websearch_interception_params:
@@ -245,12 +246,10 @@ router_settings:
     ContentPolicyViolationErrorRetries: 0
     InternalServerErrorRetries: 0
 
-  # Documented format: List[Dict[str, List[str]]]
-  fallbacks:
-    - {"lite-llm/router": ["deepseek-v4-flash-free", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "zai-glm-4.7", "nemotron-3-ultra-free", "mistral-medium-latest", "big-pickle", "deepseek-ai/deepseek-v4-flash", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3"]}
-    - {"lite-llm/default": ["deepseek-v4-flash-free", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "zai-glm-4.7", "nemotron-3-ultra-free", "mistral-medium-latest", "big-pickle", "deepseek-ai/deepseek-v4-flash", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3"]}
-    - {"lite-llm/think": ["deepseek-ai/deepseek-v4-pro", "z-ai/glm-5.1", "minimaxai/minimax-m3", "moonshotai/kimi-k2.6", "nemotron-3-ultra-free", "deepseek-v4-flash-free", "deepseek-ai/deepseek-v4-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "zai-glm-4.7", "mistral-large-latest", "big-pickle"]}
-    - {"lite-llm/longContext": ["deepseek-ai/deepseek-v4-pro", "minimaxai/minimax-m3", "nemotron-3-ultra-free", "deepseek-v4-flash-free", "deepseek-ai/deepseek-v4-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash"]}
-    - {"lite-llm/webSearch": ["gemini-3-flash-preview", "gemini-2.5-flash", "nemotron-3-ultra-free", "big-pickle", "zai-glm-4.7", "deepseek-v4-flash-free", "mistral-medium-latest", "deepseek-ai/deepseek-v4-flash", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3"]}
-    - {"lite-llm/image": ["gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3", "deepseek-v4-flash-free", "deepseek-ai/deepseek-v4-flash"]}
-    - {"lite-llm/complexity": ["deepseek-v4-flash-free", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "zai-glm-4.7", "nemotron-3-ultra-free", "mistral-medium-latest", "big-pickle", "deepseek-ai/deepseek-v4-flash", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3"]}
+  allowed_fails: 1
+  num_retries: 0
+  request_timeout: 30.0
+  timeout: 180
+  stream_timeout: 30.0
+  ttft_timeout: 30.0
+  fallbacks: [{"lite-llm/router": ["gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "zai-glm-4.7", "nemotron-3-ultra-free", "mistral-medium-latest", "big-pickle", "deepseek-ai/deepseek-v4-flash", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3"]}, {"lite-llm/default": ["gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "zai-glm-4.7", "nemotron-3-ultra-free", "mistral-medium-latest", "big-pickle", "deepseek-ai/deepseek-v4-flash", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3"]}, {"lite-llm/think": ["z-ai/glm-5.1", "minimaxai/minimax-m3", "moonshotai/kimi-k2.6", "nemotron-3-ultra-free", "deepseek-v4-flash-free", "deepseek-ai/deepseek-v4-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "zai-glm-4.7", "mistral-large-latest", "big-pickle"]}, {"lite-llm/longContext": ["minimaxai/minimax-m3", "nemotron-3-ultra-free", "deepseek-v4-flash-free", "deepseek-ai/deepseek-v4-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash"]}, {"lite-llm/webSearch": ["gemini-3-flash-preview", "gemini-2.5-flash", "nemotron-3-ultra-free", "big-pickle", "zai-glm-4.7", "deepseek-v4-flash-free", "mistral-medium-latest", "deepseek-ai/deepseek-v4-flash", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3"]}, {"lite-llm/image": ["gemini-3-flash-preview", "gemini-2.5-flash", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3", "deepseek-v4-flash-free", "deepseek-ai/deepseek-v4-flash"]}, {"lite-llm/complexity": ["gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "zai-glm-4.7", "nemotron-3-ultra-free", "mistral-medium-latest", "big-pickle", "deepseek-ai/deepseek-v4-flash", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3"]}]
