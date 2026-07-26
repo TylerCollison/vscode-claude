@@ -1,5 +1,19 @@
 FROM lscr.io/linuxserver/code-server:latest
 
+# Configure Claude Code default environment variables
+ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1"
+ENV CLAUDE_CODE_ENABLE_AWAY_SUMMARY="0"
+ENV IS_SANDBOX="1"
+ENV ANTHROPIC_BASE_URL="http://127.0.0.1:5090"
+ENV ANTHROPIC_AUTH_TOKEN="bypass_token"
+ENV ANTHROPIC_DEFAULT_OPUS_MODEL="lite-llm/router"
+ENV ANTHROPIC_DEFAULT_SONNET_MODEL="lite-llm/router"
+ENV ANTHROPIC_DEFAULT_HAIKU_MODEL="lite-llm/router"
+ENV CLAUDE_CODE_SUBAGENT_MODEL="lite-llm/router"
+
+# Configure Happier default environment variables
+ENV HAPPIER_CACHE_DIR=/config/.cache
+
 # Install dependencies
 RUN apt-get update && apt-get install -y \
     curl \
@@ -32,13 +46,11 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
 RUN npm install -g @anthropic-ai/claude-code claude-threads
 
 # Install Happier
-WORKDIR /app
+WORKDIR /config
 
 # Configure persistent internal paths
 # HOME must be writable; the runner resolves $HOME/.cache by default
-ENV HOME=/app
-ENV HAPPIER_CACHE_DIR=/app/.cache
-RUN mkdir -p /app/.npm /app/.cache /app/.happy
+RUN mkdir -p /config/.npm /config/.cache /config/.happy
 
 # Install the happier-server runner (provides happier-server on PATH)
 RUN npm install -g @happier-dev/relay-server@dev
@@ -57,11 +69,11 @@ RUN timeout 120 happier-server --ui > /dev/null 2>&1; \
 # to a stable path in the data dir.  This allows auto-migrate to work
 # at every container start without needing network access or the
 # exact cache path (which contains a version tag).
-RUN HAPPIER_CACHE_DIR="/app/.cache" && \
+RUN HAPPIER_CACHE_DIR="/config/.cache" && \
     MIGRATIONS_SRC=$(find "$HAPPIER_CACHE_DIR/happier/server" -path "*/prisma/sqlite/migrations" -type d 2>/dev/null | head -1) && \
     if [ -n "$MIGRATIONS_SRC" ] && [ -d "$MIGRATIONS_SRC" ]; then \
-      mkdir -p /app/.happy/server-light/migrations && \
-      cp -r "$MIGRATIONS_SRC" /app/.happy/server-light/migrations/sqlite && \
+      mkdir -p /config/.happy/server-light/migrations && \
+      cp -r "$MIGRATIONS_SRC" /config/.happy/server-light/migrations/sqlite && \
       echo "Migrations pre-copied ($(find "$MIGRATIONS_SRC" -type f | wc -l) files)"; \
     else \
       echo "WARNING: migrations not found in cache, auto-migrate will require fallback at runtime"; \
@@ -69,18 +81,7 @@ RUN HAPPIER_CACHE_DIR="/app/.cache" && \
 
 # Remove any SQLite database created during build — each container
 # initialises its own database on first start via auto-migrate.
-RUN rm -f /app/.happy/server-light/happier-server-light.sqlite
-
-# Configure Claude Code default environment variables
-ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1"
-ENV CLAUDE_CODE_ENABLE_AWAY_SUMMARY="0"
-ENV IS_SANDBOX="1"
-ENV ANTHROPIC_BASE_URL="http://127.0.0.1:5090"
-ENV ANTHROPIC_AUTH_TOKEN="bypass_token"
-ENV ANTHROPIC_DEFAULT_OPUS_MODEL="lite-llm/router"
-ENV ANTHROPIC_DEFAULT_SONNET_MODEL="lite-llm/router"
-ENV ANTHROPIC_DEFAULT_HAIKU_MODEL="lite-llm/router"
-ENV CLAUDE_CODE_SUBAGENT_MODEL="lite-llm/router"
+RUN rm -f /config/.happy/server-light/happier-server-light.sqlite
 
 # Copy cconx to the container
 COPY cconx /cconx
@@ -118,7 +119,7 @@ COPY mattermost-create-channel.sh /99-mattermost-create-channel
 COPY configure-threads-settings.sh /100-configure-threads-settings
 COPY start-claude-threads.sh /101-start-claude-threads
 COPY start-happier.sh /102-start-happier
-COPY happier-tls-tunnel.js /app/happier-tls-tunnel.js
+COPY happier-tls-tunnel.js /config/happier-tls-tunnel.js
 
 # Copy master startup script to cont-init.d (so it runs automatically)
 COPY master-startup.sh /etc/cont-init.d/90-master-startup
