@@ -123,8 +123,12 @@ COPY happier-tls-tunnel.js /app/happier-tls-tunnel.js
 # Copy master startup script to cont-init.d (so it runs automatically)
 COPY master-startup.sh /etc/cont-init.d/90-master-startup
 
+# Copy litellm-health-check script to bin
+COPY litellm-health-check.py /usr/local/bin/litellm-health-check
+
 # Set execute permissions
 RUN chmod +x /93-git-repo-setup \
+    /usr/local/bin/litellm-health-check \
     /94-combine-markdowns \
     /95-configure-claude-skip-onboarding \
     /96-start-lite-llm \
