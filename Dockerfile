@@ -110,14 +110,14 @@ COPY lite-llm/ /lite-llm/
 # Copy startup scripts to root directory
 COPY git-repo-setup.sh /93-git-repo-setup
 COPY combine-markdowns.sh /94-combine-markdowns
-COPY configure-claude-skip-onboarding.sh /95-configure-claude-skip-onboarding
-COPY start-lite-llm.sh /96-start-lite-llm
-COPY configure-claude-permissions.sh /97-configure-claude-permissions
-COPY configure-claude-plugins.sh /98-configure-claude-plugins
-COPY mattermost-create-channel.sh /99-mattermost-create-channel
-COPY configure-threads-settings.sh /100-configure-threads-settings
-COPY start-claude-threads.sh /101-start-claude-threads
-COPY start-happier.sh /102-start-happier
+COPY start-happier.sh /95-start-happier
+COPY configure-claude-skip-onboarding.sh /96-configure-claude-skip-onboarding
+COPY start-lite-llm.sh /97-start-lite-llm
+COPY configure-claude-permissions.sh /98-configure-claude-permissions
+COPY configure-claude-plugins.sh /99-configure-claude-plugins
+COPY mattermost-create-channel.sh /100-mattermost-create-channel
+COPY configure-threads-settings.sh /101-configure-threads-settings
+COPY start-claude-threads.sh /102-start-claude-threads
 COPY happier-tls-tunnel.js /app/happier-tls-tunnel.js
 
 # Copy master startup script to cont-init.d (so it runs automatically)
@@ -130,14 +130,14 @@ COPY litellm-health-check.py /usr/local/bin/litellm-health-check
 RUN chmod +x /93-git-repo-setup \
     /usr/local/bin/litellm-health-check \
     /94-combine-markdowns \
-    /95-configure-claude-skip-onboarding \
-    /96-start-lite-llm \
-    /97-configure-claude-permissions \
-    /98-configure-claude-plugins \
-    /99-mattermost-create-channel \
-    /100-configure-threads-settings \
-    /101-start-claude-threads \
-    /102-start-happier \
+    /96-configure-claude-skip-onboarding \
+    /97-start-lite-llm \
+    /98-configure-claude-permissions \
+    /99-configure-claude-plugins \
+    /100-mattermost-create-channel \
+    /101-configure-threads-settings \
+    /102-start-claude-threads \
+    /95-start-happier \
     /etc/cont-init.d/90-master-startup
 
 # Docker socket volume mount (to be used when running the container)

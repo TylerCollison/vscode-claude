@@ -29,14 +29,14 @@ debug_log() {
 STARTUP_SCRIPTS=(
     "/93-git-repo-setup"
     "/94-combine-markdowns"
-    "/95-configure-claude-skip-onboarding"
-    "/96-start-lite-llm"
-    "/97-configure-claude-permissions"
-    "/98-configure-claude-plugins"
-    "/99-mattermost-create-channel"
-    "/100-configure-threads-settings"
-    "/101-start-claude-threads"
-    "/102-start-happier"
+    "/95-start-happier"
+    "/96-configure-claude-skip-onboarding"
+    "/97-start-lite-llm"
+    "/98-configure-claude-permissions"
+    "/99-configure-claude-plugins"
+    "/100-mattermost-create-channel"
+    "/101-configure-threads-settings"
+    "/102-start-claude-threads"
 )
 
 log "Starting master startup sequence..."
