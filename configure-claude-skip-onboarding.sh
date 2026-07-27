@@ -18,4 +18,4 @@ cat > /config/.claude.json << EOF
 EOF
 
 # Ensure config folder is owned by the abc user (PUID/PGID) for non-root access
-lsiown -R abc:abc /config
+chown -R abc:abc /config

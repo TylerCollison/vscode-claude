@@ -70,12 +70,12 @@ log "Container startup sequence finished"
 # Ensure workspace directory is owned by the abc user for non-root access
 DEFAULT_WORKSPACE="${DEFAULT_WORKSPACE:-/workspace}"
 if [ -d "$DEFAULT_WORKSPACE" ]; then
-    lsiown -R abc:abc "$DEFAULT_WORKSPACE" 2>/dev/null || true
+    chown -R abc:abc /config "$DEFAULT_WORKSPACE" 2>/dev/null || true
     debug_log "Workspace permissions set for $DEFAULT_WORKSPACE"
 fi
 
 # Ensure config directory is owned by the abc user (catch any remaining paths)
 if [ -d /config ]; then
-    lsiown -R abc:abc /config 2>/dev/null || true
+    chown -R abc:abc /config /config 2>/dev/null || true
     debug_log "Config permissions set for /config"
 fi

@@ -77,4 +77,4 @@ if [ $processed_count -eq 0 ]; then
 fi
 
 # Ensure config folder is owned by the abc user (PUID/PGID) for non-root access
-lsiown -R abc:abc /config
+chown -R abc:abc /config
