@@ -17,6 +17,11 @@ if [ -z "${HAPPIER_MODE:-}" ]; then
   exit 0
 fi
 
+# The startup scripts run as root ($HOME=/root), but the IDE and Claude
+# Code run as the abc user ($HOME=/config).  Use /config so the abc user
+# can find and use the keys we write.
+HOME=/config
+
 ROLE="${HAPPIER_MODE}"
 
 log() {
