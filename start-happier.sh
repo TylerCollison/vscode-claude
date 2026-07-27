@@ -50,7 +50,7 @@ find_access_key() {
   fi
   # Also search broadly as a fallback
   local found
-  found=$(find "/config/.happier/servers" -name "access.key" -type f -print -quit 2>/dev/null)
+  found=$(find "/config/.happier/servers" -name "access.key" -type f -print -quit 2>/dev/null || true)
   if [ -n "$found" ]; then
     echo "$found"
     return 0
@@ -196,7 +196,7 @@ case "$ROLE" in
 
     # Ensure Prisma migrations are available where the server expects them.
     if [ ! -d "/config/.happy/server-light/migrations/sqlite" ]; then
-      MIGRATIONS_SRC=$(find "/config/.cache/happier/server" -path "*/prisma/sqlite/migrations" -type d -print -quit 2>/dev/null)
+      MIGRATIONS_SRC=$(find "/config/.cache/happier/server" -path "*/prisma/sqlite/migrations" -type d -print -quit 2>/dev/null || true)
       if [ -n "$MIGRATIONS_SRC" ]; then
         mkdir -p /config/.happy/server-light/migrations
         cp -r "$MIGRATIONS_SRC" /config/.happy/server-light/migrations/sqlite

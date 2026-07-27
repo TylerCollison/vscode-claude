@@ -55,6 +55,27 @@ RUN npm install -g @happier-dev/relay-server@dev
 # Install the Happier CLI (provides happier, happier daemon, auth, etc.)
 RUN npm install -g @happier-dev/cli@dev
 
+# Pre-cache the happier-server binary (downloaded by the runner) and extract
+# the Prisma SQLite migration files so auto-migrate works on first container
+# start without needing network access.
+# We timeout after 2 minutes — the binary persists in cache even though
+# the server is killed (it cannot initialise fully without a database yet).
+RUN timeout 120 happier-server --ui > /dev/null 2>&1; \
+    echo "Pre-download attempt done"
+RUN HAPPIER_CACHE_DIR="/config/.cache" && \
+    MIGRATIONS_SRC=$(find "$HAPPIER_CACHE_DIR/happier/server" -path "*/prisma/sqlite/migrations" -type d -print -quit 2>/dev/null || true) && \
+    if [ -n "$MIGRATIONS_SRC" ] && [ -d "$MIGRATIONS_SRC" ]; then \
+      mkdir -p /config/.happy/server-light/migrations && \
+      cp -r "$MIGRATIONS_SRC" /config/.happy/server-light/migrations/sqlite && \
+      echo "Migrations copied from $MIGRATIONS_SRC to /config/.happy/server-light/migrations/sqlite"; \
+    else \
+      echo "No SQLite migrations found in cache — flyway migration path needed?"; \
+    fi
+
+# Remove any SQLite database created during build — each container
+# initialises its own database on first start via auto-migrate.
+RUN rm -f /config/.happy/server-light/happier-server-light.sqlite
+
 # Copy cconx to the container
 COPY cconx /cconx
 
