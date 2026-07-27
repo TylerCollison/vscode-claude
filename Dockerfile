@@ -45,43 +45,15 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
 # Install Claude Code and Claude Threads
 RUN npm install -g @anthropic-ai/claude-code claude-threads
 
-# Install Happier
-WORKDIR /config
-
 # Configure persistent internal paths
 # HOME must be writable; the runner resolves $HOME/.cache by default
-RUN mkdir -p /config/.npm /config/.cache /config/.happy
+#RUN mkdir -p /config/.npm /config/.cache /config/.happy
 
 # Install the happier-server runner (provides happier-server on PATH)
 RUN npm install -g @happier-dev/relay-server@dev
 
 # Install the Happier CLI (provides happier, happier daemon, auth, etc.)
 RUN npm install -g @happier-dev/cli@dev
-
-# Pre-download the server binary and UI web bundle.
-# The runner downloads + extracts both to the cache dir, then spawns the server.
-# We timeout after 2 min — the binary and UI persist in cache even though
-# the server is killed (it cannot fully initialise without a database yet).
-RUN timeout 120 happier-server --ui > /dev/null 2>&1; \
-    echo "Pre-download attempt done"
-
-# Copy the Prisma SQLite migration files from the extracted binary
-# to a stable path in the data dir.  This allows auto-migrate to work
-# at every container start without needing network access or the
-# exact cache path (which contains a version tag).
-RUN HAPPIER_CACHE_DIR="/config/.cache" && \
-    MIGRATIONS_SRC=$(find "$HAPPIER_CACHE_DIR/happier/server" -path "*/prisma/sqlite/migrations" -type d 2>/dev/null | head -1) && \
-    if [ -n "$MIGRATIONS_SRC" ] && [ -d "$MIGRATIONS_SRC" ]; then \
-      mkdir -p /config/.happy/server-light/migrations && \
-      cp -r "$MIGRATIONS_SRC" /config/.happy/server-light/migrations/sqlite && \
-      echo "Migrations pre-copied ($(find "$MIGRATIONS_SRC" -type f | wc -l) files)"; \
-    else \
-      echo "WARNING: migrations not found in cache, auto-migrate will require fallback at runtime"; \
-    fi
-
-# Remove any SQLite database created during build — each container
-# initialises its own database on first start via auto-migrate.
-RUN rm -f /config/.happy/server-light/happier-server-light.sqlite
 
 # Copy cconx to the container
 COPY cconx /cconx
