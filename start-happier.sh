@@ -33,18 +33,19 @@ get_server_id() {
 }
 
 # Locate the existing access key for a given server URL
+# Use /config (abc user's home) instead of $HOME (which is /root when running as root)
 find_access_key() {
   local server_url="$1"
   local sid
   sid=$(get_server_id "$server_url")
-  local key_file="$HOME/.happier/servers/$sid/access.key"
+  local key_file="/config/.happier/servers/$sid/access.key"
   if [ -f "$key_file" ]; then
     echo "$key_file"
     return 0
   fi
   # Also search broadly as a fallback
   local found
-  found=$(find "$HOME/.happier/servers" -name "access.key" -type f 2>/dev/null | head -1)
+  found=$(find "/config/.happier/servers" -name "access.key" -type f 2>/dev/null | head -1)
   if [ -n "$found" ]; then
     echo "$found"
     return 0
@@ -53,12 +54,13 @@ find_access_key() {
 }
 
 # Write a pre-provisioned access key
+# Use /config (abc user's home) instead of $HOME (which is /root when running as root)
 write_access_key() {
   local server_url="$1"
   local key_json="$2"
   local sid
   sid=$(get_server_id "$server_url")
-  local key_dir="$HOME/.happier/servers/$sid"
+  local key_dir="/config/.happier/servers/$sid"
   mkdir -p "$key_dir"
   echo "$key_json" > "$key_dir/access.key"
   chmod 600 "$key_dir/access.key"
