@@ -150,7 +150,7 @@ case "$ROLE" in
     # Needed because crypto.subtle (Web Crypto API) is only available in
     # secure contexts (HTTPS or localhost). The TLS tunnel wraps port 3005
     # so the browser treats it as a secure context.
-    CERT_DIR="/app/.happy/server-light"
+    CERT_DIR="/config/.happy/server-light"
     if [ ! -f "$CERT_DIR/tunnel.key" ] || [ ! -f "$CERT_DIR/tunnel.crt" ]; then
       log "Generating self-signed TLS certificate for happier HTTPS tunnel..."
       mkdir -p "$CERT_DIR"
@@ -184,15 +184,15 @@ case "$ROLE" in
     # Run happier-server on an internal port; the TLS tunnel forwards to it.
     export PORT=3006
     export HAPPIER_SQLITE_AUTO_MIGRATE=true
-    DATABASE_FILE="/app/.happy/server-light/happier-server-light.sqlite"
+    DATABASE_FILE="/config/.happy/server-light/happier-server-light.sqlite"
     export DATABASE_URL="file:${DATABASE_FILE}"
 
     # Ensure Prisma migrations are available where the server expects them.
-    if [ ! -d "/app/.happy/server-light/migrations/sqlite" ]; then
-      MIGRATIONS_SRC=$(find "/app/.cache/happier/server" -path "*/prisma/sqlite/migrations" -type d 2>/dev/null | head -1)
+    if [ ! -d "/config/.happy/server-light/migrations/sqlite" ]; then
+      MIGRATIONS_SRC=$(find "/config/.cache/happier/server" -path "*/prisma/sqlite/migrations" -type d 2>/dev/null | head -1)
       if [ -n "$MIGRATIONS_SRC" ]; then
-        mkdir -p /app/.happy/server-light/migrations
-        cp -r "$MIGRATIONS_SRC" /app/.happy/server-light/migrations/sqlite
+        mkdir -p /config/.happy/server-light/migrations
+        cp -r "$MIGRATIONS_SRC" /config/.happy/server-light/migrations/sqlite
         log "Migrations copied at runtime (fallback)"
       fi
     fi
@@ -256,6 +256,7 @@ except Exception:
     log "WAL keeper started (PID $WAL_KEEPER_PID)"
 
     log "Starting TLS tunnel on 0.0.0.0:3005 -> localhost:3006"
+    export TUNNEL_CERT_DIR="/config/.happy/server-light"
     node /app/happier-tls-tunnel.js &
 
     # Configure the CLI environment for local use within the container.

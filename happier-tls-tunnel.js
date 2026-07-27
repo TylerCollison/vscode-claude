@@ -17,7 +17,7 @@ const path = require('path');
 const LISTEN_PORT = parseInt(process.env.TUNNEL_PORT || '3005', 10);
 const TARGET_HOST = process.env.TUNNEL_TARGET_HOST || 'localhost';
 const TARGET_PORT = parseInt(process.env.TUNNEL_TARGET_PORT || '3006', 10);
-const CERT_DIR = process.env.TUNNEL_CERT_DIR || '/app/.happy/server-light';
+const CERT_DIR = process.env.TUNNEL_CERT_DIR || '/config/.happy/server-light';
 const KEY_FILE = path.join(CERT_DIR, 'tunnel.key');
 const CERT_FILE = path.join(CERT_DIR, 'tunnel.crt');
 
