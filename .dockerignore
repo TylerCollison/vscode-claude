@@ -1,0 +1,3 @@
+# Ignore git repository history and configuration
+.git
+.gitignore
