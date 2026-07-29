@@ -27,6 +27,3 @@ cat > /config/.claude/settings.json << EOF
   }
 }
 EOF
-
-# Ensure config folder is owned by the abc user (PUID/PGID) for non-root access
-chown -R abc:abc /config

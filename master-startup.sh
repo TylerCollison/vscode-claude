@@ -67,15 +67,19 @@ done
 log_success "All startup scripts completed successfully"
 log "Container startup sequence finished"
 
-# Ensure workspace directory is owned by the abc user for non-root access
-DEFAULT_WORKSPACE="${DEFAULT_WORKSPACE:-/workspace}"
-if [ -d "$DEFAULT_WORKSPACE" ]; then
-    chown -R abc:abc /config "$DEFAULT_WORKSPACE" 2>/dev/null || true
-    debug_log "Workspace permissions set for $DEFAULT_WORKSPACE"
+# Ensure /config (and any files created by startup scripts) is owned by the abc user.
+# Most files were pre-owned at build time (Dockerfile RUN chown) so this is a fast
+# metadata-only pass with minimal overlay2 copy-up, limited to newly-created config files.
+if [ -d /config ]; then
+    chown -R abc:abc /config 2>/dev/null || true
+    debug_log "Config permissions set for /config"
 fi
 
-# Ensure config directory is owned by the abc user (catch any remaining paths)
-if [ -d /config ]; then
-    chown -R abc:abc /config /config 2>/dev/null || true
-    debug_log "Config permissions set for /config"
+# Ensure workspace directory is owned by the abc user for non-root access.
+# This directory is created at runtime by git-repo-setup.sh, so the files live
+# on the writable layer — chown here doesn't trigger overlay2 copy-up.
+DEFAULT_WORKSPACE="${DEFAULT_WORKSPACE:-/workspace}"
+if [ -d "$DEFAULT_WORKSPACE" ]; then
+    chown -R abc:abc "$DEFAULT_WORKSPACE" 2>/dev/null || true
+    debug_log "Workspace permissions set for $DEFAULT_WORKSPACE"
 fi

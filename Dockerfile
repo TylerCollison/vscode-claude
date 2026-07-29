@@ -60,9 +60,11 @@ RUN npm install -g @happier-dev/cli@dev
 # start without needing network access.
 # We timeout after 2 minutes — the binary persists in cache even though
 # the server is killed (it cannot initialise fully without a database yet).
-RUN timeout 120 happier-server --ui > /dev/null 2>&1; \
-    echo "Pre-download attempt done"
-RUN HAPPIER_CACHE_DIR="/config/.cache" && \
+# All /config files are chowned (using the default linuxserver PUID=911,
+# PGID=911) in this same layer so no overlay2 copy-up is triggered at
+# runtime — at runtime these files are already owned by 911:911.
+RUN timeout 120 happier-server --ui > /dev/null 2>&1 || true; \
+    HAPPIER_CACHE_DIR="/config/.cache" && \
     MIGRATIONS_SRC=$(find "$HAPPIER_CACHE_DIR/happier/server" -path "*/prisma/sqlite/migrations" -type d -print -quit 2>/dev/null || true) && \
     if [ -n "$MIGRATIONS_SRC" ] && [ -d "$MIGRATIONS_SRC" ]; then \
       mkdir -p /config/.happy/server-light/migrations && \
@@ -70,11 +72,14 @@ RUN HAPPIER_CACHE_DIR="/config/.cache" && \
       echo "Migrations copied from $MIGRATIONS_SRC to /config/.happy/server-light/migrations/sqlite"; \
     else \
       echo "No SQLite migrations found in cache — flyway migration path needed?"; \
-    fi
-
-# Remove any SQLite database created during build — each container
-# initialises its own database on first start via auto-migrate.
-RUN rm -f /config/.happy/server-light/happier-server-light.sqlite
+    fi && \
+    rm -f /config/.happy/server-light/happier-server-light.sqlite && \
+    # Use numeric IDs matching the linuxserver default PUID/PGID (911:911).
+    # The base image defines abc with gid=1001, but at runtime the init
+    # system sets abc's group to PGID (default 911). Using the runtime ID
+    # here avoids overlay2 copy-up when the runtime chown runs.
+    chown -R 911:911 /config && \
+    echo "Pre-download attempt done"
 
 # Copy cconx to the container
 COPY cconx /cconx

@@ -75,6 +75,3 @@ log "- Failed: $failed_count files"
 if [ $processed_count -eq 0 ]; then
     log "Warning: No files were successfully processed"
 fi
-
-# Ensure config folder is owned by the abc user (PUID/PGID) for non-root access
-chown -R abc:abc /config
