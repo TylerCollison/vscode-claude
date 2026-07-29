@@ -31,10 +31,25 @@ log() {
 }
 
 # Derive a filesystem-safe server ID from HAPPIER_SERVER_URL
+# Matches the happier CLI's deriveServerIdFromUrl() logic (FNV-1a hash of the comparable URL).
+# Uses the same algorithm as @happier-dev/protocol createServerUrlComparableKey().
 get_server_id() {
   local url="$1"
-  echo "$url" | sed -E 's/^(http|https):\/\///' | sed 's/\/$//' \
-    | sed 's/[^a-zA-Z0-9._-]/-/g' | sed -E 's/^-+|-+$//g' | tr '[:upper:]' '[:lower:]'
+  node -e "
+const url = process.argv[1];
+const normalizeUrl = (u) => String(u ?? '').trim().replace(/\/+\$/, '');
+// The CLI uses @happier-dev/protocol's createServerUrlComparableKey which
+// returns the normalized URL itself (with protocol, no trailing slash).
+// If URL parsing fails, fall back to the normalized URL.
+let comparableKey = '';
+try {
+  comparableKey = new URL(normalizeUrl(url)).href.replace(/\/+\$/, '');
+} catch {}
+const value = comparableKey || normalizeUrl(url) || (url || '');
+let h = 2166136261;
+for (let i = 0; i < value.length; i++) { h ^= value.charCodeAt(i); h = Math.imul(h, 16777619); }
+console.log('env_' + (h >>> 0).toString(16));
+" "$url"
 }
 
 # Locate the existing access key for a given server URL
