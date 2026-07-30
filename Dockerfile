@@ -42,6 +42,13 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
     && apt-get install -y gh \
     && rm -rf /var/lib/apt/lists/*
 
+# Install GitLab CLI (glab) — download the binary directly from GitLab releases
+# since packages.gitlab.com doesn't support Ubuntu Noble (24.04) yet.
+# When bumping, check https://gitlab.com/gitlab-org/cli/-/releases for new releases.
+RUN GLAB_VERSION="v1.110.0" && \
+    curl -fsSL "https://gitlab.com/gitlab-org/cli/-/releases/${GLAB_VERSION}/downloads/glab_${GLAB_VERSION#v}_linux_amd64.tar.gz" \
+    | tar -xz -C /usr/local/bin --strip-components=1 bin/glab
+
 # Install Claude Code and Claude Threads
 RUN npm install -g @anthropic-ai/claude-code claude-threads
 
