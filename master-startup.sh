@@ -37,6 +37,7 @@ STARTUP_SCRIPTS=(
     "/100-configure-threads-settings"
     "/101-start-claude-threads"
     "/102-start-happier"
+    "/103-configure-buildx"
 )
 
 log "Starting master startup sequence..."

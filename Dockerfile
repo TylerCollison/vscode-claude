@@ -130,6 +130,7 @@ COPY mattermost-create-channel.sh /99-mattermost-create-channel
 COPY configure-threads-settings.sh /100-configure-threads-settings
 COPY start-claude-threads.sh /101-start-claude-threads
 COPY start-happier.sh /102-start-happier
+COPY 103-configure-buildx /103-configure-buildx
 COPY happier-tls-tunnel.js /app/happier-tls-tunnel.js
 
 # Copy master startup script to cont-init.d (so it runs automatically)
@@ -150,6 +151,7 @@ RUN chmod +x /93-git-repo-setup \
     /100-configure-threads-settings \
     /101-start-claude-threads \
     /102-start-happier \
+    /103-configure-buildx \
     /etc/cont-init.d/90-master-startup
 
 # Docker socket volume mount (to be used when running the container)
