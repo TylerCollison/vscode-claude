@@ -201,6 +201,12 @@ This pairs the container's Happier CLI with the cloud relay, enabling you to app
 | `GIT_REPO_URL` | Repository URL to clone on startup |
 | `GIT_BRANCH_NAME` | Branch name |
 
+### BuildKit Builder Configuration
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `USE_BUILDKIT_BUILDER` | *(not set)* | Set to `true` to create a persistent BuildKit builder container at startup for faster Docker builds |
+| `BUILDX_BUILDER_NAME` | `buildkit-builder` | Name for the BuildKit builder container (only used when `USE_BUILDKIT_BUILDER=true`)
+
 ### Knowledge Repository Integration
 | Variable | Description |
 |----------|-------------|
@@ -412,6 +418,21 @@ docker ps
 # Build containers
 docker build -t my-app .
 ```
+
+**BuildKit Accelerated Builds:** For faster Docker builds, set `USE_BUILDKIT_BUILDER=true`:
+
+```bash
+docker run -d \
+  --name=claude-dev \
+  -e USE_BUILDKIT_BUILDER=true \
+  ...
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  tylercollison2089/claude-conx
+```
+
+This creates a persistent [BuildKit](https://github.com/moby/buildkit) builder container (`buildkit-builder`) managed by the host Docker daemon. It avoids the expensive layer-export step that the default `docker` builder incurs, significantly speeding up `docker build` and `docker buildx build` commands.
+
+The builder is created once at startup and persists across container restarts. Multiple containers can share the same builder — only the first one creates it; subsequent containers detect and reuse it.
 
 **Security Note:** Mounting `/var/run/docker.sock` gives the container full control over the host's Docker daemon.
 
