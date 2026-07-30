@@ -69,9 +69,16 @@ log "Container startup sequence finished"
 
 # Ensure /config (and any files created by startup scripts) is owned by the abc user.
 # Most files were pre-owned at build time (Dockerfile RUN chown) so this is a fast
-# metadata-only pass with minimal overlay2 copy-up, limited to newly-created config files.
+# metadata-only pass with minimal overlay2 copy-up, limited to newly-created config files —
+# *unless* PUID differs from the build-time UID (911). In that case, every pre-built
+# file needs copy-up, which can stall on large caches (1.6 GB+).
+#
+# When abc is root (PUID=0), skip the chown entirely — root can access everything,
+# and forcing 911→0 copy-up serves no purpose.
 if [ -d /config ]; then
-    chown -R abc:abc /config 2>/dev/null || true
+    if [ "$(id -u abc)" != "0" ]; then
+        chown -R abc:abc /config 2>/dev/null || true
+    fi
     debug_log "Config permissions set for /config"
 fi
 
