@@ -1,5 +1,8 @@
 FROM lscr.io/linuxserver/code-server:latest
 
+# Enable Docker BuildKit for faster builds
+ENV DOCKER_BUILDKIT=1
+
 # Configure Claude Code default environment variables
 ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1"
 ENV CLAUDE_CODE_ENABLE_AWAY_SUMMARY="0"
@@ -23,9 +26,12 @@ RUN apt-get update && apt-get install -y \
     jq \
     gettext-base \
     docker.io \
+    docker-compose-v2 \
+    docker-buildx \
     python3-pip \
     python3-venv \
     && rm -rf /var/lib/apt/lists/*
+RUN ln -s /usr/libexec/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose
 
 # Add NodeSource repository for Node.js 22
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
