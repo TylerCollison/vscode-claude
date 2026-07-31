@@ -27,17 +27,26 @@ if ! docker info >/dev/null 2>&1; then
     exit 0
 fi
 
-# Check if builder already exists
-EXISTING_STATUS=$(docker buildx ls 2>/dev/null | awk -v name="$BUILDER_NAME" '$1 == name {print $3}')
-if [ -n "$EXISTING_STATUS" ]; then
-    if [ "$EXISTING_STATUS" = "running" ]; then
-        echo "BuildKit builder '${BUILDER_NAME}' already exists and is running. Setting as default."
-        docker buildx use "${BUILDER_NAME}" 2>/dev/null || true
-        exit 0
-    else
-        echo "BuildKit builder '${BUILDER_NAME}' found but status is '${EXISTING_STATUS}'. Removing and recreating..."
-        docker buildx rm "${BUILDER_NAME}" 2>/dev/null || true
-    fi
+# Check if builder already exists.
+# docker buildx ls prints a header then two-line groups:
+#   builder-name*  driver
+#    \_ node-name   \_ endpoint   status   ...
+# The builder name may have a trailing '*' (current default).
+# The node's status is in field 5 of the child line.
+EXISTING_STATUS=$(docker buildx ls 2>/dev/null | awk -v name="${BUILDER_NAME}" '
+    BEGIN { found=0; status="" }
+    { orig=$1; gsub(/\*$/, "", $1) }
+    $1 == name { found=1; checking=1; next }
+    checking == 1 { status=$5; checking=0 }
+    END { if (!found) print "not-found"; else print status }
+')
+if [ "$EXISTING_STATUS" = "running" ]; then
+    echo "BuildKit builder '${BUILDER_NAME}' already exists and is running. Setting as default."
+    docker buildx use "${BUILDER_NAME}" 2>/dev/null || true
+    exit 0
+elif [ "$EXISTING_STATUS" != "not-found" ]; then
+    echo "BuildKit builder '${BUILDER_NAME}' found but status is '${EXISTING_STATUS}'. Removing and recreating..."
+    docker buildx rm "${BUILDER_NAME}" 2>/dev/null || true
 fi
 
 # Create a new builder with docker-container driver
