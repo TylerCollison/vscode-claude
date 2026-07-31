@@ -68,6 +68,24 @@ RUN npm install -g @happier-dev/relay-server@dev
 # Install the Happier CLI (provides happier, happier daemon, auth, etc.)
 RUN npm install -g @happier-dev/cli@dev
 
+# Strip unused platform-specific binaries from happier CLI dependencies
+# — macOS/Windows binaries are not needed in this Linux container
+# — ONNX CUDA/TensorRT providers are not needed for CPU-only workloads
+# (Linux arm architectures are kept for future compatibility)
+RUN rm -rf \
+    /usr/lib/node_modules/@happier-dev/cli/node_modules/@anthropic-ai/claude-agent-sdk-darwin-* \
+    /usr/lib/node_modules/@happier-dev/cli/node_modules/@anthropic-ai/claude-agent-sdk-win32-* \
+    /usr/lib/node_modules/@happier-dev/cli/node_modules/onnxruntime-node/bin/napi-v3/darwin \
+    /usr/lib/node_modules/@happier-dev/cli/node_modules/onnxruntime-node/bin/napi-v3/win32 \
+    /usr/lib/node_modules/@happier-dev/cli/node_modules/@img/sharp-win32-* \
+    /usr/lib/node_modules/@happier-dev/cli/node_modules/@img/sharp-libvips-darwin-* \
+    /usr/lib/node_modules/@happier-dev/cli/node_modules/@img/sharp-libvips-win32-* \
+    /usr/lib/node_modules/@happier-dev/cli/node_modules/node-pty/prebuilds/darwin-* \
+    /usr/lib/node_modules/@happier-dev/cli/node_modules/node-pty/prebuilds/win32-* \
+    && rm -f \
+    /usr/lib/node_modules/@happier-dev/cli/node_modules/onnxruntime-node/bin/napi-v3/linux/x64/libonnxruntime_providers_cuda.so \
+    /usr/lib/node_modules/@happier-dev/cli/node_modules/onnxruntime-node/bin/napi-v3/linux/x64/libonnxruntime_providers_tensorrt.so
+
 # Pre-cache the happier-server binary (downloaded by the runner) and extract
 # the Prisma SQLite migration files so auto-migrate works on first container
 # start without needing network access.
@@ -153,6 +171,19 @@ RUN chmod +x /93-git-repo-setup \
     /102-start-happier \
     /103-configure-buildx \
     /etc/cont-init.d/90-master-startup
+
+# Remove build toolchain packages no longer needed at runtime
+# (gcc, g++, binutils, and their dev headers were only needed to compile
+# native npm addons like node-pty, sharp, and onnxruntime at install time)
+RUN apt-get purge -y \
+    gcc-13-x86-64-linux-gnu g++-13-x86-64-linux-gnu cpp-13-x86-64-linux-gnu \
+    gcc-13 g++-13 cpp-13 \
+    build-essential \
+    libstdc++-13-dev libgcc-13-dev libc6-dev linux-libc-dev \
+    binutils-x86-64-linux-gnu binutils-common libbinutils \
+    && apt-get autoremove --purge -y \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /usr/lib/gcc
 
 # Docker socket volume mount (to be used when running the container)
 # This allows Docker commands inside the container to communicate with host Docker daemon
