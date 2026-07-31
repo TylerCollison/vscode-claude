@@ -73,10 +73,11 @@ docker run -d \
   -e EXA_API_KEY=your-exa-api-key \
   -p 8443:8443 \
   -p 3005:3005 \
+  -p 4000:4000 \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /path/to/your/code:/workspace \
   --restart unless-stopped \
-  tylercollison2089/claude-conx
+  tylercollison2089/vscode-claude
 
 # Access at http://localhost:8443
 ```
@@ -152,7 +153,7 @@ The container can act as a Happier relay server (hub) or an agent (client connec
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `HAPPIER_MODE` | *(not set)* | Role of this container: `server` starts the relay server and web UI, `agent` connects to a remote relay server |
-| `HAPPIER_SERVER_URL` | `https://localhost:3005` (server) / `http://happier-server:3006` (agent) | URL of the Happier relay server to connect to |
+| `HAPPIER_SERVER_URL` | `https://localhost:3005` (server) | URL of the Happier relay server to connect to |
 | `HAPPIER_ACCESS_KEY` | *(not set)* | **Fully automated authentication.** Set to the full JSON content of an `access.key` file (obtained from a previous `happier auth login` session). The script writes it to the correct location and starts the daemon — no manual approval needed. |
 | `TUNNEL_PORT` | `3005` | (Server mode only) External port the TLS tunnel listens on — the port you access in the browser |
 | `TUNNEL_TARGET_HOST` | `localhost` | (Server mode only) Where the TLS tunnel forwards plaintext traffic |
@@ -229,10 +230,12 @@ services:
       - SUDO_PASSWORD=password # Optional
       - SUDO_PASSWORD_HASH= # Optional
       - PROXY_DOMAIN=code-server.my.domain # Optional
+      # VSCode Configuration
       - DEFAULT_WORKSPACE=/workspace
       - PWA_APPNAME=code-server # Optional
-      - VSCODE_THEME=Dark Modern # Optional: Set default color theme
+      - VSCODE_THEME=Dark Modern # Optional
       - CLAUDE_CODE_PERMISSION_MODE=acceptEdits
+      # API Key Configuration
       - NIM_API_KEY=your-nvidia-nim-api-key # Required to use NIM models
       - GOOGLE_API_KEY=your-google-ai-studio-api-key # Required to use Google models
       - MISTRAL_API_KEY=your-mistral-api-key # Required to use Mistral models
@@ -247,6 +250,7 @@ services:
       - GIT_BRANCH_NAME=feature-branch
       # Knowledge repositories (optional)
       - KNOWLEDGE_REPOS=https://github.com/user/docs.git:main:README.md,docs/guide.md
+      # Happier Configuration (optional)
       - HAPPIER_MODE=server
       - HAPPIER_SERVER_URL=https://localhost:3005
       # Claude Threads (optional)
@@ -260,9 +264,14 @@ services:
       - THREADS_CHROME=true
       - THREADS_WORKTREE_MODE=off
       - THREADS_SKIP_PERMISSIONS=true
+      # Docker Buildkit Configuration (optional)
+      - USE_BUILDKIT_BUILDER=true
+      # Build Environment Configuration (optional)
+      - BUILD_CONTAINER=python:3.13.14-trixie
     ports:
-      - "8443:8443"
-      - "3005:3005"
+      - "8443:8443" # VSCode UI
+      - "3005:3005" # Happier UI
+      - "4000:4000" # LiteLLM UI
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock # Optional for docker support
       - /path/to/code-server/config:/config # Only specify if using existing configuration
@@ -288,16 +297,17 @@ environment:
   - VSCODE_THEME=GitHub Dark        # Requires GitHub Theme extension
 ```
 
-*Note: If the theme belongs to an extension, ensure the extension is either pre-installed or will be installed via `CLAUDE_PLUGINS`.*
+*Note: If the theme belongs to an extension, ensure the extension is either pre-installed or will be installed*
 
 ### Claude Code Setup
 
 Claude Code is pre-configured to route all requests through the LiteLLM proxy at `http://127.0.0.1:5090`. No additional setup is needed — just open the terminal in VS Code and run `claude`.
 
-To override the default routing and use a specific model directly, set the model environment variable to the desired LiteLLM model or model group:
+To override the default routing and use a specific model directly, set the model environment variable to the desired model or model group:
 
 ```yaml
 environment:
+  - ANTHROPIC_DEFAULT_OPUS_MODEL="claude-opus-5" # Bypass litellm
   - ANTHROPIC_DEFAULT_SONNET_MODEL=lite-llm/think # Use complex-reasoning tier
   - ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-ai/deepseek-v4-flash # Use a fast model
 ```
@@ -310,16 +320,42 @@ The LiteLLM proxy provides a three-stage routing pipeline:
 2. **Web search detection** — requests with web search tools route to `lite-llm/webSearch` (Google Gemini 3.5 Flash)
 3. **Complexity routing** — all other requests are scored by complexity and routed to either `lite-llm/default` (OpenCode Zen DeepSeek v4 Flash) for simple tasks or `lite-llm/think` (NVIDIA NIM DeepSeek v4 Pro) for complex reasoning
 
-The routing configuration lives in `/lite-llm/lite-llm-default.yaml`. Key model groups:
+The routing configuration lives in `/lite-llm/lite-llm-default.yaml`. All configured models and model groups:
 
-| Group | Model | Provider |
-|-------|-------|----------|
-| `lite-llm/default` | DeepSeek V4 Flash | OpenCode Zen |
-| `lite-llm/think` | DeepSeek V4 Pro | NVIDIA NIM |
-| `lite-llm/webSearch` | Gemini 3.5 Flash | Google AI Studio |
-| `lite-llm/image` | Gemini 3.5 Flash | Google AI Studio |
-| `lite-llm/longContext` | DeepSeek V4 Pro | NVIDIA NIM |
-| `lite-llm/background` | DeepSeek V4 Flash | OpenCode Zen |
+#### Model Groups
+
+| Group | Primary Model | Provider | Purpose |
+|-------|---------------|----------|---------|
+| `lite-llm/router` | DeepSeek V4 Flash (OpenCode Zen) | OpenCode Zen | **Main entry point** — multi-stage routing pipeline (content → complexity) |
+| `lite-llm/complexity` | Auto-router | — | Complexity-based router (SIMPLE/MEDIUM → default, COMPLEX/REASONING → think) |
+| `lite-llm/default` | DeepSeek V4 Flash | OpenCode Zen | Standard chat and coding tasks |
+| `lite-llm/think` | DeepSeek V4 Pro | NVIDIA NIM | Complex reasoning and deep analysis |
+| `lite-llm/longContext` | DeepSeek V4 Pro | NVIDIA NIM | Long-context tasks |
+| `lite-llm/webSearch` | Gemini 3.5 Flash | Google AI Studio | Queries requiring web search (EXA AI) |
+| `lite-llm/image` | Gemini 3.5 Flash | Google AI Studio | Image analysis and vision tasks |
+
+#### Underlying Models (Deployments)
+
+| Model Name | Provider | API Key Required |
+|------------|----------|------------------|
+| `gemini-3.5-flash` | Google AI Studio | `GOOGLE_API_KEY` |
+| `gemini-3-flash-preview` | Google AI Studio | `GOOGLE_API_KEY` |
+| `gemini-2.5-flash` | Google AI Studio | `GOOGLE_API_KEY` |
+| `gemini-embedding-2` | Google AI Studio | `GOOGLE_API_KEY` |
+| `gemini-embedding-001` | Google AI Studio | `GOOGLE_API_KEY` |
+| `zai-glm-4.7` | Cerebras | `CEREBRAS_API_KEY` |
+| `minimaxai/minimax-m3` | NVIDIA NIM | `NIM_API_KEY` |
+| `moonshotai/kimi-k2.6` | NVIDIA NIM | `NIM_API_KEY` |
+| `deepseek-ai/deepseek-v4-flash` | NVIDIA NIM | `NIM_API_KEY` |
+| `deepseek-ai/deepseek-v4-pro` | NVIDIA NIM | `NIM_API_KEY` |
+| `z-ai/glm-5.1` | NVIDIA NIM | `NIM_API_KEY` |
+| `nvidia/nv-embed-v1` | NVIDIA NIM | `NIM_API_KEY` |
+| `nemotron-3-ultra-free` | OpenCode Zen | `OPENCODE_ZEN_API_KEY` |
+| `big-pickle` | OpenCode Zen | `OPENCODE_ZEN_API_KEY` |
+| `deepseek-v4-flash-free` | OpenCode Zen | `OPENCODE_ZEN_API_KEY` |
+| `mistral-medium-latest` | Mistral | `MISTRAL_API_KEY` |
+| `mistral-large-latest` | Mistral | `MISTRAL_API_KEY` |
+| `mistral-embed` | Mistral | `MISTRAL_API_KEY` |
 
 Each model group has a fallback chain defined in the YAML config, so if the primary model is unavailable, traffic routes to alternative providers automatically.
 
@@ -484,7 +520,7 @@ The builder is created once at startup and persists across container restarts. M
 
 ```bash
 git clone https://github.com/TylerCollison/vscode-claude.git
-cd claude-conx
+cd vscode-claude
 docker build -t tylercollison2089/vscode-claude:latest .
 ```
 
@@ -550,6 +586,7 @@ docker exec claude-dev curl -s http://127.0.0.1:5090/health
 - **[Anthropic Claude Code](https://code.claude.com/docs/en/overview)** — AI coding assistant
 - **[LiteLLM](https://github.com/BerriAI/litellm)** — Model routing and provider proxy
 - **[Claude Threads](https://github.com/anneschuth/claude-threads)** — Real-time chat integration
+- **[Happier](https://docs.happier.dev/)** — Relay server and mobile app for agent management
 
 ## Support
 
@@ -559,6 +596,7 @@ docker exec claude-dev curl -s http://127.0.0.1:5090/health
 - **linuxserver/code-server**: [linuxserver/code-server documentation](https://hub.docker.com/r/linuxserver/code-server)
 - **LiteLLM**: [LiteLLM Documentation](https://docs.litellm.ai)
 - **Claude Threads**: [Claude Threads GitHub](https://github.com/anneschuth/claude-threads)
+- **Happier**: [Happier documentation](https://docs.happier.dev/)
 - **cconx**: [cconx GitHub](https://github.com/TylerCollison/vscode-claude/tree/main)
 - **build-env**: [build-env GitHub](https://github.com/TylerCollison/vscode-claude/tree/main)
 - **tylercollison2089/vscode-claude**: [ClaudeConX GitHub](https://github.com/TylerCollison/vscode-claude/tree/main)
@@ -569,10 +607,11 @@ docker exec claude-dev curl -s http://127.0.0.1:5090/health
 - **Claude Code**: [Claude Code GitHub issue tracker](https://github.com/anthropics/claude-code/issues)
 - **LiteLLM**: [LiteLLM GitHub issue tracker](https://github.com/BerriAI/litellm/issues)
 - **Claude Threads**: [Claude Threads GitHub issue tracker](https://github.com/anneschuth/claude-threads/issues)
+- **Happier**: [Happier issue tracker](https://github.com/happier-dev/happier/issues)
 - **cconx**: [cconx GitHub issue tracker](https://github.com/TylerCollison/vscode-claude/issues)
 - **build-env**: [build-env GitHub issue tracker](https://github.com/TylerCollison/vscode-claude/issues)
 - **tylercollison2089/vscode-claude**: [ClaudeConX GitHub issue tracker](https://github.com/TylerCollison/vscode-claude/issues)
 
 ## License
 
-This Docker image is provided as-is. Please refer to the individual component licenses for linuxserver/code-server, Claude Code, LiteLLM, and Claude Threads. 
+This Docker image is provided as-is. Please refer to the individual component licenses for linuxserver/code-server, Claude Code, LiteLLM, Claude Threads, and Happier. 
