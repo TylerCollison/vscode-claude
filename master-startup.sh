@@ -27,6 +27,7 @@ debug_log() {
 
 # List of scripts to execute in order
 STARTUP_SCRIPTS=(
+    "/92-configure-code-server-theme"
     "/93-git-repo-setup"
     "/94-combine-markdowns"
     "/95-configure-claude-skip-onboarding"

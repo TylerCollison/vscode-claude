@@ -138,6 +138,7 @@ RUN pip install --break-system-packages 'litellm[proxy]' 'semantic-router'
 COPY lite-llm/ /lite-llm/
 
 # Copy startup scripts to root directory
+COPY configure-code-server-theme.sh /92-configure-code-server-theme
 COPY git-repo-setup.sh /93-git-repo-setup
 COPY combine-markdowns.sh /94-combine-markdowns
 COPY configure-claude-skip-onboarding.sh /95-configure-claude-skip-onboarding
@@ -158,7 +159,8 @@ COPY master-startup.sh /etc/cont-init.d/90-master-startup
 COPY litellm-health-check.py /usr/local/bin/litellm-health-check
 
 # Set execute permissions
-RUN chmod +x /93-git-repo-setup \
+RUN chmod +x /92-configure-code-server-theme \
+    /93-git-repo-setup \
     /usr/local/bin/litellm-health-check \
     /94-combine-markdowns \
     /95-configure-claude-skip-onboarding \
