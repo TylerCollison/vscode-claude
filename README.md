@@ -94,6 +94,7 @@ This container supports extensive configuration through environment variables.
 | `PROXY_DOMAIN` | Reverse proxy domain for external access |
 | `DEFAULT_WORKSPACE` | Default workspace directory |
 | `PWA_APPNAME` | Progressive Web App name |
+| `VSCODE_THEME` | Default VS Code color theme (e.g., `Dark Modern`, `Monokai`) |
 
 ### Authentication & Access Control
 | Variable | Description |
@@ -230,6 +231,7 @@ services:
       - PROXY_DOMAIN=code-server.my.domain # Optional
       - DEFAULT_WORKSPACE=/workspace
       - PWA_APPNAME=code-server # Optional
+      - VSCODE_THEME=Dark Modern # Optional: Set default color theme
       - CLAUDE_CODE_PERMISSION_MODE=acceptEdits
       - NIM_API_KEY=your-nvidia-nim-api-key # Required to use NIM models
       - GOOGLE_API_KEY=your-google-ai-studio-api-key # Required to use Google models
@@ -271,6 +273,22 @@ services:
 ```
 
 ## Configuration
+
+### VS Code Theme
+
+You can set the default color theme for VS Code using the `VSCODE_THEME` environment variable. This is useful for pre-configuring the IDE appearance without manual steps.
+
+**Examples:**
+
+```yaml
+environment:
+  - VSCODE_THEME=Dark Modern        # Default modern dark theme
+  - VSCODE_THEME=Solarized Dark     # Classic solarized dark
+  - VSCODE_THEME=Monokai            # Popular high-contrast theme
+  - VSCODE_THEME=GitHub Dark        # Requires GitHub Theme extension
+```
+
+*Note: If the theme belongs to an extension, ensure the extension is either pre-installed or will be installed via `CLAUDE_PLUGINS`.*
 
 ### Claude Code Setup
 
