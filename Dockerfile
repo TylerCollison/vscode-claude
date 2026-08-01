@@ -1,3 +1,29 @@
+# ── Stage: build bead-me-up-scotty (Beads web UI) ────────────────────────────
+# Next.js 16 standalone server that shells out to the `bd` CLI. Built in an
+# Alpine stage (matching the upstream project's own Dockerfile), then the
+# standalone output is copied into the final image. Pinned to a commit SHA
+# for reproducible builds.
+FROM node:26.4.0-alpine AS scotty-builder
+ARG SCOTTY_COMMIT=e26e446cba697a522ecceabdeeb11dc99239a071
+RUN apk add --no-cache git
+WORKDIR /scotty
+RUN git clone https://github.com/brendan-appstart/bead-me-up-scotty.git . \
+    && git checkout "${SCOTTY_COMMIT}"
+RUN npm ci
+# Standalone output is opt-in (see next.config.ts); local `next start` flows
+# keep the default output.
+ENV NEXT_STANDALONE=1
+RUN npm run build
+
+# ── Stage: full eleventy tree for the showcase publisher ─────────────────────
+# The app locates node_modules/@11ty/eleventy/cmd.cjs by scanning the
+# filesystem — it is deliberately never imported, so Next's standalone output
+# tracing only includes a PARTIAL copy. Install the full tree here and copy it
+# into the final image (see the rm+COPY below). Keep in sync with package.json.
+FROM node:26.4.0-alpine AS scotty-eleventy
+WORKDIR /eleventy
+RUN npm install --no-save @11ty/eleventy@3.1.6
+
 FROM lscr.io/linuxserver/code-server:latest
 
 # Enable Docker BuildKit for faster builds
@@ -142,6 +168,17 @@ RUN pip install --break-system-packages 'litellm[proxy]' 'semantic-router'
 # Copy LiteLLM config files and custom routing callback
 COPY lite-llm/ /lite-llm/
 
+# Install the Beads web UI (bead-me-up-scotty) — standalone Next.js server
+# that shells out to the `bd` CLI. Runs as abc on /opt/bead-me-up-scotty.
+COPY --from=scotty-builder /scotty/.next/standalone /opt/bead-me-up-scotty
+COPY --from=scotty-builder /scotty/.next/static /opt/bead-me-up-scotty/.next/static
+COPY --from=scotty-builder /scotty/public /opt/bead-me-up-scotty/public
+# Drop the partial @11ty/eleventy that Next's tracing put into standalone (it
+# would shadow the complete tree below), then provide the full eleventy install
+# at /node_modules where the app's upward filesystem search can find it.
+RUN rm -rf /opt/bead-me-up-scotty/node_modules/@11ty
+COPY --from=scotty-eleventy /eleventy/node_modules /node_modules
+
 # Copy startup scripts to root directory
 COPY configure-code-server-theme.sh /92-configure-code-server-theme
 COPY git-repo-setup.sh /93-git-repo-setup
@@ -156,6 +193,7 @@ COPY start-claude-threads.sh /101-start-claude-threads
 COPY start-happier.sh /102-start-happier
 COPY configure-buildx.sh /103-configure-buildx
 COPY configure-beads.sh /104-configure-beads
+COPY start-scotty.sh /105-start-scotty
 COPY happier-tls-tunnel.js /app/happier-tls-tunnel.js
 
 # Copy master startup script to cont-init.d (so it runs automatically)
@@ -179,6 +217,7 @@ RUN chmod +x /92-configure-code-server-theme \
     /102-start-happier \
     /103-configure-buildx \
     /104-configure-beads \
+    /105-start-scotty \
     /etc/cont-init.d/90-master-startup
 
 # Remove build toolchain packages no longer needed at runtime

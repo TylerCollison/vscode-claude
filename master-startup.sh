@@ -40,6 +40,7 @@ STARTUP_SCRIPTS=(
     "/102-start-happier"
     "/103-configure-buildx"
     "/104-configure-beads"
+    "/105-start-scotty"
 )
 
 log "Starting master startup sequence..."

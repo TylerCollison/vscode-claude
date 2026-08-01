@@ -54,6 +54,13 @@ This Docker image bundles a web-based IDE (VS Code Server), Claude Code, a LiteL
   - Enables long-horizon tasks without context loss
   - Run `bd init` in your workspace to initialize (or set `BEADS_ENABLED=true`)
 
+- **Scotty (Bead UI)** - Web UI for the Beads issue tracker
+  - [GitHub Repository](https://github.com/brendan-appstart/bead-me-up-scotty)
+  - Five-column board (Backlog · Ready · In Progress · Blocked · Done) with drag-and-drop
+  - Epics with progress bars, dependency graph, comments, and create/edit
+  - Built-in as a standalone Next.js server; enable with `ENABLE_SCOTTY=true`
+  - Available at `http://localhost:3000` (configurable via `SCOTTY_PORT`)
+
 ### Development Stack
 
 - **Node.js 22** - Latest LTS version with npm package manager
@@ -274,6 +281,27 @@ In standard mode, Beads stores its data in a `.beads` directory within the works
 
 In stealth mode (when `BEADS_DIR` is set), data lives at `$BEADS_DIR` instead — mount a volume there to persist it (see above).
 
+### Scotty (Beads UI) Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ENABLE_SCOTTY` | *(not set)* | Set to `true` to start the Beads web UI (Scotty) on container startup |
+| `SCOTTY_PORT` | `3000` | Port the Scotty web UI listens on |
+
+**Scotty (Bead UI) Usage:**
+
+Scotty is a five-column kanban board for Beads issues (Backlog · Ready · In Progress · Blocked · Done) with drag-and-drop, epics, a dependency graph, comments, and create/edit. It shells out to the `bd` CLI, which stays the single source of truth.
+
+```yaml
+environment:
+  - ENABLE_SCOTTY=true
+  - SCOTTY_PORT=3000 # Optional
+```
+
+Then open `http://localhost:3000` in your browser. The workspace (which contains the `.beads` database) is registered automatically as a project. If you also set `BEADS_DIR` (stealth mode), Scotty links the workspace's `.beads` to `BEADS_DIR` and passes the variable through to `bd`, so the database is found there.
+
+*Note: the UI reads the database via the `bd` CLI, so set `BEADS_ENABLED=true` (or run `bd init` yourself) so a database exists.*
+
 ### Knowledge Repository Integration
 | Variable | Description |
 |----------|-------------|
@@ -339,10 +367,14 @@ services:
       - DOLT_EMAIL=your@email.com
       # Beads stealth mode (optional) — store database at BEADS_DIR
       # - BEADS_DIR=/config/.beads
+      # Scotty — Beads web UI (optional)
+      - ENABLE_SCOTTY=true
+      - SCOTTY_PORT=3000 # Optional
     ports:
       - "8443:8443" # VSCode UI
       - "3005:3005" # Happier UI
       - "4000:4000" # LiteLLM UI
+      - "3000:3000" # Scotty (Beads UI) — only if ENABLE_SCOTTY=true
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock # Optional for docker support
       - /path/to/code-server/config:/config # Only specify if using existing configuration
@@ -625,6 +657,10 @@ docker exec claude-dev curl -s http://127.0.0.1:5090/health
 
 # Beads functionality
 docker exec claude-dev bd --version
+
+# Scotty (Beads UI) status
+docker exec claude-dev ps aux | grep server.js
+docker exec claude-dev curl -I http://localhost:3000
 ```
 
 ### Common Issues
@@ -655,6 +691,11 @@ docker exec claude-dev bd --version
 - Check workspace permissions: `ls -la $DEFAULT_WORKSPACE`
 - Validate container image: `docker pull $BUILD_CONTAINER`
 
+**Scotty (Beads UI) Issues:**
+- Verify it's running: `docker exec claude-dev curl -I http://localhost:3000`
+- Check the startup log: `docker exec claude-dev cat /tmp/scotty.log`
+- Ensure `ENABLE_SCOTTY=true` is set and the port (`SCOTTY_PORT`, default `3000`) isn't already in use
+
 ## Credits
 
 - **[linuxserver/code-server](https://hub.docker.com/r/linuxserver/code-server)** — Base VS Code Server environment
@@ -663,6 +704,7 @@ docker exec claude-dev bd --version
 - **[Claude Threads](https://github.com/anneschuth/claude-threads)** — Real-time chat integration
 - **[Happier](https://docs.happier.dev/)** — Relay server and mobile app for agent management
 - **[Beads](https://github.com/gastownhall/beads)** — Distributed graph issue tracker for AI agents
+- **[Scotty (Bead UI)](https://github.com/brendan-appstart/bead-me-up-scotty)** — Web UI for the Beads issue tracker
 
 ## Support
 
@@ -673,6 +715,7 @@ docker exec claude-dev bd --version
 - **LiteLLM**: [LiteLLM Documentation](https://docs.litellm.ai)
 - **Claude Threads**: [Claude Threads GitHub](https://github.com/anneschuth/claude-threads)
 - **Happier**: [Happier documentation](https://docs.happier.dev/)
+- **Scotty (Bead UI)**: [bead-me-up-scotty GitHub](https://github.com/brendan-appstart/bead-me-up-scotty)
 - **cconx**: [cconx GitHub](https://github.com/TylerCollison/vscode-claude/tree/main)
 - **build-env**: [build-env GitHub](https://github.com/TylerCollison/vscode-claude/tree/main)
 - **tylercollison2089/vscode-claude**: [ClaudeConX GitHub](https://github.com/TylerCollison/vscode-claude/tree/main)
@@ -684,10 +727,11 @@ docker exec claude-dev bd --version
 - **LiteLLM**: [LiteLLM GitHub issue tracker](https://github.com/BerriAI/litellm/issues)
 - **Claude Threads**: [Claude Threads GitHub issue tracker](https://github.com/anneschuth/claude-threads/issues)
 - **Happier**: [Happier issue tracker](https://github.com/happier-dev/happier/issues)
+- **Scotty (Bead UI)**: [bead-me-up-scotty GitHub issue tracker](https://github.com/brendan-appstart/bead-me-up-scotty/issues)
 - **cconx**: [cconx GitHub issue tracker](https://github.com/TylerCollison/vscode-claude/issues)
 - **build-env**: [build-env GitHub issue tracker](https://github.com/TylerCollison/vscode-claude/issues)
 - **tylercollison2089/vscode-claude**: [ClaudeConX GitHub issue tracker](https://github.com/TylerCollison/vscode-claude/issues)
 
 ## License
 
-This Docker image is provided as-is. Please refer to the individual component licenses for linuxserver/code-server, Claude Code, LiteLLM, Claude Threads, and Happier. 
+This Docker image is provided as-is. Please refer to the individual component licenses for linuxserver/code-server, Claude Code, LiteLLM, Claude Threads, Happier, and Beads. 

@@ -80,6 +80,15 @@ else
     fi
 fi
 
+# The Beads database is used by services running as the abc user (e.g. the
+# Scotty web UI and Claude Code). bd init above ran as root, and the recursive
+# chown in master-startup.sh only runs after a potentially slow /config pass,
+# so make the data dir abc-owned right here. Targeted to the small .beads dir
+# (never the whole workspace).
+if [ -d "$BEADS_DATA_DIR" ]; then
+    chown -R abc:abc "$BEADS_DATA_DIR" 2>/dev/null || true
+fi
+
 # Configure Dolt/Git credentials for Beads remote sync
 # In embedded mode, Dolt uses git config for user identity
 if [[ -n "${DOLT_USERNAME:-}" ]] && [[ -n "${DOLT_EMAIL:-}" ]]; then
