@@ -39,6 +39,7 @@ STARTUP_SCRIPTS=(
     "/101-start-claude-threads"
     "/102-start-happier"
     "/103-configure-buildx"
+    "/104-configure-beads"
 )
 
 log "Starting master startup sequence..."

@@ -68,6 +68,11 @@ RUN npm install -g @happier-dev/relay-server@dev
 # Install the Happier CLI (provides happier, happier daemon, auth, etc.)
 RUN npm install -g @happier-dev/cli@dev
 
+# Install Beads — distributed graph issue tracker for AI agents
+# Uses the official install script which handles checksum verification,
+# platform detection, and places the binary in /usr/local/bin.
+RUN curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh | bash
+
 # Strip unused platform-specific binaries from happier CLI dependencies
 # — macOS/Windows binaries are not needed in this Linux container
 # — ONNX CUDA/TensorRT providers are not needed for CPU-only workloads
@@ -150,6 +155,7 @@ COPY configure-threads-settings.sh /100-configure-threads-settings
 COPY start-claude-threads.sh /101-start-claude-threads
 COPY start-happier.sh /102-start-happier
 COPY configure-buildx.sh /103-configure-buildx
+COPY configure-beads.sh /104-configure-beads
 COPY happier-tls-tunnel.js /app/happier-tls-tunnel.js
 
 # Copy master startup script to cont-init.d (so it runs automatically)
@@ -172,6 +178,7 @@ RUN chmod +x /92-configure-code-server-theme \
     /101-start-claude-threads \
     /102-start-happier \
     /103-configure-buildx \
+    /104-configure-beads \
     /etc/cont-init.d/90-master-startup
 
 # Remove build toolchain packages no longer needed at runtime

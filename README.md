@@ -46,6 +46,14 @@ This Docker image bundles a web-based IDE (VS Code Server), Claude Code, a LiteL
   - Environment isolation with dedicated containers per workspace
   - Smart conflict resolution using modification timestamps
 
+- **Beads** - Distributed Graph Issue Tracker for AI Agents
+  - [GitHub Repository](https://github.com/gastownhall/beads)
+  - Persistent, dependency-aware memory system for coding agents
+  - Replaces markdown TODO lists with a version-controlled graph database
+  - Powered by Dolt (Git for data) for version control and branching
+  - Enables long-horizon tasks without context loss
+  - Run `bd init` in your workspace to initialize (or set `BEADS_ENABLED=true`)
+
 ### Development Stack
 
 - **Node.js 22** - Latest LTS version with npm package manager
@@ -207,7 +215,49 @@ This pairs the container's Happier CLI with the cloud relay, enabling you to app
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `USE_BUILDKIT_BUILDER` | *(not set)* | Set to `true` to create a persistent BuildKit builder container at startup for faster Docker builds |
-| `BUILDX_BUILDER_NAME` | `buildkit-builder` | Name for the BuildKit builder container (only used when `USE_BUILDKIT_BUILDER=true`)
+| `BUILDX_BUILDER_NAME` | `buildkit-builder` | Name for the BuildKit builder container (only used when `USE_BUILDKIT_BUILDER=true`) |
+
+### Beads Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BEADS_ENABLED` | *(not set)* | Set to `true` to automatically initialize Beads (`bd init`) in the workspace on container startup |
+| `DOLT_USERNAME` | *(not set)* | Git/Dolt username for remote sync (configures `git config --global user.name`) |
+| `DOLT_EMAIL` | *(not set)* | Git/Dolt email for remote sync (configures `git config --global user.email`) |
+
+**Beads (bd) Usage:**
+
+Beads provides a persistent, version-controlled issue graph for AI agents. It replaces linear TODO lists with a dependency-aware graph database backed by Dolt (Git for data).
+
+```bash
+# Inside the container, after BEADS_ENABLED=true startup:
+bd quickstart             # Interactive tutorial
+bd create "Fix login bug"          # Create an issue
+bd graph                  # Visualize the issue graph
+bd list                   # List all issues
+bd show <issue-id>        # Show issue details
+bd close <issue-id>       # Mark an issue complete
+```
+
+**Remote Sync with DoltHub/DoltLab:**
+
+```yaml
+environment:
+  - BEADS_ENABLED=true
+  - DOLT_USERNAME=your-dolt-username
+  - DOLT_EMAIL=your@email.com
+```
+
+Then inside the container:
+```bash
+bd remote add origin dolthub://user/repo
+bd push origin main
+bd pull origin main
+```
+
+**Data Persistence:**
+
+Beads stores its data in a `.beads` directory within the workspace (`/workspace/.beads`). Since the workspace is already mounted as a volume in the standard configuration, **no additional volume mounts are required** — Beads data persists automatically with your code.
 
 ### Knowledge Repository Integration
 | Variable | Description |
@@ -268,6 +318,10 @@ services:
       - USE_BUILDKIT_BUILDER=true
       # Build Environment Configuration (optional)
       - BUILD_CONTAINER=python:3.13.14-trixie
+      # Beads Configuration (optional)
+      - BEADS_ENABLED=true
+      - DOLT_USERNAME=your-dolt-username
+      - DOLT_EMAIL=your@email.com
     ports:
       - "8443:8443" # VSCode UI
       - "3005:3005" # Happier UI
@@ -550,6 +604,9 @@ docker exec claude-dev claude --version
 
 # Check LiteLLM proxy status
 docker exec claude-dev curl -s http://127.0.0.1:5090/health
+
+# Beads functionality
+docker exec claude-dev bd --version
 ```
 
 ### Common Issues
@@ -587,6 +644,7 @@ docker exec claude-dev curl -s http://127.0.0.1:5090/health
 - **[LiteLLM](https://github.com/BerriAI/litellm)** — Model routing and provider proxy
 - **[Claude Threads](https://github.com/anneschuth/claude-threads)** — Real-time chat integration
 - **[Happier](https://docs.happier.dev/)** — Relay server and mobile app for agent management
+- **[Beads](https://github.com/gastownhall/beads)** — Distributed graph issue tracker for AI agents
 
 ## Support
 
