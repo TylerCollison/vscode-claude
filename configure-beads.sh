@@ -2,6 +2,10 @@
 # Configure Beads on container startup
 # Initializes Beads (bd init) in the workspace when BEADS_ENABLED=true
 # and optionally configures Dolt credentials for remote syncing.
+#
+# Stealth mode: when BEADS_DIR is set, the Beads database is stored at
+# $BEADS_DIR instead of the workspace and initialized with
+# `bd init --quiet --stealth` so no beads files clutter the workspace.
 
 set -euo pipefail
 
@@ -21,6 +25,13 @@ fi
 
 DEFAULT_WORKSPACE="${DEFAULT_WORKSPACE:-/workspace}"
 
+# Stealth mode: if BEADS_DIR is set, keep the Beads database out of the
+# workspace (data lives at $BEADS_DIR) and use quiet stealth init.
+STEALTH_MODE=0
+if [[ -n "${BEADS_DIR:-}" ]]; then
+    STEALTH_MODE=1
+fi
+
 # Verify Beads is installed
 if ! command -v bd &> /dev/null; then
     log "WARNING: Beads (bd) not found on PATH. Skipping initialization."
@@ -29,17 +40,43 @@ fi
 
 log "Beads version: $(bd --version 2>/dev/null || echo 'unknown')"
 
-# Initialize Beads in the workspace if not already initialized
-if [ -d "$DEFAULT_WORKSPACE/.beads" ]; then
-    log "Beads already initialized in $DEFAULT_WORKSPACE. Skipping bd init."
+# Where Beads data lives (for the already-initialized check)
+# - Stealth mode:  $BEADS_DIR (the dir itself, marker = metadata.json)
+# - Standard mode: $DEFAULT_WORKSPACE/.beads
+if [ "$STEALTH_MODE" = "1" ]; then
+    BEADS_DATA_DIR="$BEADS_DIR"
+else
+    BEADS_DATA_DIR="$DEFAULT_WORKSPACE/.beads"
+fi
+
+# Initialize Beads if not already initialized
+if [ -f "$BEADS_DATA_DIR/metadata.json" ]; then
+    if [ "$STEALTH_MODE" = "1" ]; then
+        log "Beads already initialized at $BEADS_DIR (stealth mode). Skipping bd init."
+    else
+        log "Beads already initialized in $DEFAULT_WORKSPACE. Skipping bd init."
+    fi
 else
     log "Initializing Beads in $DEFAULT_WORKSPACE..."
+    mkdir -p "$DEFAULT_WORKSPACE"
     cd "$DEFAULT_WORKSPACE"
-    if bd init; then
-        log_success "Beads initialized in $DEFAULT_WORKSPACE"
+    if [ "$STEALTH_MODE" = "1" ]; then
+        # Stealth init: quiet, no workspace clutter, data stored in $BEADS_DIR.
+        # bd init still runs from the workspace so stealth git excludes are
+        # configured in the repo (.git/info/exclude) when one is present.
+        if bd init --quiet --stealth; then
+            log_success "Beads initialized at $BEADS_DIR (stealth mode)"
+        else
+            log "WARNING: bd init --quiet --stealth failed. Beads may not be fully configured."
+            exit 0
+        fi
     else
-        log "WARNING: bd init failed. Beads may not be fully configured."
-        exit 0
+        if bd init; then
+            log_success "Beads initialized in $DEFAULT_WORKSPACE"
+        else
+            log "WARNING: bd init failed. Beads may not be fully configured."
+            exit 0
+        fi
     fi
 fi
 

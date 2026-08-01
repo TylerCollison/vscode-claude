@@ -222,8 +222,21 @@ This pairs the container's Happier CLI with the cloud relay, enabling you to app
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `BEADS_ENABLED` | *(not set)* | Set to `true` to automatically initialize Beads (`bd init`) in the workspace on container startup |
+| `BEADS_DIR` | *(not set)* | Enables **stealth mode**: stores the Beads database at this path (outside the workspace) and initializes with `bd init --quiet --stealth`, keeping beads files out of the workspace |
 | `DOLT_USERNAME` | *(not set)* | Git/Dolt username for remote sync (configures `git config --global user.name`) |
 | `DOLT_EMAIL` | *(not set)* | Git/Dolt email for remote sync (configures `git config --global user.email`) |
+
+**Stealth mode:**
+
+When `BEADS_DIR` is set, Beads runs in stealth mode — the database lives at `$BEADS_DIR` (e.g. under `/config` for persistence) instead of `.beads/` in the workspace, and `bd init --quiet --stealth` configures git excludes so no beads files are committed or tracked. This is ideal for personal use without affecting repo collaborators. Mount a volume on `BEADS_DIR` to persist the database:
+
+```yaml
+environment:
+  - BEADS_ENABLED=true
+  - BEADS_DIR=/config/.beads
+volumes:
+  - /path/to/beads-data:/config/.beads
+```
 
 **Beads (bd) Usage:**
 
@@ -257,7 +270,9 @@ bd pull origin main
 
 **Data Persistence:**
 
-Beads stores its data in a `.beads` directory within the workspace (`/workspace/.beads`). Since the workspace is already mounted as a volume in the standard configuration, **no additional volume mounts are required** — Beads data persists automatically with your code.
+In standard mode, Beads stores its data in a `.beads` directory within the workspace (`/workspace/.beads`). Since the workspace is already mounted as a volume in the standard configuration, **no additional volume mounts are required** — Beads data persists automatically with your code.
+
+In stealth mode (when `BEADS_DIR` is set), data lives at `$BEADS_DIR` instead — mount a volume there to persist it (see above).
 
 ### Knowledge Repository Integration
 | Variable | Description |
@@ -322,6 +337,8 @@ services:
       - BEADS_ENABLED=true
       - DOLT_USERNAME=your-dolt-username
       - DOLT_EMAIL=your@email.com
+      # Beads stealth mode (optional) — store database at BEADS_DIR
+      # - BEADS_DIR=/config/.beads
     ports:
       - "8443:8443" # VSCode UI
       - "3005:3005" # Happier UI
@@ -332,6 +349,7 @@ services:
       - /path/to/your/code:/workspace # Only specify if GIT_REPO_URL is unset
       - /path/to/happier-cli-credentials:/config/.happier # Persist Happier CLI credentials & profiles
       - /path/to/happier-server:/config/.happy # Persist Happier server DB & TLS cert (server mode)
+      # - /path/to/beads-data:/config/.beads # Persist Beads database in stealth mode
     restart: unless-stopped
 ```
 
