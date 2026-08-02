@@ -1,31 +1,51 @@
 #!/usr/bin/env python3
-"""Beads Dispatch — dispatch a worker container/service when a Beads task moves to ready.
+"""Beads Dispatch — dispatch a worker container/service when a task is ready and a commit happens.
 
-Polls `bd list --ready --json`, diffs against a persisted seen-set, and for each
-newly-ready issue starts a worker from the *same image* with `GIT_BRANCH_NAME` set
-to a branch named after the task.
+Trigger model
+-------------
+Dispatch is triggered by a git **post-commit** hook, not a poll loop. Every commit in the
+workspace repo causes the dispatcher to re-check `bd list --ready --json` and create a worker
+for each currently-ready task that hasn't been dispatched yet.
 
-Workers mount **no volumes** — they run on an ephemeral filesystem and the existing
-`git-repo-setup.sh` startup script clones `GIT_REPO_URL` and checks out the branch on
-first boot.
+Privilege bridge
+----------------
+Git hooks run as the committer (the `abc` user), but docker (via the mounted host socket) needs
+root. So a root daemon listens on `/run/beads-dispatch.sock`; the post-commit hook (as `abc`)
+just pings the socket. The daemon does the dispatch work as root. This is event-driven — no
+polling.
 
-Dispatch mode:
+Branch creation
+---------------
+For each ready task the daemon:
+  1. `git checkout -b <task-branch>` off the **current HEAD** (the state that was just committed),
+  2. `git push` the branch to origin,
+  3. `git checkout <original-branch>` to restore the parent's working state.
+
+The dispatcher never commits anything — the triggering commit IS the state the worker pulls.
+
+Dispatch mode
+-------------
   * swarm manager node  -> `docker service create` (a swarm service)
   * otherwise           -> `docker run -d` (a local container)
 
-Stdlib only (no pip deps): shells out to the `bd` and `docker` CLIs.
+Workers mount **no volumes** (ephemeral) and get `BEADS_DISPATCH=false` (no recursion).
+
+Stdlib only (no pip deps): shells out to the `bd`, `docker`, and `git` CLIs.
 """
 
 import json
 import os
 import re
-import signal
 import shutil
+import signal
 import socket
 import subprocess
 import sys
 import threading
 import time
+
+SOCKET_PATH = "/run/beads-dispatch.sock"
+
 
 # --------------------------------------------------------------------------- helpers
 
@@ -48,9 +68,7 @@ def env(name, default=None):
 class Config:
     def __init__(self):
         self.workspace = env("DEFAULT_WORKSPACE", "/workspace")
-        self.interval = int(env("BEADS_DISPATCH_INTERVAL", "30"))
         self.branch_prefix = env("BEADS_DISPATCH_BRANCH_PREFIX", "task")
-        self.seed = env("BEADS_DISPATCH_SEED", "skip")
         self.port_base = int(env("BEADS_DISPATCH_PORT_BASE", "8000"))
         self.state_dir = env("BEADS_DISPATCH_STATE_DIR", "/config/.beads-dispatch")
         self.worker_port = int(env("BEADS_DISPATCH_WORKER_PORT", "8443"))
@@ -103,7 +121,7 @@ def save_state(cfg, seen):
 # --------------------------------------------------------------------------- self-inspection
 
 def self_container_id():
-    """Return this container's id (short), resolved via /etc/hostname + docker inspect."""
+    """Return this container's short id (via /etc/hostname + docker inspect)."""
     try:
         with open("/etc/hostname") as fh:
             host = fh.read().strip()
@@ -113,9 +131,6 @@ def self_container_id():
         rc, _, _ = run(["docker", "inspect", host, "--format", "{{.Id}}"])
         if rc == 0:
             return host
-        rc, out, _ = run(["docker", "ps", "-q", "--filter", "name=%s" % host])
-        if rc == 0 and out:
-            return out.splitlines()[0]
     try:
         with open("/proc/self/cgroup") as fh:
             for line in fh:
@@ -128,7 +143,7 @@ def self_container_id():
 
 
 def inspect_self(container_id):
-    """Inspect this container via the docker API; return the fields we need to clone."""
+    """Inspect this container; return the fields needed to clone it."""
     rc, out, err = run(["docker", "inspect", container_id])
     if rc != 0:
         return None
@@ -181,7 +196,6 @@ def derive_git_repo_url(parent_env, workspace):
 def worker_name(parent_name, issue_id):
     name = "%s-%s" % (parent_name, issue_id)
     # Safe for both container and swarm service names: lowercase, digits, '-'
-    # (no dots/underscores, no leading/trailing '-')
     name = re.sub(r"[^a-zA-Z0-9]+", "-", name).strip("-").lower()
     return (name or "beads-worker")[:120]
 
@@ -195,6 +209,137 @@ def compose_worker_env(parent_env, branch, repo_url):
     env = [e for e in env if not e.startswith("BEADS_DISPATCH=")]
     env.append("BEADS_DISPATCH=false")
     return env
+
+
+# --------------------------------------------------------------------------- git
+
+def git_current_branch(workspace):
+    rc, out, _ = run(["git", "-C", workspace, "branch", "--show-current"])
+    if rc == 0 and out:
+        return out
+    # detached HEAD -> return the commit sha
+    rc, out, _ = run(["git", "-C", workspace, "rev-parse", "HEAD"])
+    return out if rc == 0 and out else None
+
+
+def branch_exists_remote(workspace, branch, repo_url):
+    rc, out, _ = run(["git", "-C", workspace, "ls-remote", repo_url,
+                      "refs/heads/%s" % branch], env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
+    return rc == 0 and bool(out.strip())
+
+
+def push_task_branch(workspace, branch, repo_url):
+    """Create <branch> off the current HEAD, push it, restore the original branch.
+
+    Returns: True (pushed), "exists" (branch already in origin — nothing to push),
+    or False (failed; original branch restored).
+    """
+    original = git_current_branch(workspace)
+    if not original:
+        log("ERROR: cannot determine current git branch in %s" % workspace)
+        return False
+
+    if branch_exists_remote(workspace, branch, repo_url):
+        log("Branch %s already exists in origin — skipping create/push." % branch)
+        return "exists"
+
+    git_env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+
+    def restore():
+        try:
+            run(["git", "-C", workspace, "checkout", original], env=git_env)
+        except Exception:
+            pass
+
+    # 1. Create the branch off current HEAD (no commit).
+    rc, out, err = run(["git", "-C", workspace, "checkout", "-b", branch], env=git_env)
+    if rc != 0:
+        log("ERROR: git checkout -b %s failed: %s" % (branch, err or out))
+        return False
+
+    # 2. Determine the push target: origin if it matches repo_url, else repo_url.
+    rc, origin, _ = run(["git", "-C", workspace, "remote", "get-url", "origin"])
+    if rc == 0 and origin == repo_url:
+        push_cmd = ["git", "-C", workspace, "push", "-u", "origin", branch]
+    else:
+        push_cmd = ["git", "-C", workspace, "push", repo_url, "%s:%s" % (branch, branch)]
+
+    rc, out, err = run(push_cmd, env=git_env)
+    restore()
+    if rc != 0:
+        log("ERROR: git push of %s failed: %s (is the parent configured to push to %s?)"
+            % (branch, (err or out).splitlines()[-1] if (err or out) else "unknown", repo_url))
+        return False
+    log("Pushed branch %s to %s" % (branch, repo_url))
+    return True
+
+
+def ensure_safe_directory(workspace):
+    """Allow git-as-root to operate on the workspace repo (which is abc-owned).
+
+    Git 2.35+ refuses to run in a repo owned by another user (dubious ownership).
+    The dispatcher runs git as root but the workspace is owned by the `abc` user,
+    so add the workspace to root's safe.directory list (idempotent).
+    """
+    rc, out, _ = run(["git", "config", "--global", "--get-all", "safe.directory"])
+    if rc == 0 and workspace in out.splitlines():
+        return
+    run(["git", "config", "--global", "--add", "safe.directory", workspace])
+
+
+def effective_hooks_dir(workspace):
+    """Return the git hooks dir for the workspace, honoring core.hooksPath (set by beads)."""
+    if os.path.isdir(os.path.join(workspace, ".git")):
+        rc, out, _ = run(["git", "-C", workspace, "config", "--get", "core.hooksPath"])
+        if rc == 0 and out:
+            hooks = out if os.path.isabs(out) else os.path.join(workspace, out)
+            if os.path.isdir(hooks):
+                return hooks
+    return os.path.join(workspace, ".git", "hooks")
+
+
+def install_post_commit_hook(workspace, socket_path=SOCKET_PATH):
+    """Install a post-commit hook that pings the dispatcher socket (non-blocking).
+
+    Installs into the effective hooks dir (beads sets core.hooksPath to
+    .beads/hooks), backing up any existing post-commit.
+    """
+    if not os.path.isdir(os.path.join(workspace, ".git")):
+        return False
+    hooks_dir = effective_hooks_dir(workspace)
+    os.makedirs(hooks_dir, exist_ok=True)
+    hook_path = os.path.join(hooks_dir, "post-commit")
+
+    backup = hook_path + ".beads-dispatch.bak"
+    if os.path.exists(hook_path) and not os.path.exists(backup):
+        shutil.copy2(hook_path, backup)
+
+    hook = """#!/bin/sh
+# Beads Dispatch post-commit hook (installed by beads-dispatch).
+# Pings the dispatcher daemon so it can create workers for ready tasks.
+# Non-blocking; failures are ignored so commits are never slowed or broken.
+command -v python3 >/dev/null 2>&1 || exit 0
+python3 - <<'PY'
+import socket
+try:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(0.5)
+    s.connect("%(sock)s")
+    s.sendall(b"commit")
+    s.close()
+except Exception:
+    pass
+PY
+""" % {"sock": socket_path}
+    try:
+        with open(hook_path, "w") as fh:
+            fh.write(hook)
+        os.chmod(hook_path, 0o755)
+    except OSError as e:
+        log("WARNING: could not install post-commit hook: %s" % e)
+        return False
+    log("Installed post-commit hook at %s" % hook_path)
+    return True
 
 
 # --------------------------------------------------------------------------- ports
@@ -258,22 +403,29 @@ def dispatch_swarm(worker, image, env, port, worker_port, issue_id):
 
 
 def dispatch_worker(issue, cfg, self_info):
-    """Dispatch a worker for a newly-ready issue. Returns True when handled."""
+    """Dispatch a worker for a ready issue. Returns True when handled."""
     issue_id = issue["id"]
     worker = worker_name(self_info["name"], issue_id)
 
     branch = derive_branch_name(issue, cfg.branch_prefix)
     repo_url = derive_git_repo_url(self_info["env"], cfg.workspace)
     if not repo_url:
-        log("WARNING: no GIT_REPO_URL set and no git origin in %s — skipping %s"
+        log("WARNING: no GIT_REPO_URL and no git origin in %s — skipping %s"
             % (cfg.workspace, issue_id))
         return False
 
-    env = compose_worker_env(self_info["env"], branch, repo_url)
+    # Push the task branch so the worker can clone/check it out.
+    push_result = push_task_branch(cfg.workspace, branch, repo_url)
+    if push_result is False:
+        log("ERROR: could not push branch for %s — skipping dispatch." % issue_id)
+        return False
+
     port = find_free_host_port(cfg.port_base)
     if port is None:
         log("WARNING: no free host port >= %d — skipping %s" % (cfg.port_base, issue_id))
         return False
+
+    env = compose_worker_env(self_info["env"], branch, repo_url)
 
     swarm = is_swarm_manager()
     if worker_exists(worker, swarm):
@@ -300,25 +452,81 @@ def dispatch_worker(issue, cfg, self_info):
     return True
 
 
-# --------------------------------------------------------------------------- main loop
+# --------------------------------------------------------------------------- engine
 
-def run_once(cfg, self_info, seen):
+def dispatch_all(cfg, self_info, seen):
+    """Dispatch a worker for every ready issue not yet seen. Returns number dispatched."""
     ready = get_ready_issues(cfg.workspace)
     if ready is None:
-        return
+        log("bd is not ready yet (no beads database?) — skipping this trigger.")
+        return 0
+    dispatched = 0
     for issue in ready:
         iid = issue["id"]
         if iid in seen:
             continue
-        # The issue may have been re-blocked since this poll snapshot began
-        # (dolt auto-commit is off by default, so the ready set can race with
-        # writes). Re-verify against a fresh query immediately before dispatch.
-        if iid not in {i["id"] for i in (get_ready_issues(cfg.workspace) or [])}:
+        # Re-check: the issue may have been re-blocked since the snapshot.
+        fresh = {i["id"] for i in (get_ready_issues(cfg.workspace) or [])}
+        if iid not in fresh:
             log("Issue %s is no longer ready — skipping dispatch." % iid)
             continue
         if dispatch_worker(issue, cfg, self_info):
             seen.add(iid)
             save_state(cfg, seen)
+            dispatched += 1
+    return dispatched
+
+
+def run_daemon(cfg, self_info, seen):
+    """Listen on the unix socket; on each trigger, dispatch ready tasks."""
+    try:
+        os.unlink(SOCKET_PATH)
+    except OSError:
+        pass
+    try:
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(SOCKET_PATH)
+        os.chmod(SOCKET_PATH, 0o666)
+        srv.listen(16)
+    except OSError as e:
+        log("ERROR: cannot bind %s: %s" % (SOCKET_PATH, e))
+        return 1
+
+    stop = threading.Event()
+    def _sig(_signum, _frame):
+        stop.set()
+    signal.signal(signal.SIGTERM, _sig)
+    signal.signal(signal.SIGINT, _sig)
+
+    log("Beads dispatch daemon listening on %s (workspace=%s, image=%s)"
+        % (SOCKET_PATH, cfg.workspace, self_info["image"]))
+    srv.settimeout(1.0)
+    while not stop.is_set():
+        try:
+            conn, _ = srv.accept()
+        except socket.timeout:
+            continue
+        except OSError:
+            if stop.is_set():
+                break
+            continue
+        with conn:
+            try:
+                conn.recv(64)
+            except Exception:
+                pass
+        log("Commit trigger received — checking ready tasks.")
+        try:
+            dispatch_all(cfg, self_info, seen)
+        except Exception as e:
+            log("ERROR: unexpected error during dispatch: %s" % e)
+
+    try:
+        os.unlink(SOCKET_PATH)
+    except OSError:
+        pass
+    log("Beads dispatch daemon stopped.")
+    return 0
 
 
 def main(argv):
@@ -328,7 +536,7 @@ def main(argv):
         log("Beads dispatch not enabled (BEADS_DISPATCH is not 'true'). Exiting.")
         return 0
 
-    for binary in ("bd", "docker", "git"):
+    for binary in ("bd", "docker", "git", "python3"):
         if not shutil.which(binary):
             log("WARNING: %s not found on PATH. Exiting." % binary)
             return 0
@@ -343,42 +551,18 @@ def main(argv):
         return 0
 
     seen = load_state(cfg)
-    first_run = not os.path.exists(state_path(cfg))
-    if first_run and cfg.seed != "all":
-        log("First run: seeding seen set with current ready issues (BEADS_DISPATCH_SEED=skip).")
-        run_once_seed(cfg, seen)
-        save_state(cfg, seen)
+
+    ensure_safe_directory(cfg.workspace)
 
     if "--once" in argv:
-        run_once(cfg, self_info, seen)
+        installed = install_post_commit_hook(cfg.workspace)
+        n = dispatch_all(cfg, self_info, seen)
         save_state(cfg, seen)
+        log("One-shot dispatch complete (%d dispatched, hook installed=%s)." % (n, installed))
         return 0
 
-    stop = threading.Event()
-    def _sig(_signum, _frame):
-        stop.set()
-    signal.signal(signal.SIGTERM, _sig)
-    signal.signal(signal.SIGINT, _sig)
-
-    log("Beads dispatch watcher started (interval=%ss, workspace=%s, image=%s)"
-        % (cfg.interval, cfg.workspace, self_info["image"]))
-    while not stop.is_set():
-        try:
-            run_once(cfg, self_info, seen)
-        except Exception as e:  # keep the loop alive on unexpected errors
-            log("ERROR: unexpected error in poll cycle: %s" % e)
-        stop.wait(cfg.interval)
-
-    log("Beads dispatch watcher stopped.")
-    return 0
-
-
-def run_once_seed(cfg, seen):
-    """On first run with seed=skip, mark current ready issues as already seen."""
-    ready = get_ready_issues(cfg.workspace)
-    if ready:
-        for issue in ready:
-            seen.add(issue["id"])
+    install_post_commit_hook(cfg.workspace)
+    return run_daemon(cfg, self_info, seen)
 
 
 if __name__ == "__main__":

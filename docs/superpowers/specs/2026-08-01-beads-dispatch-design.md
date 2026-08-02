@@ -2,7 +2,8 @@
 
 > **Status:** Proposed
 > **Date:** 2026-08-01
-> **Revision:** 2 (per review: rename to BEADS_DISPATCH, GIT_BRANCH_NAME only, no volume mounts on replicas, swarm-vs-local startup)
+> **Revision:** 3 (per review: trigger on git **commit** instead of polling; dispatcher never
+> commits — branches are created off the just-committed HEAD and pushed)
 
 ## Problem
 
@@ -15,20 +16,35 @@ own branch.
 There is no such automation today: Beads tasks live in a Dolt-backed graph database and nothing
 reacts to state changes.
 
+## Why trigger on a git commit
+
+A worker is a fresh clone of `GIT_REPO_URL`; it can only ever see **committed** state that exists
+in `origin`. Polling for ready tasks doesn't guarantee the task's context is committed or pushed,
+so a worker spawned from a poll could check out an empty branch. Triggering on a **commit**
+guarantees:
+
+1. A commit just happened → the working tree is in a defined, committed state.
+2. The branch is created **off the current HEAD** → it contains every commit up to and including
+   the triggering commit, so the worker pulls the task's actual work.
+3. The dispatcher never commits anything — no "committing problem", no risk of moving the user's
+   uncommitted WIP or polluting the repo.
+
+On commit, the dispatcher checks `bd list --ready --json` and creates a worker for **each**
+currently-ready task (idempotent via a persisted seen-set).
+
 ## Goal
 
-- Detect when a task transitions into the ready set (status `open`, no active blockers) in
-  near-real-time.
-- For each such task, create one **dispatched worker** for the task:
+- On every git commit in the parent workspace repo, check for ready tasks and create one
+  **dispatched worker** for each:
   - same image and environment (API keys, providers, config),
   - **no volume mounts** — runs on the container's ephemeral filesystem (config and workspace
     are regenerated/checked-out on boot; nothing persists),
-  - `GIT_BRANCH_NAME=<task branch>` (branch named from the task),
+  - `GIT_BRANCH_NAME=<task branch>`, created off the current HEAD and **pushed** to origin,
   - `BEADS_DISPATCH=false` so a worker never dispatches its own workers,
   - code-server (8443) published on a free host port,
   - started as a **swarm service** when running on a swarm manager node, otherwise as a regular
     local Docker container.
-- Be idempotent: one worker per task, never re-dispatched on restart or repeated polls.
+- Be idempotent: one worker per task, never re-dispatched on later commits.
 - Be opt-in and safe: off by default, no recursion.
 
 ## Non-goals
@@ -36,8 +52,9 @@ reacts to state changes.
 - Not a replacement for `cconx` or `build-env` — this is a narrow, task-driven dispatcher.
 - Not git-branch management beyond checkout (branch creation/checkout is handled by the existing
   `git-repo-setup.sh` startup script).
-- **No lifecycle teardown in v1** — a dispatched worker stays up until removed manually. Tearing
-  down the worker/service when the task leaves the ready set is a future enhancement.
+- **No lifecycle teardown in v1** — a dispatched worker stays up until removed manually.
+- **No beads-export/import in v1** — the worker's beads DB starts fresh (task *tracking* stays in
+  the parent; the worker is a code sandbox on the task branch). Can be added later if wanted.
 
 ## Background / verified facts
 
@@ -53,100 +70,127 @@ reacts to state changes.
 - This matches the **Ready** column of the bead-me-up-scotty web UI
   (`lib/board-columns.ts`: Ready = `status === "open" && !blocked`).
 
-### Change detection
+### Trigger mechanism (verified against the built image)
 
-- `bd` has **no push/event/stream/daemon** mechanism (verified: no such subcommand exists;
-  beads is CLI-shell-out by design; the reference UI "scotty" polls the CLI).
-- **Therefore the trigger is a poll loop** over `bd list --ready --json` with a diff against a
-  persisted "seen" set. New issue IDs in the ready set = "moved to ready".
+- Git hooks run as the **committer**. In this container the IDE/Claude Code commit as `abc`, but
+  `abc` is **not** in the sudo group and `sudo -n` fails (verified) — so the hook cannot elevate
+  to root, and root is required to talk to the docker socket (`root:989`, verified).
+- **Bridge:** a root daemon listens on a unix socket (`/run/beads-dispatch.sock`, mode 0666); the
+  post-commit hook (as `abc`) connects and sends a byte. Verified: abc→socket→root round-trip works.
+  This is **event-driven** (no polling).
+- `bd init` does **not** install a `post-commit` git hook by default (verified: `.git/hooks/`
+  empty), so the dispatcher's hook won't conflict; any pre-existing hook is backed up.
+- **`core.hooksPath`:** `bd init` sets `core.hooksPath` to `<workspace>/.beads/hooks` (verified),
+  so git only runs hooks from there — the dispatcher's `post-commit` hook must be installed into
+  the **effective hooks dir** (from `core.hooksPath`), not `.git/hooks`. Beads installs no
+  `post-commit` there, so there is no conflict.
+- **`safe.directory`:** the dispatcher runs git as **root** but the workspace repo is owned by the
+  `abc` user, so git 2.35+ refuses with "dubious ownership". The daemon adds the workspace to
+  root's `safe.directory` at startup (verified fix).
 
 ### Container self-inspection & dispatch (verified against the built image)
 
-- The Docker CLI works inside the container when `/var/run/docker.sock` is mounted (it is, per the
-  README standard config). `docker info`, `docker inspect`, `docker run`, `docker service create`
-  all operate on the **host** daemon from inside.
-- `/etc/hostname` returns the container's short ID on the default bridge network, so a container
-  can inspect itself via `docker inspect $(cat /etc/hostname)`.
-- `docker inspect` exposes everything needed: `.Config.Image`, `.Config.Env`, `.HostConfig.RestartPolicy`, `.Name`.
+- The Docker CLI works inside the container when `/var/run/docker.sock` is mounted. `docker info`,
+  `docker inspect`, `docker run`, `docker service create` all operate on the **host** daemon.
+- `/etc/hostname` returns the container's short ID, so a container inspects itself via
+  `docker inspect $(cat /etc/hostname)`.
+- `docker inspect` exposes everything needed: `.Config.Image`, `.Config.Env`,
+  `.HostConfig.RestartPolicy`, `.Name`.
 - **Swarm detection** (verified on a 2-node swarm, this host is Leader):
-  - `docker info --format '{{.Swarm.LocalNodeState}}'` → `active` when the node is in a swarm.
-  - `docker info --format '{{.Swarm.ControlAvailable}}'` → `true` when the node is a manager.
-  - Manager node ⇒ dispatch as a **swarm service**; otherwise ⇒ a regular **local container**.
-- `git-repo-setup.sh` (startup script `93-`) clones `GIT_REPO_URL` into `DEFAULT_WORKSPACE`
-  (`/workspace`) and checks out / creates `GIT_BRANCH_NAME`. On an ephemeral filesystem (no
-  workspace volume) `/workspace` is always empty at first boot, so the clone always succeeds.
+  `docker info --format '{{.Swarm.LocalNodeState}}'` == `active` AND
+  `docker info --format '{{.Swarm.ControlAvailable}}'` == `true` ⇒ manager ⇒ dispatch as a
+  **swarm service**; otherwise a **local container**.
+- **Branch push** (verified end-to-end against a bare remote): creating a branch off HEAD, pushing
+  it, then cloning that branch and checking it out works; the worker's `git-repo-setup.sh` then
+  finds the branch in origin and checks it out (instead of creating an empty one from origin/main).
 
 ## Architecture
 
 ```
-┌───────────────────────────────────────────────────────────────┐
-│  Running container (parent)                                    │
-│                                                               │
-│  /etc/cont-init.d/90-master-startup                           │
-│    └─ /106-start-beads-dispatch (opt-in: BEADS_DISPATCH)      │
-│         └─ beads-dispatch watcher (python3 stdlib daemon)     │
-│              ├─ poll: bd list --ready --json  (every N sec)   │
-│              ├─ diff vs state file (seen set)                 │
-│              ├─ for each NEW ready issue:                     │
-│              │   ├─ derive branch name from issue             │
-│              │   ├─ detect swarm manager?                    │
-│              │   ├─   yes → docker service create             │
-│              │   └─   no  → docker run -d                     │
-│              └─ persist seen set → /config/.beads-dispatch    │
-└───────────────────────────────────────────────────────────────┘
-                           │ docker socket (host daemon)
-                           ▼
-   Swarm manager?  ┌─ YES ── docker service create (swarm task, no mounts)
-                   └─ NO  ── docker run -d (local container, no mounts)
+Parent container:
+  /etc/cont-init.d/90-master-startup
+    └─ /106-start-beads-dispatch (root, opt-in BEADS_DISPATCH=true)
+         └─ beads-dispatch --daemon (root)
+              ├─ install .git/hooks/post-commit in the workspace repo (back up existing)
+              ├─ listen on /run/beads-dispatch.sock (0666)
+              └─ on trigger → dispatch_all()
+
+  git commit (by abc, anywhere in the repo)
+    └─ .git/hooks/post-commit (runs as abc)
+         └─ ping /run/beads-dispatch.sock   (event-driven, non-blocking)
+              └─ daemon (root):
+                   ├─ bd list --ready --json
+                   ├─ diff vs seen-set (/config/.beads-dispatch/state.json)
+                   └─ for each NEW ready task:
+                        ├─ branch = task/<id>-<slug>; git checkout -b <branch> (off HEAD)
+                        ├─ git push -u origin <branch>          (no commit by dispatcher)
+                        ├─ git checkout <original branch>       (restore parent state)
+                        ├─ detect swarm manager?
+                        │    ├─ yes → docker service create
+                        │    └─ no  → docker run -d
+                        └─ mark seen + persist
+
+Worker (first boot, ephemeral filesystem):
+  git-repo-setup.sh  → clone GIT_REPO_URL, checkout GIT_BRANCH_NAME
+                       (branch exists in origin — pushed by dispatcher)
+  configure-beads.sh → bd init (fresh DB)
 ```
 
 ## Design decisions
 
 | # | Decision | Choice | Rationale |
 |---|----------|--------|-----------|
-| D1 | Trigger | Poll `bd list --ready --json`, diff vs persisted seen set | Only available mechanism (no push in bd) |
-| D2 | "Moved to ready" | New issue ID appears in the ready set | Covers both new-open and status-changed issues; matches Ready column semantics |
-| D3 | Idempotency | Persisted `seen` set in `/config/.beads-dispatch/state.json` | Survives watcher/container restarts; one worker per task |
-| D4 | First run | Seed `seen` with the current ready set (do not dispatch for pre-existing ready tasks) | Avoids a burst of workers on container start; override with `BEADS_DISPATCH_SEED=all` |
-| D5 | Replica storage | **No volume mounts** (no `/config`, no `/workspace`, no docker socket) | Explicitly requested; ephemeral worker — config and workspace are regenerated/checked out on boot |
-| D6 | Recursion | Workers get `BEADS_DISPATCH=false` | Prevents unbounded container/service spawning |
-| D7 | Branch name | `<BEADS_DISPATCH_BRANCH_PREFIX>/<issue-id>-<slug>` (default `task/probe-n5h-task-a`) | Readable, unique (issue id is unique), git-safe after slugging |
-| D8 | Git env var | Set `GIT_BRANCH_NAME` only (the var `git-repo-setup.sh` reads) | Correct env var name |
-| D9 | Git repo source | Inherit `GIT_REPO_URL`; if unset, derive from `git -C <workspace> remote get-url origin` | The worker always knows what to clone |
-| D10 | Dispatch mode | Swarm manager node → `docker service create`; otherwise → `docker run -d` | Run workers on the swarm when available; fall back to local containers |
-| D11 | Ports | Publish code-server 8443 to the first free host port ≥ `BEADS_DISPATCH_PORT_BASE` (default 8000); bind nothing else | Avoids host port conflicts; other services (scotty, happier, litellm) run internally |
-| D12 | Restart | Local: inherit parent restart policy (default `unless-stopped`); swarm: `--restart-condition any` | Same durability as parent |
-| D13 | Language/deps | Python 3 stdlib daemon (subprocess + json), no new pip deps | Uses system python3; shells out to `bd` and `docker` CLI |
-| D14 | Runtime user | Runs as **root** | The watcher shells out to `docker` via the mounted host socket; the socket is `root:989` (verified), so `abc` gets "permission denied". `bd` also works as root |
-| D15 | Race guard | Re-query the ready set immediately before each dispatch; skip if the issue is no longer ready | Dolt auto-commit is off by default, so the ready snapshot can race with a concurrent block/update — prevents dispatching an issue that was just re-blocked (observed in testing) |
+| D1 | Trigger | A git **post-commit** hook pings a root daemon via a unix socket; the daemon dispatches | Event-driven, no polling; guarantees the branch is created off a committed state |
+| D2 | "Which tasks" | On each trigger, `bd list --ready --json`; dispatch every ready issue not yet seen | "Ready to be worked" = the current ready set; the committed state is captured by the branch-from-HEAD |
+| D3 | Idempotency | Persisted `seen` set in `/config/.beads-dispatch/state.json` | One worker per task across many commits/restarts |
+| D4 | Privilege bridge | Root daemon owns the socket; the hook (abc) only pings it | `abc` cannot elevate (no sudo) and cannot reach the docker socket |
+| D5 | Branch source | `git checkout -b <task-branch>` **off the current HEAD**; **no dispatcher commit** | The just-committed state (incl. the triggering commit) is exactly what the worker should pull; nothing is committed by the tool |
+| D6 | Push | Push the branch to `origin` (or `GIT_REPO_URL` when it differs); restore the original branch afterwards | The worker clones from origin and must find the branch there; the parent's working state is preserved |
+| D7 | Replica storage | **No volume mounts** | Ephemeral worker; config and workspace regenerated on boot |
+| D8 | Recursion | Workers get `BEADS_DISPATCH=false` (and no hook is installed in their repo) | Prevents unbounded spawning |
+| D9 | Branch name | `<BEADS_DISPATCH_BRANCH_PREFIX>/<issue-id>-<slug>` (default `task/probe-n5h-task-a`) | Readable, unique, git-safe |
+| D10 | Git env var | Set `GIT_BRANCH_NAME` only | The var `git-repo-setup.sh` reads |
+| D11 | Git repo source | Inherit `GIT_REPO_URL`; else `git -C <workspace> remote get-url origin` | The worker always knows what to clone/push to |
+| D12 | Dispatch mode | Swarm manager → `docker service create`; else `docker run -d` | Use the swarm when available |
+| D13 | Ports | Publish code-server 8443 on the first free host port ≥ `BEADS_DISPATCH_PORT_BASE` (default 8000) | Avoids host conflicts |
+| D14 | Restart | Local: inherit parent policy; swarm: `--restart-condition any` | Same durability as parent |
+| D15 | Language/deps | Python 3 stdlib daemon (subprocess, json, socket, signal); no new pip deps | Shells out to `bd` + `docker` |
+| D16 | Runtime user | Root (daemon + dispatch) | Docker socket is `root:989`; `bd` works as root |
+| D17 | Race guard | Re-check the ready set (and branch state) immediately before each dispatch | Avoids dispatching an issue that was just re-blocked, and avoids recreating an already-pushed branch |
+| D18 | Hook safety | Back up any existing `post-commit` hook to `post-commit.beads-dispatch.bak`; hook is a tiny non-blocking ping | Non-destructive; commits stay fast |
 
 ## Environment variables (new)
 
 | Variable | Default | Function |
 |----------|---------|----------|
-| `BEADS_DISPATCH` | *(unset)* | `true` enables the dispatcher on container startup |
-| `BEADS_DISPATCH_INTERVAL` | `30` | Poll interval (seconds) for the ready set |
+| `BEADS_DISPATCH` | *(unset)* | `true` enables the dispatcher (installs the hook + starts the daemon) on container startup |
 | `BEADS_DISPATCH_BRANCH_PREFIX` | `task` | Git branch prefix: `<prefix>/<issue-id>-<slug>` |
-| `BEADS_DISPATCH_SEED` | `skip` | `skip` = do not dispatch for pre-existing ready issues on first start; `all` = dispatch for all current ready issues |
 | `BEADS_DISPATCH_PORT_BASE` | `8000` | Lowest host port considered for the worker's 8443 mapping (first free used) |
+| `BEADS_DISPATCH_WORKER_PORT` | `8443` | Internal port published on the worker (code-server) |
 | `BEADS_DISPATCH_STATE_DIR` | `/config/.beads-dispatch` | Where the seen-set state file lives |
+
+*(`BEADS_DISPATCH_INTERVAL` and `BEADS_DISPATCH_SEED` are removed — dispatch is commit-driven.)*
 
 ## Failure modes & guards
 
-- **No docker socket** → watcher logs a warning and exits (parent wasn't started with the socket).
-- **No beads db yet** → watcher waits; it only acts once `bd list --ready --json` succeeds.
-- **`bd` / docker command errors** → logged, poll continues.
-- **Branch name collision** → `git-repo-setup.sh` checks out the existing branch instead of creating a new one (idempotent).
-- **Worker name collision** (container or service already exists) → watcher checks first; skips if present.
-- **Runaway spawning** → dedup via seen set + recursion disabled in workers.
-- **Swarm `docker service create` failure** → logged with the error; optionally fall back to a local container (configurable at implementation time).
+- **No docker socket** → daemon logs a warning and exits.
+- **No git repo in the workspace** → hook install is skipped (logged); dispatch only works when a
+  repo exists.
+- **No beads db yet** → the ready check fails gracefully; nothing dispatched until `bd init` runs.
+- **Push fails (no credentials)** → clear, actionable error; the task is marked seen (no spam) so
+  the parent can be fixed and the branch created manually if needed.
+- **Remote branch already exists** → skip create/push; still dispatch the worker (it checks out the
+  existing branch).
+- **`bd` / docker command errors** → logged; other ready tasks still process.
+- **Worker name collision** (container/service exists) → skip.
+- **Runaway spawning** → seen-set dedup + `BEADS_DISPATCH=false` in workers.
 
 ## Security notes
 
-- The docker socket gives the watcher full host-docker control (same privilege the README already
+- The docker socket gives the daemon full host-docker control (same privilege the README already
   documents for Docker-in-Docker). The feature is opt-in (`BEADS_DISPATCH=true`).
-- Worker name/image come from `docker inspect` (not user input); branch names are slugified and
-  validated before use as env/container/service names.
+- The unix socket only carries a "commit happened" signal; any container user can trigger a
+  dispatch, but dispatch is idempotent (seen-set), so spurious triggers are harmless.
+- Worker name/image come from `docker inspect`; branch names are slugified and validated.
 - Secrets (API keys) are intentionally inherited by workers — they are full peers of the parent.
-- Workers mount no volumes and no docker socket, so a compromised worker has no host-docker or
-  persistent-state access.
+- Workers mount no volumes and no docker socket.

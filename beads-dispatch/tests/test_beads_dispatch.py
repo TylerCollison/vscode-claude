@@ -1,4 +1,4 @@
-"""Unit tests for the Beads Dispatch watcher's pure functions.
+"""Unit tests for the Beads Dispatch daemon's pure functions.
 
 Run with: python3 -m pytest beads-dispatch/tests/  (or run directly: python3 beads-dispatch/tests/test_beads_dispatch.py)
 """
@@ -89,19 +89,29 @@ def test_load_save_state_roundtrip():
 
 
 def test_find_free_host_port_skips_used():
-    # used_host_ports reads the real docker daemon; with no docker it returns empty.
-    # Assert the scanner returns a port >= base and skips the injected "used" set.
     used = {8000, 8001, 8002}
-    base = 8000
-    port = None
-    # monkey-patch the underlying collector to a deterministic set
     orig = bd.used_host_ports
     bd.used_host_ports = lambda: used
     try:
-        port = bd.find_free_host_port(base)
+        port = bd.find_free_host_port(8000)
     finally:
         bd.used_host_ports = orig
     assert port == 8003
+
+
+def test_install_post_commit_hook_backs_up_existing():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = os.path.join(tmp, "repo")
+        os.makedirs(os.path.join(repo, ".git", "hooks"))
+        existing = os.path.join(repo, ".git", "hooks", "post-commit")
+        with open(existing, "w") as fh:
+            fh.write("#!/bin/sh\necho existing\n")
+        assert bd.install_post_commit_hook(repo, socket_path="/tmp/test-dispatch.sock") is True
+        assert os.path.exists(existing + ".beads-dispatch.bak")
+        with open(existing) as fh:
+            hook = fh.read()
+        assert "test-dispatch.sock" in hook
+        assert "/tmp/test-dispatch.sock" in hook
 
 
 if __name__ == "__main__":

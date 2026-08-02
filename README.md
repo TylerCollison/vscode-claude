@@ -302,17 +302,17 @@ Then open `http://localhost:3000` in your browser. The workspace (which contains
 
 *Note: the UI reads the database via the `bd` CLI, so set `BEADS_ENABLED=true` (or run `bd init` yourself) so a database exists.*
 
-### Beads Dispatch (auto-provision workers for ready tasks)
+### Beads Dispatch (auto-provision workers for ready tasks on commit)
 
-When a Beads task moves to the **ready** state (open, no active blockers), the dispatcher creates a **worker** for it — a container/service from the running image with `GIT_BRANCH_NAME` set to a branch named after the task. On a swarm manager node the worker is started as a swarm service; otherwise as a local Docker container. Workers mount **no volumes** (ephemeral — `git-repo-setup.sh` clones `GIT_REPO_URL` and checks out the branch on boot).
+Every time you **commit** in the workspace repo, the dispatcher checks the Beads ready set (open issues with no active blockers) and creates a **worker** for each ready task not yet dispatched — a container/service from the running image with `GIT_BRANCH_NAME` set to a branch named after the task. The branch is created **off the current HEAD** (the state you just committed) and **pushed** to origin, so the worker pulls a branch that actually contains the task's work — the tool never commits anything itself. On a swarm manager node the worker is started as a swarm service; otherwise as a local Docker container. Workers mount **no volumes** (ephemeral — `git-repo-setup.sh` clones `GIT_REPO_URL` and checks out the branch on boot).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `BEADS_DISPATCH` | *(unset)* | Set to `true` to enable the dispatcher on container startup |
-| `BEADS_DISPATCH_INTERVAL` | `30` | Poll interval (seconds) for the ready set |
 | `BEADS_DISPATCH_BRANCH_PREFIX` | `task` | Git branch prefix: `<prefix>/<issue-id>-<slug>` |
-| `BEADS_DISPATCH_SEED` | `skip` | `skip` = don't dispatch for already-ready issues on first start; `all` = dispatch for all current ready issues |
 | `BEADS_DISPATCH_PORT_BASE` | `8000` | Lowest host port considered for the worker's code-server (8443) mapping |
+| `BEADS_DISPATCH_WORKER_PORT` | `8443` | Internal port published on the worker (code-server) |
+| `BEADS_DISPATCH_STATE_DIR` | `/config/.beads-dispatch` | Where the seen-set state file lives |
 
 **Usage:**
 
@@ -324,13 +324,18 @@ environment:
   - GIT_REPO_URL=https://github.com/user/repo.git # Required (or the workspace must have a git origin)
 ```
 
-When a task becomes ready (e.g. `probe-n5h`, "Task A"), the dispatcher starts a worker:
-- named `<container>-<issue-id>` (e.g. `claude-dev-probe-n5h`)
-- on branch `task/probe-n5h-task-a`
-- with code-server at `http://localhost:<free-port>` (first free port ≥ `BEADS_DISPATCH_PORT_BASE`)
-- as a **swarm service** if the node is a swarm manager, else a **local container**
+**How the trigger works:** the dispatcher installs a `post-commit` hook in the workspace repo and runs a small root daemon. On every `git commit`, the hook (which runs as the committing user) pings the daemon over a local unix socket; the daemon (which has the docker-socket access) checks for ready tasks and dispatches. Commits are never blocked or modified.
 
-The worker inherits the full environment (API keys, providers) but sets `BEADS_DISPATCH=false`, so workers never dispatch their own workers. Each task is dispatched once (state is tracked in `/config/.beads-dispatch/state.json`).
+When you commit and a task is ready (e.g. `probe-n5h`, "Task A"), the dispatcher:
+1. creates the branch `task/probe-n5h-task-a` **off the current HEAD** and pushes it to origin,
+2. restores the branch you were on (your working state is untouched),
+3. starts a worker named `<container>-<issue-id>` (e.g. `claude-dev-probe-n5h`),
+4. with code-server at `http://localhost:<free-port>` (first free port ≥ `BEADS_DISPATCH_PORT_BASE`),
+5. as a **swarm service** if the node is a swarm manager, else a **local container**.
+
+The worker inherits the full environment (API keys, providers) but sets `BEADS_DISPATCH=false`, so workers never dispatch their own workers. Each task is dispatched once — a later commit won't duplicate it (state is tracked in `/config/.beads-dispatch/state.json`).
+
+> **Prerequisite:** the parent container must be able to `git push` to its origin (a credential helper / token), or the dispatcher logs a clear error and skips the task.
 
 ### Knowledge Repository Integration
 | Variable | Description |
@@ -731,10 +736,12 @@ docker exec claude-dev curl -I http://localhost:3000
 - Ensure `ENABLE_SCOTTY=true` is set and the port (`SCOTTY_PORT`, default `3000`) isn't already in use
 
 **Beads Dispatch Issues:**
-- Verify the watcher is running: `docker exec claude-dev ps aux | grep beads-dispatch`
-- Check the watcher log: `docker exec claude-dev cat /tmp/beads-dispatch.log`
+- Verify the daemon is running: `docker exec claude-dev ps aux | grep beads-dispatch`
+- Check the daemon log: `docker exec claude-dev cat /tmp/beads-dispatch.log`
+- Confirm the post-commit hook is installed: `docker exec claude-dev cat /workspace/.git/hooks/post-commit`
 - Inspect the seen-set state: `docker exec claude-dev cat /config/.beads-dispatch/state.json`
 - List dispatched workers: `docker service ls --filter label=beads.task` (swarm) or `docker ps --filter label=beads.task` (local)
+- If you committed but no worker appeared: check the log for "Commit trigger received" and any "could not push branch" error (the parent needs git push credentials for its origin)
 - Ensure `BEADS_DISPATCH=true`, the docker socket is mounted, and `GIT_REPO_URL` (or a workspace git origin) is set
 
 ## Credits
