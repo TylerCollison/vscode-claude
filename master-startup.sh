@@ -41,6 +41,7 @@ STARTUP_SCRIPTS=(
     "/103-configure-buildx"
     "/104-configure-beads"
     "/105-start-scotty"
+    "/106-start-beads-dispatch"
 )
 
 log "Starting master startup sequence..."

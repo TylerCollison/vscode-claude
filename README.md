@@ -302,6 +302,36 @@ Then open `http://localhost:3000` in your browser. The workspace (which contains
 
 *Note: the UI reads the database via the `bd` CLI, so set `BEADS_ENABLED=true` (or run `bd init` yourself) so a database exists.*
 
+### Beads Dispatch (auto-provision workers for ready tasks)
+
+When a Beads task moves to the **ready** state (open, no active blockers), the dispatcher creates a **worker** for it — a container/service from the running image with `GIT_BRANCH_NAME` set to a branch named after the task. On a swarm manager node the worker is started as a swarm service; otherwise as a local Docker container. Workers mount **no volumes** (ephemeral — `git-repo-setup.sh` clones `GIT_REPO_URL` and checks out the branch on boot).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BEADS_DISPATCH` | *(unset)* | Set to `true` to enable the dispatcher on container startup |
+| `BEADS_DISPATCH_INTERVAL` | `30` | Poll interval (seconds) for the ready set |
+| `BEADS_DISPATCH_BRANCH_PREFIX` | `task` | Git branch prefix: `<prefix>/<issue-id>-<slug>` |
+| `BEADS_DISPATCH_SEED` | `skip` | `skip` = don't dispatch for already-ready issues on first start; `all` = dispatch for all current ready issues |
+| `BEADS_DISPATCH_PORT_BASE` | `8000` | Lowest host port considered for the worker's code-server (8443) mapping |
+
+**Usage:**
+
+```yaml
+environment:
+  - BEADS_DISPATCH=true
+  - BEADS_DISPATCH_BRANCH_PREFIX=task # Optional
+  - BEADS_DISPATCH_PORT_BASE=8000     # Optional
+  - GIT_REPO_URL=https://github.com/user/repo.git # Required (or the workspace must have a git origin)
+```
+
+When a task becomes ready (e.g. `probe-n5h`, "Task A"), the dispatcher starts a worker:
+- named `<container>-<issue-id>` (e.g. `claude-dev-probe-n5h`)
+- on branch `task/probe-n5h-task-a`
+- with code-server at `http://localhost:<free-port>` (first free port ≥ `BEADS_DISPATCH_PORT_BASE`)
+- as a **swarm service** if the node is a swarm manager, else a **local container**
+
+The worker inherits the full environment (API keys, providers) but sets `BEADS_DISPATCH=false`, so workers never dispatch their own workers. Each task is dispatched once (state is tracked in `/config/.beads-dispatch/state.json`).
+
 ### Knowledge Repository Integration
 | Variable | Description |
 |----------|-------------|
@@ -370,6 +400,10 @@ services:
       # Scotty — Beads web UI (optional)
       - ENABLE_SCOTTY=true
       - SCOTTY_PORT=3000 # Optional
+      # Beads Dispatch — auto-provision workers for ready tasks (optional)
+      - BEADS_DISPATCH=true
+      - BEADS_DISPATCH_BRANCH_PREFIX=task # Optional
+      - BEADS_DISPATCH_PORT_BASE=8000     # Optional
     ports:
       - "8443:8443" # VSCode UI
       - "3005:3005" # Happier UI
@@ -695,6 +729,13 @@ docker exec claude-dev curl -I http://localhost:3000
 - Verify it's running: `docker exec claude-dev curl -I http://localhost:3000`
 - Check the startup log: `docker exec claude-dev cat /tmp/scotty.log`
 - Ensure `ENABLE_SCOTTY=true` is set and the port (`SCOTTY_PORT`, default `3000`) isn't already in use
+
+**Beads Dispatch Issues:**
+- Verify the watcher is running: `docker exec claude-dev ps aux | grep beads-dispatch`
+- Check the watcher log: `docker exec claude-dev cat /tmp/beads-dispatch.log`
+- Inspect the seen-set state: `docker exec claude-dev cat /config/.beads-dispatch/state.json`
+- List dispatched workers: `docker service ls --filter label=beads.task` (swarm) or `docker ps --filter label=beads.task` (local)
+- Ensure `BEADS_DISPATCH=true`, the docker socket is mounted, and `GIT_REPO_URL` (or a workspace git origin) is set
 
 ## Credits
 

@@ -194,7 +194,11 @@ COPY start-happier.sh /102-start-happier
 COPY configure-buildx.sh /103-configure-buildx
 COPY configure-beads.sh /104-configure-beads
 COPY start-scotty.sh /105-start-scotty
+COPY start-beads-dispatch.sh /106-start-beads-dispatch
 COPY happier-tls-tunnel.js /app/happier-tls-tunnel.js
+
+# Install the Beads dispatch watcher (dispatches a worker container/service when a task becomes ready)
+COPY beads-dispatch/beads_dispatch.py /usr/local/bin/beads-dispatch
 
 # Copy master startup script to cont-init.d (so it runs automatically)
 COPY master-startup.sh /etc/cont-init.d/90-master-startup
@@ -218,6 +222,8 @@ RUN chmod +x /92-configure-code-server-theme \
     /103-configure-buildx \
     /104-configure-beads \
     /105-start-scotty \
+    /106-start-beads-dispatch \
+    /usr/local/bin/beads-dispatch \
     /etc/cont-init.d/90-master-startup
 
 # Remove build toolchain packages no longer needed at runtime
