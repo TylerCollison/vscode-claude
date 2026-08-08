@@ -35,6 +35,7 @@ Stdlib only (no pip deps): shells out to the `bd`, `docker`, and `git` CLIs.
 
 import json
 import os
+import pwd
 import re
 import shutil
 import signal
@@ -57,6 +58,44 @@ def run(cmd, **kwargs):
     """Run a command, return (returncode, stdout, stderr)."""
     proc = subprocess.run(cmd, capture_output=True, text=True, **kwargs)
     return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+
+
+def run_as_user(user, cmd, **kwargs):
+    """Run a command as a specific user (via sudo -u), falling back to root.
+
+    Returns (rc, stdout, stderr) — same contract as run().
+    """
+    try:
+        uid = pwd.getpwnam(user).pw_uid
+        home = pwd.getpwnam(user).pw_dir
+    except KeyError:
+        uid = None
+        home = "/home/%s" % user
+    # Already running as that user -> run directly (no sudo).
+    if uid is not None and os.geteuid() == uid:
+        return run(cmd, **kwargs)
+    # If sudo is unavailable, fall back to running as root with the credential
+    # files that copy_abc_git_credentials() placed in /root.
+    if not shutil.which("sudo"):
+        return run(cmd, **kwargs)
+    # Ensure HOME points at the target user's home so git finds that user's
+    # credential helper (gh, .gitconfig, .netrc), ssh keys, etc. sudo -E preserves
+    # the parent env (including our HOME override) when running as root.
+    kwargs["env"] = dict(kwargs.get("env") or os.environ)
+    kwargs["env"]["HOME"] = home
+    # -n: never prompt for a password (root can sudo -u without one; if it would
+    # prompt, fail fast rather than hang the dispatcher).
+    sudo_cmd = ["sudo", "-n", "-u", user, "-E", "--"] + cmd
+    return run(sudo_cmd, **kwargs)
+
+
+def get_workspace_owner(workspace):
+    """Return the username that owns the workspace directory."""
+    try:
+        stat = os.stat(workspace)
+        return pwd.getpwuid(stat.st_uid).pw_name
+    except Exception:
+        return "abc"  # fallback
 
 
 def env(name, default=None):
@@ -183,7 +222,7 @@ def derive_branch_name(issue, prefix):
     return "%s/%s" % (prefix, issue_id)
 
 
-def derive_git_repo_url(parent_env, workspace):
+def derive_git_repo_url(parent_env, workspace, user=None):
     # First check the environment variable
     env_url = None
     for e in parent_env:
@@ -194,7 +233,10 @@ def derive_git_repo_url(parent_env, workspace):
                 break
 
     # Get the git remote URL
-    rc, out, _ = run(["git", "-C", workspace, "remote", "get-url", "origin"])
+    if user:
+        rc, out, _ = run_as_user(user, ["git", "-C", workspace, "remote", "get-url", "origin"])
+    else:
+        rc, out, _ = run(["git", "-C", workspace, "remote", "get-url", "origin"])
     git_url = out if rc == 0 and out else None
 
     # If git URL has credentials (contains @), prefer it over env URL
@@ -235,33 +277,37 @@ def compose_worker_env(parent_env, branch, repo_url):
 
 # --------------------------------------------------------------------------- git
 
-def git_current_branch(workspace):
-    rc, out, _ = run(["git", "-C", workspace, "branch", "--show-current"])
+def git_current_branch(workspace, user):
+    rc, out, _ = run_as_user(user, ["git", "-C", workspace, "branch", "--show-current"])
     if rc == 0 and out:
         return out
     # detached HEAD -> return the commit sha
-    rc, out, _ = run(["git", "-C", workspace, "rev-parse", "HEAD"])
+    rc, out, _ = run_as_user(user, ["git", "-C", workspace, "rev-parse", "HEAD"])
     return out if rc == 0 and out else None
 
 
-def branch_exists_remote(workspace, branch, repo_url):
-    rc, out, _ = run(["git", "-C", workspace, "ls-remote", repo_url,
-                      "refs/heads/%s" % branch], env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
+def branch_exists_remote(workspace, branch, repo_url, user):
+    rc, out, _ = run_as_user(user, ["git", "-C", workspace, "ls-remote", repo_url,
+                                    "refs/heads/%s" % branch],
+                             env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
     return rc == 0 and bool(out.strip())
 
 
-def push_task_branch(workspace, branch, repo_url):
+def push_task_branch(workspace, branch, repo_url, user):
     """Create <branch> off the current HEAD, push it, restore the original branch.
+
+    All git operations run as <user> (the workspace owner, e.g. abc) so that the
+    user's git credentials (helper, ssh, token) are used — root may not have them.
 
     Returns: True (pushed), "exists" (branch already in origin — nothing to push),
     or False (failed; original branch restored).
     """
-    original = git_current_branch(workspace)
+    original = git_current_branch(workspace, user)
     if not original:
         log("ERROR: cannot determine current git branch in %s" % workspace)
         return False
 
-    if branch_exists_remote(workspace, branch, repo_url):
+    if branch_exists_remote(workspace, branch, repo_url, user):
         log("Branch %s already exists in origin — skipping create/push." % branch)
         return "exists"
 
@@ -269,37 +315,38 @@ def push_task_branch(workspace, branch, repo_url):
 
     def restore():
         try:
-            run(["git", "-C", workspace, "checkout", original], env=git_env)
+            run_as_user(user, ["git", "-C", workspace, "checkout", original], env=git_env)
         except Exception:
             pass
 
     def cleanup_local_branch():
         """Delete the local branch if it exists (to avoid 'already exists' on retry)."""
         try:
-            run(["git", "-C", workspace, "branch", "-D", branch], env=git_env)
+            run_as_user(user, ["git", "-C", workspace, "branch", "-D", branch], env=git_env)
         except Exception:
             pass
 
     # 1. Create the branch off current HEAD (no commit).
     # Use -B (force create/reset) instead of -b to handle retries where the branch
     # might already exist locally from a previous failed attempt.
-    rc, out, err = run(["git", "-C", workspace, "checkout", "-B", branch], env=git_env)
+    rc, out, err = run_as_user(user, ["git", "-C", workspace, "checkout", "-B", branch],
+                               env=git_env)
     if rc != 0:
-        log("ERROR: git checkout -B %s failed: %s" % (branch, err or out))
+        log("ERROR: git checkout -B %s failed (as %s): %s" % (branch, user, err or out))
         return False
 
     # 2. Determine the push target: origin if it matches repo_url, else repo_url.
-    rc, origin, _ = run(["git", "-C", workspace, "remote", "get-url", "origin"])
+    rc, origin, _ = run_as_user(user, ["git", "-C", workspace, "remote", "get-url", "origin"])
     if rc == 0 and origin == repo_url:
         push_cmd = ["git", "-C", workspace, "push", "-u", "origin", branch]
     else:
         push_cmd = ["git", "-C", workspace, "push", repo_url, "%s:%s" % (branch, branch)]
 
-    rc, out, err = run(push_cmd, env=git_env)
+    rc, out, err = run_as_user(user, push_cmd, env=git_env)
     restore()
     if rc != 0:
-        log("ERROR: git push of %s failed: %s (is the parent configured to push to %s?)"
-            % (branch, (err or out).splitlines()[-1] if (err or out) else "unknown", repo_url))
+        log("ERROR: git push of %s failed (as %s): %s (is the parent configured to push to %s?)"
+            % (branch, user, (err or out).splitlines()[-1] if (err or out) else "unknown", repo_url))
         # Clean up the local branch so retries don't fail with "already exists"
         cleanup_local_branch()
         return False
@@ -492,15 +539,20 @@ def dispatch_worker(issue, cfg, self_info):
     issue_id = issue["id"]
     worker = worker_name(self_info["name"], issue_id)
 
+    # Run git operations as the owner of the workspace (e.g. abc), so the user's
+    # credentials are used for the push. The daemon itself runs as root (required
+    # to reach the docker socket) but root typically has no git credentials.
+    git_user = env("BEADS_DISPATCH_GIT_USER") or get_workspace_owner(cfg.workspace)
+
     branch = derive_branch_name(issue, cfg.branch_prefix)
-    repo_url = derive_git_repo_url(self_info["env"], cfg.workspace)
+    repo_url = derive_git_repo_url(self_info["env"], cfg.workspace, git_user)
     if not repo_url:
         log("WARNING: no GIT_REPO_URL and no git origin in %s — skipping %s"
             % (cfg.workspace, issue_id))
         return False
 
     # Push the task branch so the worker can clone/check it out.
-    push_result = push_task_branch(cfg.workspace, branch, repo_url)
+    push_result = push_task_branch(cfg.workspace, branch, repo_url, git_user)
     if push_result is False:
         log("ERROR: could not push branch for %s — skipping dispatch." % issue_id)
         return False
