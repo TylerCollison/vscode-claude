@@ -184,13 +184,35 @@ def derive_branch_name(issue, prefix):
 
 
 def derive_git_repo_url(parent_env, workspace):
+    # First check the environment variable
+    env_url = None
     for e in parent_env:
         if e.startswith("GIT_REPO_URL="):
             val = e.split("=", 1)[1]
             if val:
-                return val
+                env_url = val
+                break
+
+    # Get the git remote URL
     rc, out, _ = run(["git", "-C", workspace, "remote", "get-url", "origin"])
-    return out if rc == 0 and out else None
+    git_url = out if rc == 0 and out else None
+
+    # If git URL has credentials (contains @), prefer it over env URL
+    # Credentials in git URL look like: https://user:pass@host/... or git@host:...
+    if git_url and "@" in git_url:
+        # Check if the @ is before a / or : (i.e., in the credential part, not in the path)
+        if git_url.startswith("https://") or git_url.startswith("http://"):
+            # https://user:pass@host/path - @ before first /
+            at_idx = git_url.find("@")
+            slash_idx = git_url.find("/", 8)  # after https://
+            if at_idx > 0 and at_idx < slash_idx:
+                return git_url
+        elif git_url.startswith("git@") or git_url.startswith("ssh://"):
+            # git@host:path or ssh://user@host/path - has credentials
+            return git_url
+
+    # Fall back to env URL if available, then git URL
+    return env_url or git_url
 
 
 def worker_name(parent_name, issue_id):
@@ -251,10 +273,19 @@ def push_task_branch(workspace, branch, repo_url):
         except Exception:
             pass
 
+    def cleanup_local_branch():
+        """Delete the local branch if it exists (to avoid 'already exists' on retry)."""
+        try:
+            run(["git", "-C", workspace, "branch", "-D", branch], env=git_env)
+        except Exception:
+            pass
+
     # 1. Create the branch off current HEAD (no commit).
-    rc, out, err = run(["git", "-C", workspace, "checkout", "-b", branch], env=git_env)
+    # Use -B (force create/reset) instead of -b to handle retries where the branch
+    # might already exist locally from a previous failed attempt.
+    rc, out, err = run(["git", "-C", workspace, "checkout", "-B", branch], env=git_env)
     if rc != 0:
-        log("ERROR: git checkout -b %s failed: %s" % (branch, err or out))
+        log("ERROR: git checkout -B %s failed: %s" % (branch, err or out))
         return False
 
     # 2. Determine the push target: origin if it matches repo_url, else repo_url.
@@ -269,6 +300,8 @@ def push_task_branch(workspace, branch, repo_url):
     if rc != 0:
         log("ERROR: git push of %s failed: %s (is the parent configured to push to %s?)"
             % (branch, (err or out).splitlines()[-1] if (err or out) else "unknown", repo_url))
+        # Clean up the local branch so retries don't fail with "already exists"
+        cleanup_local_branch()
         return False
     log("Pushed branch %s to %s" % (branch, repo_url))
     return True
@@ -285,6 +318,57 @@ def ensure_safe_directory(workspace):
     if rc == 0 and workspace in out.splitlines():
         return
     run(["git", "config", "--global", "--add", "safe.directory", workspace])
+
+
+def copy_abc_git_credentials(workspace):
+    """Copy git credentials from the abc user to root so the dispatcher can push.
+
+    The dispatcher runs as root but needs git credentials (SSH keys, token files,
+    credential helpers) that are configured for the abc user. This function copies
+    the relevant files and config from /config (abc's home) to /root.
+    """
+    # Source: abc user's home (typically /config in linuxserver images)
+    abc_home = "/config"
+    root_home = "/root"
+
+    # Copy SSH keys if they exist
+    abc_ssh = os.path.join(abc_home, ".ssh")
+    root_ssh = os.path.join(root_home, ".ssh")
+    if os.path.isdir(abc_ssh):
+        try:
+            os.makedirs(root_ssh, exist_ok=True)
+            for fname in os.listdir(abc_ssh):
+                src = os.path.join(abc_ssh, fname)
+                dst = os.path.join(root_ssh, fname)
+                if os.path.isfile(src) and not os.path.exists(dst):
+                    shutil.copy2(src, dst)
+                    os.chmod(dst, 0o600)  # SSH keys must be 600
+        except OSError as e:
+            log("WARNING: could not copy SSH keys: %s" % e)
+
+    # Copy git credentials file if it exists
+    abc_git_cred = os.path.join(abc_home, ".git-credentials")
+    root_git_cred = os.path.join(root_home, ".git-credentials")
+    if os.path.isfile(abc_git_cred) and not os.path.isfile(root_git_cred):
+        try:
+            shutil.copy2(abc_git_cred, root_git_cred)
+            os.chmod(root_git_cred, 0o600)
+        except OSError as e:
+            log("WARNING: could not copy .git-credentials: %s" % e)
+
+    # Copy credential helper config if it exists
+    abc_gitconfig = os.path.join(abc_home, ".gitconfig")
+    root_gitconfig = os.path.join(root_home, ".gitconfig")
+    if os.path.isfile(abc_gitconfig):
+        try:
+            # Read abc's gitconfig and extract credential section
+            rc, out, _ = run(["git", "config", "--file", abc_gitconfig, "--get-regexp", "credential."])
+            if rc == 0 and out:
+                for line in out.splitlines():
+                    key, val = line.split(" ", 1)
+                    run(["git", "config", "--global", key, val])
+        except Exception as e:
+            log("WARNING: could not copy credential helper config: %s" % e)
 
 
 def effective_hooks_dir(workspace):
@@ -314,12 +398,13 @@ def install_post_commit_hook(workspace, socket_path=SOCKET_PATH):
     if os.path.exists(hook_path) and not os.path.exists(backup):
         shutil.copy2(hook_path, backup)
 
+    # Use absolute path to python3 to avoid PATH issues in git hooks
+    python3_path = shutil.which("python3") or "/usr/bin/python3"
     hook = """#!/bin/sh
 # Beads Dispatch post-commit hook (installed by beads-dispatch).
 # Pings the dispatcher daemon so it can create workers for ready tasks.
 # Non-blocking; failures are ignored so commits are never slowed or broken.
-command -v python3 >/dev/null 2>&1 || exit 0
-python3 - <<'PY'
+%(python)s - <<'PY'
 import socket
 try:
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -330,7 +415,7 @@ try:
 except Exception:
     pass
 PY
-""" % {"sock": socket_path}
+""" % {"sock": socket_path, "python": python3_path}
     try:
         with open(hook_path, "w") as fh:
             fh.write(hook)
@@ -553,6 +638,7 @@ def main(argv):
     seen = load_state(cfg)
 
     ensure_safe_directory(cfg.workspace)
+    copy_abc_git_credentials(cfg.workspace)
 
     if "--once" in argv:
         installed = install_post_commit_hook(cfg.workspace)
