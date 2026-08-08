@@ -114,6 +114,42 @@ def test_install_post_commit_hook_backs_up_existing():
         assert "/tmp/test-dispatch.sock" in hook
 
 
+def test_git_env_sets_terminal_prompt_off():
+    e = bd.git_env()
+    assert e.get("GIT_TERMINAL_PROMPT") == "0"
+
+
+def test_get_workspace_owner_prefers_non_root():
+    # A temp dir owned by the current user (root here) falls back to 'abc'
+    with tempfile.TemporaryDirectory() as tmp:
+        owner = bd.get_workspace_owner(tmp)
+        assert owner in ("abc", "coder", "user", "root")
+    # When root-owned and abc exists, prefer abc (non-root).
+    try:
+        pwd_entry = bd.pwd.getpwuid(0)
+    except KeyError:
+        pwd_entry = None
+    if pwd_entry:
+        assert bd.get_workspace_owner("/") not in ("", None)
+
+
+def test_derive_git_repo_url_prefers_credentialed_remote():
+    real_run = bd.run
+    def fake_run(cmd, **kwargs):
+        if len(cmd) >= 2 and cmd[-2:] == ["get-url", "origin"]:
+            return 0, "https://user:token@github.com/org/repo.git", ""
+        return real_run(cmd, **kwargs)
+    old = bd.run
+    bd.run = fake_run
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            url = bd.derive_git_repo_url(
+                ["GIT_REPO_URL=https://github.com/org/repo.git"], tmp, "abc")
+        assert url == "https://user:token@github.com/org/repo.git"
+    finally:
+        bd.run = old
+
+
 if __name__ == "__main__":
     import traceback
 

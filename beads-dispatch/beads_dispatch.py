@@ -90,16 +90,45 @@ def run_as_user(user, cmd, **kwargs):
 
 
 def get_workspace_owner(workspace):
-    """Return the username that owns the workspace directory."""
+    """Return the username that owns the workspace directory.
+
+    Prefer a non-root owner: the root-owned fallback almost always means the
+    workspace was provisioned by an init script before the user chown pass,
+    and root has no git credentials. If the workspace is root-owned, fall back
+    to the first non-root user with a shell (e.g. abc) so git runs as the user
+    who actually has credentials.
+    """
+    candidates = []
     try:
-        stat = os.stat(workspace)
-        return pwd.getpwuid(stat.st_uid).pw_name
+        st = os.stat(workspace)
+        candidates.append(pwd.getpwuid(st.st_uid).pw_name)
     except Exception:
-        return "abc"  # fallback
+        pass
+    for username in ("abc", "coder", "user"):
+        try:
+            if pwd.getpwnam(username).pw_uid not in (0, 65534):
+                candidates.append(username)
+        except (KeyError, TypeError):
+            pass
+    for name in candidates:
+        if name != "root":
+            return name
+    return candidates[0] if candidates else "abc"
 
 
 def env(name, default=None):
     return os.environ.get(name, default)
+
+
+def git_env():
+    """Build the environment for git subprocesses (no prompts, gh helper ready)."""
+    e = dict(os.environ)
+    e["GIT_TERMINAL_PROMPT"] = "0"
+    # Make the gh helper work non-interactively even when running as root.
+    for k, v in (("GH_TOKEN", "GITHUB_TOKEN"), ("GITHUB_TOKEN", "GH_TOKEN")):
+        if not e.get(k) and e.get(v):
+            e[k] = e[v]
+    return e
 
 
 # --------------------------------------------------------------------------- config
@@ -289,7 +318,7 @@ def git_current_branch(workspace, user):
 def branch_exists_remote(workspace, branch, repo_url, user):
     rc, out, _ = run_as_user(user, ["git", "-C", workspace, "ls-remote", repo_url,
                                     "refs/heads/%s" % branch],
-                             env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
+                             env=git_env())
     return rc == 0 and bool(out.strip())
 
 
@@ -311,7 +340,7 @@ def push_task_branch(workspace, branch, repo_url, user):
         log("Branch %s already exists in origin — skipping create/push." % branch)
         return "exists"
 
-    git_env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+    git_env = git_env()
 
     def restore():
         try:
@@ -357,7 +386,7 @@ def push_task_branch(workspace, branch, repo_url, user):
 def ensure_safe_directory(workspace):
     """Allow git-as-root to operate on the workspace repo (which is abc-owned).
 
-    Git 2.35+ refuses to run in a repo owned by another user (dubious ownership).
+    git 2.35+ refuses to run in a repo owned by another user (dubious ownership).
     The dispatcher runs git as root but the workspace is owned by the `abc` user,
     so add the workspace to root's safe.directory list (idempotent).
     """
@@ -365,6 +394,36 @@ def ensure_safe_directory(workspace):
     if rc == 0 and workspace in out.splitlines():
         return
     run(["git", "config", "--global", "--add", "safe.directory", workspace])
+
+
+def configure_gh_credential_helper():
+    """Configure the gh CLI as git's credential helper when GH_TOKEN is available.
+
+    gh auth git-credential can answer git credential prompts non-interactively
+    using GH_TOKEN (or gh's own auth store), which gives the root daemon a way to
+    push even when the workspace is root-owned and no per-user credential files
+    exist. Only sets the helper when gh is present and authenticated, so it never
+    overrides a user's existing setup when git runs as that user.
+    Returns True when configured.
+    """
+    if not shutil.which("gh"):
+        return False
+    # Probe: is a non-interactive credential answer possible?
+    probe = "protocol=https\nhost=github.com\n\n"
+    rc, out, err = run(["gh", "auth", "git-credential", "get"],
+                       input=probe, env=git_env())
+    if rc != 0 or "password=" not in out:
+        return False
+    # git appends 'get'/'store'/'erase' to the helper command, so the git-config
+    # value is the 'gh auth git-credential' subcommand with a leading '!'.
+    try:
+        run(["git", "config", "--global", "credential.helper",
+             "!gh auth git-credential"])
+        log("Configured gh as git credential helper.")
+        return True
+    except Exception as e:
+        log("WARNING: could not configure gh credential helper: %s" % e)
+        return False
 
 
 def copy_abc_git_credentials(workspace):
@@ -691,6 +750,7 @@ def main(argv):
 
     ensure_safe_directory(cfg.workspace)
     copy_abc_git_credentials(cfg.workspace)
+    configure_gh_credential_helper()
 
     if "--once" in argv:
         installed = install_post_commit_hook(cfg.workspace)
