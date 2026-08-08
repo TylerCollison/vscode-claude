@@ -1,0 +1,15 @@
+#!/bin/sh
+# Beads Dispatch post-commit hook (installed by beads-dispatch).
+# Pings the dispatcher daemon so it can create workers for ready tasks.
+# Non-blocking; failures are ignored so commits are never slowed or broken.
+/usr/bin/python3 - <<'PY'
+import socket
+try:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(0.5)
+    s.connect("/run/beads-dispatch.sock")
+    s.sendall(b"commit")
+    s.close()
+except Exception:
+    pass
+PY
