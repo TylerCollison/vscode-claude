@@ -345,9 +345,19 @@ def derive_git_repo_url(parent_env, workspace, user=None):
     return env_url or git_url
 
 
-def worker_name(parent_name, issue_id):
-    name = "%s-%s" % (parent_name, issue_id)
-    # Safe for both container and swarm service names: lowercase, digits, '-'
+def worker_name(issue, parent_name):
+    """Derive the worker name/hostname from the issue title + id.
+
+    Format: <slugified-title>-<issue-id> (e.g. 'update-readme-workspace-4yd').
+    Falls back to <parent>-<issue-id> when the title has no slug-able content.
+    Safe for both container and swarm service names: lowercase, digits, '-'.
+    """
+    issue_id = issue["id"]
+    slug = slugify(issue.get("title", ""))
+    if slug:
+        name = "%s-%s" % (slug, issue_id)
+    else:
+        name = "%s-%s" % (parent_name, issue_id)
     name = re.sub(r"[^a-zA-Z0-9]+", "-", name).strip("-").lower()
     return (name or "beads-worker")[:120]
 
@@ -705,7 +715,7 @@ def dispatch_swarm(worker, image, env, port, worker_port, issue_id):
 def dispatch_worker(issue, cfg, self_info):
     """Dispatch a worker for a ready issue. Returns True when handled."""
     issue_id = issue["id"]
-    worker = worker_name(self_info["name"], issue_id)
+    worker = worker_name(issue, self_info["name"])
 
     # Run git operations as the owner of the workspace (e.g. abc), so the user's
     # credentials are used for the push. The daemon itself runs as root (required

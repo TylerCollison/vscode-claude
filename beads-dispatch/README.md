@@ -70,7 +70,8 @@ This requires the same git credentials as the branch push (configured automatica
   ensured, `BEADS_REMOTE` set (Dolt sync source), and `BEADS_DISPATCH=false` (workers never
   dispatch their own workers; no hook is installed in their repos).
 - **Hostname = container name** — the worker's hostname matches its container name, which is
-  derived from the task (`<parent>-<issue-id>`), so `docker ps`/`exec` match the task.
+  derived from the task (`<issue-slug>-<issue-id>`, e.g. `update-readme-workspace-4yd`), so
+  `docker ps`/`exec` match the task.
 - **Docker socket is the only volume** — `/var/run/docker.sock` is mounted (so a replicated
   container can drive the host daemon); `/config` and `/workspace` stay ephemeral (no other
   volumes are replicated).

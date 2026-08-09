@@ -15,19 +15,22 @@ SPEC.loader.exec_module(bd)
 
 
 def test_worker_name_basic():
-    assert bd.worker_name("claude-dev", "probe-n5h") == "claude-dev-probe-n5h"
+    # worker name is derived from the issue title + id (not the parent)
+    assert bd.worker_name({"id": "probe-n5h", "title": "Update README"}, "parent") == "update-readme-probe-n5h"
 
 
 def test_worker_name_sanitizes_invalid_chars():
     # underscores/dots/uppercase are normalized; safe for containers and services
-    name = bd.worker_name("vsclaude-code_vsclaude-code.1.ABC", "probe-n5h")
-    assert name == "vsclaude-code-vsclaude-code-1-abc-probe-n5h"
+    name = bd.worker_name({"id": "probe-n5h", "title": "Task A.B!"}, "vsclaude-code")
+    assert name == "task-a-b-probe-n5h"
     assert not name.startswith("-")
     assert not name.endswith("-")
 
 
-def test_worker_name_fallback():
-    assert bd.worker_name("-bad-.name", "x") == "bad-name-x"
+def test_worker_name_fallback_to_parent_when_title_empty():
+    # empty / non-slug-able title falls back to <parent>-<issue-id>
+    assert bd.worker_name({"id": "x", "title": ""}, "claude-dev") == "claude-dev-x"
+    assert bd.worker_name({"id": "x", "title": "!!!"}, "-bad-.parent") == "bad-parent-x"
 
 
 def test_slugify():
