@@ -82,8 +82,15 @@ def test_compose_worker_env_includes_beads_remote():
     assert any(e == "BEADS_REMOTE=https://example.com/repo.git" for e in env)
 
 
+NET = {
+    "dns": ["192.168.1.245"],
+    "dns_search": ["corp.example.com"],
+    "dns_options": ["ndots:2"],
+    "extra_hosts": ["db:10.0.0.5"],
+}
+
+
 def test_dispatch_local_sets_hostname_and_socket_mount():
-    import subprocess as sp
     captured = {}
     def fake_run(cmd, **kwargs):
         captured["cmd"] = cmd
@@ -106,6 +113,26 @@ def test_dispatch_local_sets_hostname_and_socket_mount():
     assert cmd[mount_idx[0] + 1] == "/var/run/docker.sock:/var/run/docker.sock"
 
 
+def test_dispatch_local_copies_dns_config():
+    captured = {}
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return 0, "created", ""
+    orig = bd.run
+    bd.run = fake_run
+    try:
+        bd.dispatch_local("w-probe", "img", ["A=B"], 8000, 8443, "", "probe",
+                          net=NET)
+    finally:
+        bd.run = orig
+    cmd = captured["cmd"]
+    # DNS server, search, options, extra hosts all replicated
+    assert "--dns" in cmd and cmd[cmd.index("--dns") + 1] == "192.168.1.245"
+    assert "--dns-search" in cmd and cmd[cmd.index("--dns-search") + 1] == "corp.example.com"
+    assert "--dns-option" in cmd and cmd[cmd.index("--dns-option") + 1] == "ndots:2"
+    assert "--add-host" in cmd and cmd[cmd.index("--add-host") + 1] == "db:10.0.0.5"
+
+
 def test_dispatch_swarm_sets_hostname_and_docker_socket_mount():
     captured = {}
     def fake_run(cmd, **kwargs):
@@ -124,6 +151,26 @@ def test_dispatch_swarm_sets_hostname_and_docker_socket_mount():
     # only one --mount and it's the docker socket
     mounts = [cmd[i + 1] for i, c in enumerate(cmd) if c == "--mount"]
     assert mounts == ["type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock"]
+
+
+def test_dispatch_swarm_copies_dns_config():
+    captured = {}
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return 0, "created", ""
+    orig = bd.run
+    bd.run = fake_run
+    try:
+        bd.dispatch_swarm("w-probe", "img", ["A=B"], 8000, 8443, "probe", net=NET)
+    finally:
+        bd.run = orig
+    cmd = captured["cmd"]
+    assert "--dns" in cmd and cmd[cmd.index("--dns") + 1] == "192.168.1.245"
+    assert "--dns-search" in cmd and cmd[cmd.index("--dns-search") + 1] == "corp.example.com"
+    assert "--dns-option" in cmd and cmd[cmd.index("--dns-option") + 1] == "ndots:2"
+    # swarm service create uses --host (host:ip), not --add-host
+    assert "--add-host" not in cmd
+    assert "--host" in cmd and cmd[cmd.index("--host") + 1] == "db:10.0.0.5"
 
 
 def test_derive_git_repo_url_from_env():

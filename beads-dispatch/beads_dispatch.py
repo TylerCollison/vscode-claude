@@ -278,11 +278,18 @@ def inspect_self(container_id):
         data = json.loads(out)[0]
     except (IndexError, ValueError):
         return None
+    host_config = data.get("HostConfig") or {}
     return {
         "image": (data.get("Config") or {}).get("Image"),
         "env": (data.get("Config") or {}).get("Env", []),
         "name": (data.get("Name") or "").lstrip("/"),
-        "restart_policy": (data.get("HostConfig") or {}).get("RestartPolicy", {}).get("Name", ""),
+        "restart_policy": host_config.get("RestartPolicy", {}).get("Name", ""),
+        # Network/DNS settings — replicated workers must match the host's
+        # network properties so they can reach the same DNS, registries, etc.
+        "dns": host_config.get("Dns", []) or [],
+        "dns_search": host_config.get("DnsSearch", []) or [],
+        "dns_options": host_config.get("DnsOptions", []) or [],
+        "extra_hosts": host_config.get("ExtraHosts", []) or [],
     }
 
 
@@ -684,7 +691,28 @@ DOCKER_SOCK_SOURCE = "/var/run/docker.sock"
 DOCKER_SOCK_TARGET = "/var/run/docker.sock"
 
 
-def dispatch_local(worker, image, env, port, worker_port, restart_policy, issue_id):
+def add_network_args(cmd, net, swarm=False):
+    """Append DNS / extra-host flags for the worker based on the host's config.
+
+    net is the dict produced by inspect_self() (dns, dns_search, dns_options,
+    extra_hosts). Workers replicate the parent's network properties so they can
+    resolve the same names (internal DNS like the compose 'dns:' entry).
+    swarm=True uses docker service create's --host for host mappings (docker run
+    uses --add-host).
+    """
+    for dns in net.get("dns", []) or []:
+        cmd += ["--dns", dns]
+    for dns_search in net.get("dns_search", []) or []:
+        cmd += ["--dns-search", dns_search]
+    for opt in net.get("dns_options", []) or []:
+        cmd += ["--dns-option", opt]
+    host_flag = "--host" if swarm else "--add-host"
+    for host in net.get("extra_hosts", []) or []:
+        cmd += [host_flag, host]
+    return cmd
+
+
+def dispatch_local(worker, image, env, port, worker_port, restart_policy, issue_id, net=None):
     cmd = ["docker", "run", "-d", "--name", worker, "--hostname", worker,
            "-l", "beads.task=%s" % issue_id]
     if restart_policy and restart_policy not in ("", "no"):
@@ -692,11 +720,13 @@ def dispatch_local(worker, image, env, port, worker_port, restart_policy, issue_
     for e in env:
         cmd += ["-e", e]
     cmd += ["-v", "%s:%s" % (DOCKER_SOCK_SOURCE, DOCKER_SOCK_TARGET)]
+    if net:
+        cmd = add_network_args(cmd, net, swarm=False)
     cmd += ["-p", "%d:%d" % (port, worker_port), image]
     return run(cmd)
 
 
-def dispatch_swarm(worker, image, env, port, worker_port, issue_id):
+def dispatch_swarm(worker, image, env, port, worker_port, issue_id, net=None):
     cmd = [
         "docker", "service", "create",
         "--name", worker,
@@ -708,6 +738,8 @@ def dispatch_swarm(worker, image, env, port, worker_port, issue_id):
     for e in env:
         cmd += ["-e", e]
     cmd += ["--mount", "type=bind,source=%s,target=%s" % (DOCKER_SOCK_SOURCE, DOCKER_SOCK_TARGET)]
+    if net:
+        cmd = add_network_args(cmd, net, swarm=True)
     cmd += ["--publish", "published=%d,target=%d" % (port, worker_port), image]
     return run(cmd)
 
@@ -758,13 +790,13 @@ def dispatch_worker(issue, cfg, self_info):
         log("Swarm manager detected — dispatching service %s for %s (branch %s)"
             % (worker, issue_id, branch))
         rc, out, err = dispatch_swarm(worker, self_info["image"], env_vars, port,
-                                      cfg.worker_port, issue_id)
+                                      cfg.worker_port, issue_id, net=self_info)
     else:
         log("Local mode — dispatching container %s for %s (branch %s)"
             % (worker, issue_id, branch))
         rc, out, err = dispatch_local(worker, self_info["image"], env_vars, port,
                                       cfg.worker_port, self_info.get("restart_policy", ""),
-                                      issue_id)
+                                      issue_id, net=self_info)
 
     if rc != 0:
         log("ERROR: dispatch failed for %s: %s" % (issue_id, err or out))

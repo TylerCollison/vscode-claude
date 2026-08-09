@@ -75,6 +75,9 @@ This requires the same git credentials as the branch push (configured automatica
 - **Docker socket is the only volume** — `/var/run/docker.sock` is mounted (so a replicated
   container can drive the host daemon); `/config` and `/workspace` stay ephemeral (no other
   volumes are replicated).
+- **Network config is replicated** — the worker inherits the parent's DNS servers,
+  search domains, DNS options and extra hosts (`docker inspect .HostConfig.Dns/{DnsSearch/
+  DnsOptions/ExtraHosts}`), so the worker resolves the same names (e.g. compose `dns:`).
 - On startup the worker runs `bd bootstrap` to clone the task DB from the remote, so
   `bd list` shows the dispatched task.
 - Code-server (8443) is published on the first free host port ≥ `BEADS_DISPATCH_PORT_BASE`.
