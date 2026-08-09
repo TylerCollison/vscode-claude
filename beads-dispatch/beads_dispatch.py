@@ -175,6 +175,51 @@ def get_ready_issues(workspace):
     ]
 
 
+# --------------------------------------------------------------------------- dolt sync
+
+def dolt_remote_add(workspace, repo_url, user):
+    """Point the beads Dolt DB at <repo_url> so the db can be pushed/pulled.
+
+    Idempotent: 'origin' is only added if it isn't already configured for the
+    same URL. bd stores the remote wrapped as git+<url>; the check strips that
+    prefix so /srv/x.git matches git+file:///srv/x.git and https://... matches
+    git+https://....
+    Returns True when the remote exists (added or already there).
+    """
+    rc, out, _ = run_as_user(user, ["bd", "dolt", "remote", "list"],
+                             cwd=workspace, env=git_env())
+    if rc == 0:
+        existing = [ln.split(None, 1)[-1] if len(ln.split(None, 1)) > 1 else ln
+                    for ln in out.splitlines()
+                    if ln.strip() and not ln.strip().startswith("No remotes")]
+        for url in existing:
+            url = url.replace("git+", "", 1)
+            if url == repo_url or url.rstrip("/") == repo_url.rstrip("/"):
+                return True
+    rc, out, err = run_as_user(user, ["bd", "dolt", "remote", "add", "origin", repo_url],
+                               cwd=workspace, env=git_env())
+    if rc == 0 or "already exists" in (err or "").lower() or "already exists" in (out or "").lower():
+        return True
+    log("WARNING: could not add dolt remote origin=%s: %s" % (repo_url, err or out))
+    return False
+
+
+def dolt_push(workspace, user):
+    """Push the beads Dolt database to its git remote (syncs tasks to workers).
+
+    Non-fatal: errors are logged but dispatch continues — a failure here means
+    workers won't see the very latest task state, but the branch push (which
+    already happened) is what gates the worker's repo clone.
+    """
+    rc, out, err = run_as_user(user, ["bd", "dolt", "push"],
+                               cwd=workspace, env=git_env())
+    if rc != 0:
+        log("WARNING: bd dolt push failed: %s" % ((err or out).splitlines()[-1] if (err or out) else "unknown"))
+        return False
+    log("Pushed beads Dolt database to remote.")
+    return True
+
+
 # --------------------------------------------------------------------------- state
 
 def load_state(cfg):
@@ -304,7 +349,7 @@ def worker_name(parent_name, issue_id):
     return (name or "beads-worker")[:120]
 
 
-def compose_worker_env(parent_env, branch, repo_url):
+def compose_worker_env(parent_env, branch, repo_url, beads_remote=None):
     env = [e for e in parent_env if not e.startswith("GIT_BRANCH_NAME=")]
     env.append("GIT_BRANCH_NAME=%s" % branch)
     if repo_url:
@@ -312,6 +357,12 @@ def compose_worker_env(parent_env, branch, repo_url):
         env.append("GIT_REPO_URL=%s" % repo_url)
     env = [e for e in env if not e.startswith("BEADS_DISPATCH=")]
     env.append("BEADS_DISPATCH=false")
+    # BEADS_REMOTE tells the worker where to clone/pull the beads Dolt DB from.
+    # Defaults to repo_url when not explicitly provided.
+    remote = beads_remote or repo_url
+    if remote:
+        env = [e for e in env if not e.startswith("BEADS_REMOTE=")]
+        env.append("BEADS_REMOTE=%s" % remote)
     return env
 
 
@@ -661,12 +712,19 @@ def dispatch_worker(issue, cfg, self_info):
         log("ERROR: could not push branch for %s — skipping dispatch." % issue_id)
         return False
 
+    # Sync the beads Dolt database (which is gitignored and NOT in the branch) so
+    # the worker can see the tasks. Non-fatal: the worker still gets the repo.
+    if dolt_remote_add(cfg.workspace, repo_url, git_user):
+        dolt_push(cfg.workspace, git_user)
+    else:
+        log("WARNING: dolt remote could not be configured for %s — tasks may not sync." % issue_id)
+
     port = find_free_host_port(cfg.port_base)
     if port is None:
         log("WARNING: no free host port >= %d — skipping %s" % (cfg.port_base, issue_id))
         return False
 
-    env_vars = compose_worker_env(self_info["env"], branch, repo_url)
+    env_vars = compose_worker_env(self_info["env"], branch, repo_url, beads_remote=repo_url)
 
     swarm = is_swarm_manager()
     if worker_exists(worker, swarm):

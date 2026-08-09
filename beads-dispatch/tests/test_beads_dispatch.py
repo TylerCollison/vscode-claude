@@ -59,6 +59,7 @@ def test_compose_worker_env_overrides_branch_and_disables_recursion():
     assert env_dict["GIT_BRANCH_NAME"] == "task/probe-n5h-task-a"
     assert env_dict["GIT_REPO_URL"] == "https://example.com/repo.git"
     assert env_dict["BEADS_DISPATCH"] == "false"
+    assert env_dict["BEADS_REMOTE"] == "https://example.com/repo.git"  # dolt sync source
     assert env_dict["API_KEY"] == "secret"  # secrets inherited
     assert env_dict["PATH"] == "/usr/bin"
     assert "GIT_BRANCH" not in env_dict  # only GIT_BRANCH_NAME is set
@@ -68,6 +69,14 @@ def test_compose_worker_env_keeps_inherited_repo_url_when_no_override():
     parent = ["GIT_REPO_URL=https://example.com/repo.git"]
     env = bd.compose_worker_env(parent, "task/x", None)
     assert any(e == "GIT_REPO_URL=https://example.com/repo.git" for e in env)
+    # No explicit repo_url -> BEADS_REMOTE is not added (nothing to sync from)
+    assert not any(e.startswith("BEADS_REMOTE=") for e in env)
+
+
+def test_compose_worker_env_includes_beads_remote():
+    parent = ["GIT_REPO_URL=https://example.com/repo.git"]
+    env = bd.compose_worker_env(parent, "task/x", "https://example.com/repo.git")
+    assert any(e == "BEADS_REMOTE=https://example.com/repo.git" for e in env)
 
 
 def test_derive_git_repo_url_from_env():
