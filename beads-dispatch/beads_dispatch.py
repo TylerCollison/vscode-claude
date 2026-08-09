@@ -28,7 +28,10 @@ Dispatch mode
   * swarm manager node  -> `docker service create` (a swarm service)
   * otherwise           -> `docker run -d` (a local container)
 
-Workers mount **no volumes** (ephemeral) and get `BEADS_DISPATCH=false` (no recursion).
+Workers get the **docker socket mounted as their only volume** (so a replicated
+container can drive the host daemon), the worker **hostname = the container name**
+(derived from the task), and `BEADS_DISPATCH=false` (no recursion). No repository,
+config, or data volumes are replicated — `/config` and `/workspace` stay ephemeral.
 
 Stdlib only (no pip deps): shells out to the `bd`, `docker`, and `git` CLIs.
 """
@@ -665,12 +668,20 @@ def worker_exists(name, swarm):
     return rc == 0
 
 
+# The only volume the worker gets: the host docker socket, so the replicated
+# container can drive the host daemon too. No other mounts are replicated.
+DOCKER_SOCK_SOURCE = "/var/run/docker.sock"
+DOCKER_SOCK_TARGET = "/var/run/docker.sock"
+
+
 def dispatch_local(worker, image, env, port, worker_port, restart_policy, issue_id):
-    cmd = ["docker", "run", "-d", "--name", worker, "-l", "beads.task=%s" % issue_id]
+    cmd = ["docker", "run", "-d", "--name", worker, "--hostname", worker,
+           "-l", "beads.task=%s" % issue_id]
     if restart_policy and restart_policy not in ("", "no"):
         cmd += ["--restart", restart_policy]
     for e in env:
         cmd += ["-e", e]
+    cmd += ["-v", "%s:%s" % (DOCKER_SOCK_SOURCE, DOCKER_SOCK_TARGET)]
     cmd += ["-p", "%d:%d" % (port, worker_port), image]
     return run(cmd)
 
@@ -679,12 +690,14 @@ def dispatch_swarm(worker, image, env, port, worker_port, issue_id):
     cmd = [
         "docker", "service", "create",
         "--name", worker,
+        "--hostname", worker,
         "--detach",
         "--label", "beads.task=%s" % issue_id,
         "--restart-condition", "any",
     ]
     for e in env:
         cmd += ["-e", e]
+    cmd += ["--mount", "type=bind,source=%s,target=%s" % (DOCKER_SOCK_SOURCE, DOCKER_SOCK_TARGET)]
     cmd += ["--publish", "published=%d,target=%d" % (port, worker_port), image]
     return run(cmd)
 

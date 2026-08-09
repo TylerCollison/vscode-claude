@@ -79,6 +79,50 @@ def test_compose_worker_env_includes_beads_remote():
     assert any(e == "BEADS_REMOTE=https://example.com/repo.git" for e in env)
 
 
+def test_dispatch_local_sets_hostname_and_socket_mount():
+    import subprocess as sp
+    captured = {}
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return 0, "created", ""
+    orig = bd.run
+    bd.run = fake_run
+    try:
+        bd.dispatch_local("myparent-probe-n5h", "img", ["A=B"], 8000, 8443, "", "probe-n5h")
+    finally:
+        bd.run = orig
+    cmd = captured["cmd"]
+    assert cmd[:3] == ["docker", "run", "-d"]
+    assert "--hostname" in cmd
+    assert cmd[cmd.index("--hostname") + 1] == "myparent-probe-n5h"
+    assert "--name" in cmd
+    assert cmd[cmd.index("--name") + 1] == "myparent-probe-n5h"
+    # the ONLY volume mount is the docker socket
+    mount_idx = [i for i, c in enumerate(cmd) if c == "-v"]
+    assert len(mount_idx) == 1
+    assert cmd[mount_idx[0] + 1] == "/var/run/docker.sock:/var/run/docker.sock"
+
+
+def test_dispatch_swarm_sets_hostname_and_docker_socket_mount():
+    captured = {}
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return 0, "created", ""
+    orig = bd.run
+    bd.run = fake_run
+    try:
+        bd.dispatch_swarm("myparent-probe-n5h", "img", ["A=B"], 8000, 8443, "probe-n5h")
+    finally:
+        bd.run = orig
+    cmd = captured["cmd"]
+    assert cmd[:3] == ["docker", "service", "create"]
+    assert "--hostname" in cmd
+    assert cmd[cmd.index("--hostname") + 1] == "myparent-probe-n5h"
+    # only one --mount and it's the docker socket
+    mounts = [cmd[i + 1] for i, c in enumerate(cmd) if c == "--mount"]
+    assert mounts == ["type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock"]
+
+
 def test_derive_git_repo_url_from_env():
     env = ["OTHER=1", "GIT_REPO_URL=https://env.git"]
     assert bd.derive_git_repo_url(env, "/tmp") == "https://env.git"

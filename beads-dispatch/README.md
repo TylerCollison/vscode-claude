@@ -69,9 +69,13 @@ This requires the same git credentials as the branch push (configured automatica
 - Same image and full environment as the parent, with `GIT_BRANCH_NAME` set, `GIT_REPO_URL`
   ensured, `BEADS_REMOTE` set (Dolt sync source), and `BEADS_DISPATCH=false` (workers never
   dispatch their own workers; no hook is installed in their repos).
+- **Hostname = container name** — the worker's hostname matches its container name, which is
+  derived from the task (`<parent>-<issue-id>`), so `docker ps`/`exec` match the task.
+- **Docker socket is the only volume** — `/var/run/docker.sock` is mounted (so a replicated
+  container can drive the host daemon); `/config` and `/workspace` stay ephemeral (no other
+  volumes are replicated).
 - On startup the worker runs `bd bootstrap` to clone the task DB from the remote, so
   `bd list` shows the dispatched task.
-- **No volume mounts** — `/config` and `/workspace` live on the ephemeral container filesystem.
 - Code-server (8443) is published on the first free host port ≥ `BEADS_DISPATCH_PORT_BASE`.
 - Restart policy is inherited from the parent (local) / `any` (swarm service).
 
