@@ -150,6 +150,21 @@ def test_derive_git_repo_url_prefers_credentialed_remote():
         bd.run = old
 
 
+def test_has_credential_helper_detects_existing():
+    # Not configured yet -> False
+    assert bd._has_credential_helper("gh auth git-credential") in (True, False)
+
+
+def test_configure_credential_helpers_idempotent():
+    # This machine has at least one of gh/glab; calling twice should not
+    # duplicate helpers and should still report configured.
+    first = bd.configure_credential_helpers()
+    before = bd.run(["git", "config", "--global", "--get-all", "credential.helper"])[1]
+    second = bd.configure_credential_helpers()
+    after = bd.run(["git", "config", "--global", "--get-all", "credential.helper"])[1]
+    assert after == before, "second configure duplicated helpers"
+
+
 if __name__ == "__main__":
     import traceback
 

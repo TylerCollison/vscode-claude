@@ -121,11 +121,22 @@ def env(name, default=None):
 
 
 def git_env():
-    """Build the environment for git subprocesses (no prompts, gh helper ready)."""
+    """Build the environment for git subprocesses (no prompts, CLIs ready).
+
+    Both gh (GitHub) and glab (GitLab) have a preferred token env var and a
+    fallback alias; normalize so whichever is set is visible to both the helper
+    and git itself.
+    """
     e = dict(os.environ)
     e["GIT_TERMINAL_PROMPT"] = "0"
-    # Make the gh helper work non-interactively even when running as root.
-    for k, v in (("GH_TOKEN", "GITHUB_TOKEN"), ("GITHUB_TOKEN", "GH_TOKEN")):
+    token_pairs = (
+        ("GH_TOKEN", "GITHUB_TOKEN"),
+        ("GITHUB_TOKEN", "GH_TOKEN"),
+        ("GITLAB_TOKEN", "GITLAB_ACCESS_TOKEN"),
+        ("GITLAB_ACCESS_TOKEN", "GITLAB_TOKEN"),
+        ("GITLAB_TOKEN", "OAUTH_TOKEN"),
+    )
+    for k, v in token_pairs:
         if not e.get(k) and e.get(v):
             e[k] = e[v]
     return e
@@ -396,34 +407,68 @@ def ensure_safe_directory(workspace):
     run(["git", "config", "--global", "--add", "safe.directory", workspace])
 
 
-def configure_gh_credential_helper():
-    """Configure the gh CLI as git's credential helper when GH_TOKEN is available.
+def _probe_credential_helper(cli, host):
+    """Return True if <cli> can answer a git credential request for <host>.
 
-    gh auth git-credential can answer git credential prompts non-interactively
-    using GH_TOKEN (or gh's own auth store), which gives the root daemon a way to
-    push even when the workspace is root-owned and no per-user credential files
-    exist. Only sets the helper when gh is present and authenticated, so it never
-    overrides a user's existing setup when git runs as that user.
-    Returns True when configured.
+    Runs '<cli> auth git-credential get' with a probe stdin. Only CLIs that
+    answer non-interactively with a password are configured — one that would
+    prompt (or lacks a token) is skipped so we never hang the dispatcher.
     """
-    if not shutil.which("gh"):
-        return False
-    # Probe: is a non-interactive credential answer possible?
-    probe = "protocol=https\nhost=github.com\n\n"
-    rc, out, err = run(["gh", "auth", "git-credential", "get"],
+    probe = "protocol=https\nhost=%s\n\n" % host
+    rc, out, err = run([cli, "auth", "git-credential", "get"],
                        input=probe, env=git_env())
-    if rc != 0 or "password=" not in out:
-        return False
-    # git appends 'get'/'store'/'erase' to the helper command, so the git-config
-    # value is the 'gh auth git-credential' subcommand with a leading '!'.
-    try:
-        run(["git", "config", "--global", "credential.helper",
-             "!gh auth git-credential"])
-        log("Configured gh as git credential helper.")
-        return True
-    except Exception as e:
-        log("WARNING: could not configure gh credential helper: %s" % e)
-        return False
+    return rc == 0 and "password=" in out
+
+
+def _has_credential_helper(marker):
+    """Return True if git already has a credential.helper containing <marker>."""
+    rc, out, _ = run(["git", "config", "--global", "--get-all", "credential.helper"])
+    return rc == 0 and marker in out
+
+
+def configure_credential_helpers():
+    """Configure gh (GitHub) and/or glab (GitLab) as git credential helpers.
+
+    gh/glab answer git credential prompts non-interactively via their token env
+    vars (GH_TOKEN / GITLAB_TOKEN) or their own auth stores, giving the root
+    daemon a way to push regardless of workspace ownership and without
+    per-user credential files. Helpers are set only when the CLI is present and
+    answers a probe, so existing user setups are never overridden. Existing
+    entries are kept (idempotent).
+
+    Note: glab's helper returns an empty username; git accepts that and uses
+    the password, which is how GitLab PAT auth over HTTPS works (the username
+    is ignored server-side). Verified via 'git credential fill'.
+    """
+    configured = False
+
+    # GitHub: gh. Its helper already returns username=x-access-token.
+    if shutil.which("gh") and not _has_credential_helper("gh auth git-credential"):
+        if _probe_credential_helper("gh", "github.com"):
+            try:
+                run(["git", "config", "--global", "--add", "credential.helper",
+                     "!gh auth git-credential"])
+                log("Configured gh as git credential helper.")
+                configured = True
+            except Exception as e:
+                log("WARNING: could not configure gh credential helper: %s" % e)
+        else:
+            log("gh present but cannot answer credential probe — skipping.")
+
+    # GitLab: glab (returns an empty username, which git accepts).
+    if shutil.which("glab") and not _has_credential_helper("glab auth git-credential"):
+        if _probe_credential_helper("glab", "gitlab.com"):
+            try:
+                run(["git", "config", "--global", "--add", "credential.helper",
+                     "!glab auth git-credential"])
+                log("Configured glab as git credential helper.")
+                configured = True
+            except Exception as e:
+                log("WARNING: could not configure glab credential helper: %s" % e)
+        else:
+            log("glab present but no credential probe response — skipping.")
+
+    return configured
 
 
 def copy_abc_git_credentials(workspace):
@@ -750,7 +795,7 @@ def main(argv):
 
     ensure_safe_directory(cfg.workspace)
     copy_abc_git_credentials(cfg.workspace)
-    configure_gh_credential_helper()
+    configure_credential_helpers()
 
     if "--once" in argv:
         installed = install_post_commit_hook(cfg.workspace)
