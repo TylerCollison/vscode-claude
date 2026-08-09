@@ -351,18 +351,18 @@ def push_task_branch(workspace, branch, repo_url, user):
         log("Branch %s already exists in origin — skipping create/push." % branch)
         return "exists"
 
-    git_env = git_env()
+    g_env = git_env()
 
     def restore():
         try:
-            run_as_user(user, ["git", "-C", workspace, "checkout", original], env=git_env)
+            run_as_user(user, ["git", "-C", workspace, "checkout", original], env=g_env)
         except Exception:
             pass
 
     def cleanup_local_branch():
         """Delete the local branch if it exists (to avoid 'already exists' on retry)."""
         try:
-            run_as_user(user, ["git", "-C", workspace, "branch", "-D", branch], env=git_env)
+            run_as_user(user, ["git", "-C", workspace, "branch", "-D", branch], env=g_env)
         except Exception:
             pass
 
@@ -370,7 +370,7 @@ def push_task_branch(workspace, branch, repo_url, user):
     # Use -B (force create/reset) instead of -b to handle retries where the branch
     # might already exist locally from a previous failed attempt.
     rc, out, err = run_as_user(user, ["git", "-C", workspace, "checkout", "-B", branch],
-                               env=git_env)
+                               env=g_env)
     if rc != 0:
         log("ERROR: git checkout -B %s failed (as %s): %s" % (branch, user, err or out))
         return False
@@ -382,7 +382,7 @@ def push_task_branch(workspace, branch, repo_url, user):
     else:
         push_cmd = ["git", "-C", workspace, "push", repo_url, "%s:%s" % (branch, branch)]
 
-    rc, out, err = run_as_user(user, push_cmd, env=git_env)
+    rc, out, err = run_as_user(user, push_cmd, env=g_env)
     restore()
     if rc != 0:
         log("ERROR: git push of %s failed (as %s): %s (is the parent configured to push to %s?)"
@@ -666,7 +666,7 @@ def dispatch_worker(issue, cfg, self_info):
         log("WARNING: no free host port >= %d — skipping %s" % (cfg.port_base, issue_id))
         return False
 
-    env = compose_worker_env(self_info["env"], branch, repo_url)
+    env_vars = compose_worker_env(self_info["env"], branch, repo_url)
 
     swarm = is_swarm_manager()
     if worker_exists(worker, swarm):
@@ -676,12 +676,12 @@ def dispatch_worker(issue, cfg, self_info):
     if swarm:
         log("Swarm manager detected — dispatching service %s for %s (branch %s)"
             % (worker, issue_id, branch))
-        rc, out, err = dispatch_swarm(worker, self_info["image"], env, port,
+        rc, out, err = dispatch_swarm(worker, self_info["image"], env_vars, port,
                                       cfg.worker_port, issue_id)
     else:
         log("Local mode — dispatching container %s for %s (branch %s)"
             % (worker, issue_id, branch))
-        rc, out, err = dispatch_local(worker, self_info["image"], env, port,
+        rc, out, err = dispatch_local(worker, self_info["image"], env_vars, port,
                                       cfg.worker_port, self_info.get("restart_policy", ""),
                                       issue_id)
 

@@ -155,6 +155,29 @@ def test_has_credential_helper_detects_existing():
     assert bd._has_credential_helper("gh auth git-credential") in (True, False)
 
 
+def test_env_function_not_shadowed_in_dispatch_worker():
+    """dispatch_worker calls module-level env() before assigning local env_vars.
+
+    Regression: a local named 'env' shadowed the module function, causing
+    UnboundLocalError at dispatch time.
+    """
+    # dispatch_worker should not define a local named 'env' in its fast path.
+    import inspect
+    src = inspect.getsource(bd.dispatch_worker)
+    # 'env(' is the module call; 'env =' or 'env,' local assignments are the trap.
+    # The local worker-env variable must be named env_vars.
+    assert "env_vars = compose_worker_env" in src
+    assert "env = compose_worker_env" not in src
+
+
+def test_git_env_function_not_shadowed_in_push_task_branch():
+    """push_task_branch calls module git_env() and assigns g_env locally."""
+    import inspect
+    src = inspect.getsource(bd.push_task_branch)
+    assert "g_env = git_env()" in src
+    assert "git_env = git_env()" not in src
+
+
 def test_configure_credential_helpers_idempotent():
     # This machine has at least one of gh/glab; calling twice should not
     # duplicate helpers and should still report configured.
