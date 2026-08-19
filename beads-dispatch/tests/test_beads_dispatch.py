@@ -273,14 +273,6 @@ def test_env_function_not_shadowed_in_dispatch_worker():
     assert "env = compose_worker_env" not in src
 
 
-def test_git_env_function_not_shadowed_in_push_task_branch():
-    """push_task_branch calls module git_env() and assigns g_env locally."""
-    import inspect
-    src = inspect.getsource(bd.push_task_branch)
-    assert "g_env = git_env()" in src
-    assert "git_env = git_env()" not in src
-
-
 def test_configure_credential_helpers_idempotent():
     # This machine has at least one of gh/glab; calling twice should not
     # duplicate helpers and should still report configured.

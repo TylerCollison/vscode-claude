@@ -4,7 +4,7 @@ Automatically dispatches a worker (swarm service or local container) whenever yo
 the workspace repo and a Beads task is **ready** (open, no active blockers). Each worker is
 created from the running container's own image, with `GIT_BRANCH_NAME` set to a branch named
 after the task and **no volume mounts** (ephemeral filesystem — the existing `git-repo-setup.sh`
-clones the repo and checks out the branch on boot).
+clones the repo and creates/checks out the branch on boot).
 
 ## How it works
 
@@ -14,15 +14,13 @@ clones the repo and checks out the branch on boot).
    else; commits stay fast and are never broken.
 3. The daemon checks `bd list --ready --json` and, for each ready task **not yet dispatched**,
    creates a worker:
-   - **branch** = `task/<issue-id>-<slug>`, created **off the current HEAD** (the state you just
-     committed — no commit is made by the tool) and **pushed** to origin,
-   - the original branch is checked back out (the parent's working state is untouched),
+   - **branch name** = `task/<issue-id>-<slug>` (derived but not created by the dispatcher),
+   - passes the branch name via `GIT_BRANCH_NAME` environment variable to the worker,
    - **swarm manager node** → `docker service create` (a swarm service),
    - **otherwise** → `docker run -d` (a local container).
 4. The task is recorded in the seen-set so a later commit never re-dispatches it.
-
-Triggering on a commit guarantees the worker's branch contains committed work (not an empty
-branch from origin/main), and the dispatcher never has to commit anything itself.
+5. The worker (via `git-repo-setup.sh`) clones the repository and **automatically creates
+   the branch off the default branch** (typically `main`) if it doesn't exist, or checks it out if it does.
 
 ## Environment variables
 

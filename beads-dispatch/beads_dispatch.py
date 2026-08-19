@@ -16,12 +16,10 @@ polling.
 
 Branch creation
 ---------------
-For each ready task the daemon:
-  1. `git checkout -b <task-branch>` off the **current HEAD** (the state that was just committed),
-  2. `git push` the branch to origin,
-  3. `git checkout <original-branch>` to restore the parent's working state.
-
-The dispatcher never commits anything — the triggering commit IS the state the worker pulls.
+The dispatcher derives the branch name (`task/<id>-<slug>`) and passes it to the worker
+via the `GIT_BRANCH_NAME` environment variable. The worker (via `git-repo-setup.sh`)
+clones the repository and automatically creates the branch off the default branch (typically
+`main`) if it doesn't exist, or checks it out if it does.
 
 Dispatch mode
 -------------
@@ -388,83 +386,6 @@ def compose_worker_env(parent_env, branch, repo_url, beads_remote=None):
 
 # --------------------------------------------------------------------------- git
 
-def git_current_branch(workspace, user):
-    rc, out, _ = run_as_user(user, ["git", "-C", workspace, "branch", "--show-current"])
-    if rc == 0 and out:
-        return out
-    # detached HEAD -> return the commit sha
-    rc, out, _ = run_as_user(user, ["git", "-C", workspace, "rev-parse", "HEAD"])
-    return out if rc == 0 and out else None
-
-
-def branch_exists_remote(workspace, branch, repo_url, user):
-    rc, out, _ = run_as_user(user, ["git", "-C", workspace, "ls-remote", repo_url,
-                                    "refs/heads/%s" % branch],
-                             env=git_env())
-    return rc == 0 and bool(out.strip())
-
-
-def push_task_branch(workspace, branch, repo_url, user):
-    """Create <branch> off the current HEAD, push it, restore the original branch.
-
-    All git operations run as <user> (the workspace owner, e.g. abc) so that the
-    user's git credentials (helper, ssh, token) are used — root may not have them.
-
-    Returns: True (pushed), "exists" (branch already in origin — nothing to push),
-    or False (failed; original branch restored).
-    """
-    original = git_current_branch(workspace, user)
-    if not original:
-        log("ERROR: cannot determine current git branch in %s" % workspace)
-        return False
-
-    if branch_exists_remote(workspace, branch, repo_url, user):
-        log("Branch %s already exists in origin — skipping create/push." % branch)
-        return "exists"
-
-    g_env = git_env()
-
-    def restore():
-        try:
-            run_as_user(user, ["git", "-C", workspace, "checkout", original], env=g_env)
-        except Exception:
-            pass
-
-    def cleanup_local_branch():
-        """Delete the local branch if it exists (to avoid 'already exists' on retry)."""
-        try:
-            run_as_user(user, ["git", "-C", workspace, "branch", "-D", branch], env=g_env)
-        except Exception:
-            pass
-
-    # 1. Create the branch off current HEAD (no commit).
-    # Use -B (force create/reset) instead of -b to handle retries where the branch
-    # might already exist locally from a previous failed attempt.
-    rc, out, err = run_as_user(user, ["git", "-C", workspace, "checkout", "-B", branch],
-                               env=g_env)
-    if rc != 0:
-        log("ERROR: git checkout -B %s failed (as %s): %s" % (branch, user, err or out))
-        return False
-
-    # 2. Determine the push target: origin if it matches repo_url, else repo_url.
-    rc, origin, _ = run_as_user(user, ["git", "-C", workspace, "remote", "get-url", "origin"])
-    if rc == 0 and origin == repo_url:
-        push_cmd = ["git", "-C", workspace, "push", "-u", "origin", branch]
-    else:
-        push_cmd = ["git", "-C", workspace, "push", repo_url, "%s:%s" % (branch, branch)]
-
-    rc, out, err = run_as_user(user, push_cmd, env=g_env)
-    restore()
-    if rc != 0:
-        log("ERROR: git push of %s failed (as %s): %s (is the parent configured to push to %s?)"
-            % (branch, user, (err or out).splitlines()[-1] if (err or out) else "unknown", repo_url))
-        # Clean up the local branch so retries don't fail with "already exists"
-        cleanup_local_branch()
-        return False
-    log("Pushed branch %s to %s" % (branch, repo_url))
-    return True
-
-
 def ensure_safe_directory(workspace):
     """Allow git-as-root to operate on the workspace repo (which is abc-owned).
 
@@ -750,7 +671,7 @@ def dispatch_worker(issue, cfg, self_info):
     worker = worker_name(issue, self_info["name"])
 
     # Run git operations as the owner of the workspace (e.g. abc), so the user's
-    # credentials are used for the push. The daemon itself runs as root (required
+    # credentials are used for dolt sync. The daemon itself runs as root (required
     # to reach the docker socket) but root typically has no git credentials.
     git_user = env("BEADS_DISPATCH_GIT_USER") or get_workspace_owner(cfg.workspace)
 
@@ -759,12 +680,6 @@ def dispatch_worker(issue, cfg, self_info):
     if not repo_url:
         log("WARNING: no GIT_REPO_URL and no git origin in %s — skipping %s"
             % (cfg.workspace, issue_id))
-        return False
-
-    # Push the task branch so the worker can clone/check it out.
-    push_result = push_task_branch(cfg.workspace, branch, repo_url, git_user)
-    if push_result is False:
-        log("ERROR: could not push branch for %s — skipping dispatch." % issue_id)
         return False
 
     # Sync the beads Dolt database (which is gitignored and NOT in the branch) so

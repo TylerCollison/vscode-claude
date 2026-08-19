@@ -2,8 +2,7 @@
 
 > **Status:** Proposed
 > **Date:** 2026-08-01
-> **Revision:** 3 (per review: trigger on git **commit** instead of polling; dispatcher never
-> commits — branches are created off the just-committed HEAD and pushed)
+> **Revision:** 4 (dispatcher no longer creates/pushes branch; worker auto-creates branch off default branch)
 
 ## Problem
 
@@ -100,9 +99,7 @@ currently-ready task (idempotent via a persisted seen-set).
   `docker info --format '{{.Swarm.LocalNodeState}}'` == `active` AND
   `docker info --format '{{.Swarm.ControlAvailable}}'` == `true` ⇒ manager ⇒ dispatch as a
   **swarm service**; otherwise a **local container**.
-- **Branch push** (verified end-to-end against a bare remote): creating a branch off HEAD, pushing
-  it, then cloning that branch and checking it out works; the worker's `git-repo-setup.sh` then
-  finds the branch in origin and checks it out (instead of creating an empty one from origin/main).
+- **Branch creation**: the dispatcher derives the branch name and passes it via `GIT_BRANCH_NAME`. The worker's `git-repo-setup.sh` clones the repo and automatically creates the branch off the default branch (typically `main`) if it doesn't exist, or checks it out if it does.
 
 ## Architecture
 
@@ -122,17 +119,15 @@ Parent container:
                    ├─ bd list --ready --json
                    ├─ diff vs seen-set (/config/.beads-dispatch/state.json)
                    └─ for each NEW ready task:
-                        ├─ branch = task/<id>-<slug>; git checkout -b <branch> (off HEAD)
-                        ├─ git push -u origin <branch>          (no commit by dispatcher)
-                        ├─ git checkout <original branch>       (restore parent state)
+                        ├─ branch = task/<id>-<slug>; pass via GIT_BRANCH_NAME
                         ├─ detect swarm manager?
                         │    ├─ yes → docker service create
                         │    └─ no  → docker run -d
                         └─ mark seen + persist
 
 Worker (first boot, ephemeral filesystem):
-  git-repo-setup.sh  → clone GIT_REPO_URL, checkout GIT_BRANCH_NAME
-                       (branch exists in origin — pushed by dispatcher)
+  git-repo-setup.sh  → clone GIT_REPO_URL, create/checkout GIT_BRANCH_NAME
+                       (auto-creates branch off default branch if missing)
   configure-beads.sh → bd init (fresh DB)
 ```
 
@@ -144,8 +139,8 @@ Worker (first boot, ephemeral filesystem):
 | D2 | "Which tasks" | On each trigger, `bd list --ready --json`; dispatch every ready issue not yet seen | "Ready to be worked" = the current ready set; the committed state is captured by the branch-from-HEAD |
 | D3 | Idempotency | Persisted `seen` set in `/config/.beads-dispatch/state.json` | One worker per task across many commits/restarts |
 | D4 | Privilege bridge | Root daemon owns the socket; the hook (abc) only pings it | `abc` cannot elevate (no sudo) and cannot reach the docker socket |
-| D5 | Branch source | `git checkout -b <task-branch>` **off the current HEAD**; **no dispatcher commit** | The just-committed state (incl. the triggering commit) is exactly what the worker should pull; nothing is committed by the tool |
-| D6 | Push | Push the branch to `origin` (or `GIT_REPO_URL` when it differs); restore the original branch afterwards | The worker clones from origin and must find the branch there; the parent's working state is preserved |
+| D5 | Branch source | Dispatcher passes `GIT_BRANCH_NAME` to worker; worker (via `git-repo-setup.sh`) creates branch off default branch if missing | Simplifies dispatcher, leverages existing worker init; worker always starts from a clean base |
+| D6 | Push | No branch push by dispatcher | Worker pulls from `origin`; dispatcher no longer responsible for pushing branches |
 | D7 | Replica storage | **No volume mounts** | Ephemeral worker; config and workspace regenerated on boot |
 | D8 | Recursion | Workers get `BEADS_DISPATCH=false` (and no hook is installed in their repo) | Prevents unbounded spawning |
 | D9 | Branch name | `<BEADS_DISPATCH_BRANCH_PREFIX>/<issue-id>-<slug>` (default `task/probe-n5h-task-a`) | Readable, unique, git-safe |

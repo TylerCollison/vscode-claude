@@ -304,7 +304,7 @@ Then open `http://localhost:3000` in your browser. The workspace (which contains
 
 ### Beads Dispatch (auto-provision workers for ready tasks on commit)
 
-Every time you **commit** in the workspace repo, the dispatcher checks the Beads ready set (open issues with no active blockers) and creates a **worker** for each ready task not yet dispatched — a container/service from the running image with `GIT_BRANCH_NAME` set to a branch named after the task. The branch is created **off the current HEAD** (the state you just committed) and **pushed** to origin, so the worker pulls a branch that actually contains the task's work — the tool never commits anything itself. On a swarm manager node the worker is started as a swarm service; otherwise as a local Docker container. Workers mount **no volumes** (ephemeral — `git-repo-setup.sh` clones `GIT_REPO_URL` and checks out the branch on boot).
+Every time you **commit** in the workspace repo, the dispatcher checks the Beads ready set (open issues with no active blockers) and creates a **worker** for each ready task not yet dispatched — a container/service from the running image with `GIT_BRANCH_NAME` set to a branch named after the task. On a swarm manager node the worker is started as a swarm service; otherwise as a local Docker container. Workers mount **no volumes** (ephemeral — `git-repo-setup.sh` clones `GIT_REPO_URL` and creates/checks out the branch on boot).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -327,15 +327,15 @@ environment:
 **How the trigger works:** the dispatcher installs a `post-commit` hook in the workspace repo and runs a small root daemon. On every `git commit`, the hook (which runs as the committing user) pings the daemon over a local unix socket; the daemon (which has the docker-socket access) checks for ready tasks and dispatches. Commits are never blocked or modified.
 
 When you commit and a task is ready (e.g. `probe-n5h`, "Task A"), the dispatcher:
-1. creates the branch `task/probe-n5h-task-a` **off the current HEAD** and pushes it to origin,
-2. restores the branch you were on (your working state is untouched),
-3. starts a worker named `<container>-<issue-id>` (e.g. `claude-dev-probe-n5h`),
-4. with code-server at `http://localhost:<free-port>` (first free port ≥ `BEADS_DISPATCH_PORT_BASE`),
-5. as a **swarm service** if the node is a swarm manager, else a **local container**.
+1. derives the branch name `task/probe-n5h-task-a` and passes it via `GIT_BRANCH_NAME`,
+2. starts a worker named `<container>-<issue-id>` (e.g. `claude-dev-probe-n5h`),
+3. with code-server at `http://localhost:<free-port>` (first free port ≥ `BEADS_DISPATCH_PORT_BASE`),
+4. as a **swarm service** if the node is a swarm manager, else a **local container**.
+5. The worker (via `git-repo-setup.sh`) clones the repo and **automatically creates the branch off the default branch** (typically `main`) if it doesn't exist, or checks it out if it does.
 
 The worker inherits the full environment (API keys, providers) but sets `BEADS_DISPATCH=false`, so workers never dispatch their own workers. Each task is dispatched once — a later commit won't duplicate it (state is tracked in `/config/.beads-dispatch/state.json`).
 
-> **Prerequisite:** the parent container must be able to `git push` to its origin (a credential helper / token), or the dispatcher logs a clear error and skips the task.
+> **Prerequisite:** the parent container must be able to sync the Dolt DB to its origin (a credential helper / token), or the dispatcher logs a clear error and skips the task.
 
 ### Knowledge Repository Integration
 | Variable | Description |
