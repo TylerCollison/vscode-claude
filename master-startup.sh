@@ -42,7 +42,8 @@ STARTUP_SCRIPTS=(
     "/104-configure-beads"
     "/105-start-scotty"
     "/106-start-beads-dispatch"
-    "/107-start-prompt-session"
+    "/107-start-beads-sync"
+    "/108-start-prompt-session"
 )
 
 log "Starting master startup sequence..."
