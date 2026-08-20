@@ -152,6 +152,8 @@ class Config:
         self.port_base = int(env("BEADS_DISPATCH_PORT_BASE", "8000"))
         self.state_dir = env("BEADS_DISPATCH_STATE_DIR", "/config/.beads-dispatch")
         self.worker_port = int(env("BEADS_DISPATCH_WORKER_PORT", "8443"))
+        # Prompt to inject into worker containers. Can be overridden via BEADS_DISPATCH_PROMPT env var.
+        self.dispatch_prompt = env("BEADS_DISPATCH_PROMPT")
 
 
 def state_path(cfg):
@@ -367,7 +369,47 @@ def worker_name(issue, parent_name):
     return (name or "beads-worker")[:120]
 
 
-def compose_worker_env(parent_env, branch, repo_url, beads_remote=None):
+def default_dispatch_prompt(issue_id, branch, repo_url):
+    """Generate the default prompt for a worker container.
+
+    The prompt instructs the agent to:
+    1. Check beads for the task corresponding to the branch name
+    2. Complete the task
+    3. Commit and push changes
+    4. Create a GitHub or GitLab MR (using gh/glab CLI)
+    5. Update beads to mark the task as complete
+    6. Push the update to beads
+    """
+    # Detect if it's a GitHub or GitLab repo from the URL
+    is_github = "github.com" in repo_url.lower()
+    is_gitlab = "gitlab.com" in repo_url.lower()
+
+    mr_instruction = ""
+    if is_github:
+        mr_instruction = "Create a GitHub Pull Request using 'gh pr create' for the changes."
+    elif is_gitlab:
+        mr_instruction = "Create a GitLab Merge Request using 'glab mr create' for the changes."
+    else:
+        mr_instruction = "Create a merge/pull request using the appropriate CLI (gh or glab) for the changes."
+
+    return (
+        "You are a worker agent dispatched to complete a Beads task.\n"
+        "\n"
+        "Task: Issue ID %s on branch '%s'\n"
+        "\n"
+        "Instructions:\n"
+        "1. Run 'bd list --json' to see all tasks and find the one matching this branch.\n"
+        "2. Complete the task by implementing the required changes.\n"
+        "3. Commit your changes and push to the branch.\n"
+        "4. %s\n"
+        "5. Run 'bd complete <issue-id>' to mark the task as complete in Beads.\n"
+        "6. Run 'bd dolt push' to sync the Beads database with the remote.\n"
+        "\n"
+        "Use the appropriate CLI tools (gh for GitHub, glab for GitLab) as needed."
+    ) % (issue_id, branch, mr_instruction)
+
+
+def compose_worker_env(parent_env, branch, repo_url, beads_remote=None, dispatch_prompt=None):
     env = [e for e in parent_env if not e.startswith("GIT_BRANCH_NAME=")]
     env.append("GIT_BRANCH_NAME=%s" % branch)
     if repo_url:
@@ -381,6 +423,10 @@ def compose_worker_env(parent_env, branch, repo_url, beads_remote=None):
     if remote:
         env = [e for e in env if not e.startswith("BEADS_REMOTE=")]
         env.append("BEADS_REMOTE=%s" % remote)
+    # Inject the prompt if provided (or default)
+    if dispatch_prompt:
+        env = [e for e in env if not e.startswith("PROMPT=")]
+        env.append("PROMPT=%s" % dispatch_prompt)
     return env
 
 
@@ -694,7 +740,11 @@ def dispatch_worker(issue, cfg, self_info):
         log("WARNING: no free host port >= %d — skipping %s" % (cfg.port_base, issue_id))
         return False
 
-    env_vars = compose_worker_env(self_info["env"], branch, repo_url, beads_remote=repo_url)
+    # Build the dispatch prompt: use override from config, or generate default
+    dispatch_prompt = cfg.dispatch_prompt or default_dispatch_prompt(issue_id, branch, repo_url)
+
+    env_vars = compose_worker_env(self_info["env"], branch, repo_url, beads_remote=repo_url,
+                                  dispatch_prompt=dispatch_prompt)
 
     swarm = is_swarm_manager()
     if worker_exists(worker, swarm):
