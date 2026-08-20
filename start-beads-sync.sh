@@ -1,7 +1,8 @@
 #!/usr/bin/with-contenv bash
 # Start the Beads External Task Manager Sync daemon.
-# Opt-in via BEADS_SYNC_PROVIDERS (comma-separated: jira,github,gitlab,linear).
-# Runs `bd <provider> sync` for each provider at the specified interval.
+# Opt-in via BEADS_SYNC_PROVIDERS (comma-separated: jira,github,gitlab,linear,dolt).
+# Runs `bd <provider> sync` for external providers, or `bd dolt pull` for dolt,
+# at the specified interval.
 # Requires BEADS_SYNC_PROVIDERS to be set and non-empty.
 
 set -euo pipefail
@@ -50,7 +51,7 @@ VALID_PROVIDERS=()
 for provider in "${PROVIDERS[@]}"; do
     provider=$(echo "$provider" | xargs)  # trim whitespace
     case "$provider" in
-        jira|github|gitlab|linear)
+        jira|github|gitlab|linear|dolt)
             VALID_PROVIDERS+=("$provider")
             ;;
         *)
@@ -88,9 +89,17 @@ run_sync() {
         else
             SYNC_HOME="/root"
         fi
+
+        # Determine the correct sync command
+        if [ "$provider" = "dolt" ]; then
+            SYNC_CMD=(bd dolt pull --directory "$DEFAULT_WORKSPACE")
+        else
+            SYNC_CMD=(bd "$provider" sync --directory "$DEFAULT_WORKSPACE")
+        fi
+
         if setpriv --reuid="$RUN_USER" --regid="$RUN_USER" --init-groups \
-            HOME="$SYNC_HOME" \
-            bd "$provider" sync --directory "$DEFAULT_WORKSPACE" 2>&1 | while IFS= read -r line; do
+            env HOME="$SYNC_HOME" \
+            "${SYNC_CMD[@]}" 2>&1 | while IFS= read -r line; do
             log "[$provider] $line"
         done; then
             log "Sync with $provider completed"
