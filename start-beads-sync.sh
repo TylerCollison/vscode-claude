@@ -108,6 +108,25 @@ run_sync() {
         fi
     done
     log "Sync cycle completed"
+
+    # Trigger the beads dispatcher if enabled
+    if [[ "${BEADS_DISPATCH:-}" == "true" ]]; then
+        log "Triggering Beads dispatcher..."
+        python3 -c '
+import socket
+try:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(1.0)
+    s.connect("/run/beads-dispatch.sock")
+    s.sendall(b"sync")
+    s.close()
+    print("Beads dispatcher triggered successfully.")
+except Exception as e:
+    print(f"WARNING: Failed to trigger Beads dispatcher: {e}")
+' 2>&1 | while IFS= read -r line; do
+            log "[dispatcher-trigger] $line"
+        done
+    fi
 }
 
 # Start the sync daemon
