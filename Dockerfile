@@ -195,6 +195,7 @@ COPY configure-buildx.sh /103-configure-buildx
 COPY configure-beads.sh /104-configure-beads
 COPY start-scotty.sh /105-start-scotty
 COPY start-beads-dispatch.sh /106-start-beads-dispatch
+COPY start-prompt-session.sh /107-start-prompt-session
 COPY happier-tls-tunnel.js /app/happier-tls-tunnel.js
 
 # Install the Beads dispatch watcher (dispatches a worker container/service when a task becomes ready)
@@ -223,6 +224,7 @@ RUN chmod +x /92-configure-code-server-theme \
     /104-configure-beads \
     /105-start-scotty \
     /106-start-beads-dispatch \
+    /107-start-prompt-session \
     /usr/local/bin/beads-dispatch \
     /etc/cont-init.d/90-master-startup
 
