@@ -42,6 +42,8 @@ ENV CLAUDE_CODE_SUBAGENT_MODEL="lite-llm/router"
 
 # Configure Happier default environment variables
 ENV HAPPIER_CACHE_DIR=/config/.cache
+# Add /usr/local/bin to PYTHONPATH so dispatch_utils can be imported
+ENV PYTHONPATH=/usr/local/bin:$PYTHONPATH
 
 # Install dependencies
 RUN apt-get update && apt-get install -y \
@@ -197,10 +199,16 @@ COPY start-scotty.sh /105-start-scotty
 COPY start-beads-dispatch.sh /106-start-beads-dispatch
 COPY start-beads-sync.sh /107-start-beads-sync
 COPY start-prompt-session.sh /108-start-prompt-session
+COPY start-mr-pr-sync.sh /109-start-mr-pr-sync
+COPY start-mr-pr-dispatch.sh /110-start-mr-pr-dispatch
 COPY happier-tls-tunnel.js /app/happier-tls-tunnel.js
 
 # Install the Beads dispatch watcher (dispatches a worker container/service when a task becomes ready)
 COPY beads-dispatch/beads_dispatch.py /usr/local/bin/beads-dispatch
+COPY beads-dispatch/dispatch_utils.py /usr/local/bin/dispatch_utils.py
+
+# Install the MR/PR responder dispatcher
+COPY mr_pr_dispatch.py /usr/local/bin/mr_pr_dispatch.py
 
 # Copy master startup script to cont-init.d (so it runs automatically)
 COPY master-startup.sh /etc/cont-init.d/90-master-startup
@@ -226,9 +234,12 @@ RUN chmod +x /92-configure-code-server-theme \
     /105-start-scotty \
     /106-start-beads-dispatch \
     /107-start-beads-sync \
+    /109-start-mr-pr-sync \
+    /110-start-mr-pr-dispatch \
     /108-start-prompt-session \
     /usr/local/bin/beads-dispatch \
-    /etc/cont-init.d/90-master-startup
+    /usr/local/bin/dispatch_utils.py \
+    /usr/local/bin/mr_pr_dispatch.py
 
 # Remove build toolchain packages no longer needed at runtime
 # (gcc, g++, binutils, and their dev headers were only needed to compile
