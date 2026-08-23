@@ -376,7 +376,13 @@ def worker_exists(name, swarm):
 
 # The only volume the worker gets: the host docker socket, so the replicated
 # container can drive the host daemon too. No other mounts are replicated.
-DOCKER_SOCK_SOURCE = "/var/run/docker.sock"
+# Check for docker socket at both common locations
+_dockersock = None
+for sock in ("/var/run/docker.sock", "/run/docker.sock"):
+    if os.path.exists(sock):
+        _dockersock = sock
+        break
+DOCKER_SOCK_SOURCE = _dockersock if _dockersock else "/var/run/docker.sock"
 DOCKER_SOCK_TARGET = "/var/run/docker.sock"
 
 

@@ -81,7 +81,7 @@ def default_mr_pr_prompt(mr_pr_id, title, branch, repo_url, provider):
         "5. Your goal is to move the %s toward being ready for merge.\n"
         "\n"
         "Use the appropriate CLI tools as needed."
-    ) % (id_label, id_label, mr_pr_id, title, branch, repo_url, cli, cmd_prefix, id_label, id_label, id_label, id_label, id_label)
+    ) % (id_label, id_label, mr_pr_id, title, branch, repo_url, cli, cmd_prefix, id_label, id_label, id_label, id_label)
 
 
 def compose_worker_env(parent_env, branch, repo_url, mr_pr_id, dispatch_prompt=None):
@@ -225,7 +225,7 @@ def run_daemon(cfg, self_info, seen):
         try:
             dispatch_mr_pr(cfg, self_info, mr_pr_info, seen)
         except Exception as e:
-            du.log("ERROR: unexpected error during MR/PR dispatch: %s" % e)
+            du.log("ERROR: unexpected error during MR/PR dispatch: %s" % str(e))
 
     try:
         os.unlink(SOCKET_PATH)
@@ -246,8 +246,15 @@ def main(argv):
         if not shutil.which(binary):
             du.log("WARNING: %s not found on PATH. Exiting." % binary)
             return 0
-    if not os.path.exists("/var/run/docker.sock"):
-        du.log("WARNING: /var/run/docker.sock not found. Exiting.")
+
+    # Check for docker socket at both common locations
+    docker_sock = None
+    for sock in ("/var/run/docker.sock", "/run/docker.sock"):
+        if os.path.exists(sock):
+            docker_sock = sock
+            break
+    if not docker_sock:
+        du.log("WARNING: Docker socket not found at /var/run/docker.sock or /run/docker.sock. Exiting.")
         return 0
 
     container_id = du.self_container_id()

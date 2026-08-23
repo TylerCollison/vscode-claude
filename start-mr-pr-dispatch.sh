@@ -23,8 +23,17 @@ for binary in docker git python3 gh glab; do
     fi
 done
 
-if [ ! -S /var/run/docker.sock ]; then
-    log "WARNING: /var/run/docker.sock not mounted — the dispatcher cannot talk to the host Docker daemon. Skipping."
+# Check for docker socket at both common locations
+DOCKER_SOCK=""
+for sock in /var/run/docker.sock /run/docker.sock; do
+    if [ -S "$sock" ]; then
+        DOCKER_SOCK="$sock"
+        break
+    fi
+done
+
+if [ -z "$DOCKER_SOCK" ]; then
+    log "WARNING: Docker socket not found at /var/run/docker.sock or /run/docker.sock — the dispatcher cannot talk to the host Docker daemon. Skipping."
     exit 0
 fi
 

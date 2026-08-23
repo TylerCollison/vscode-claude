@@ -42,16 +42,27 @@ fi
 
 # Determine provider from GIT_REPO_URL
 PROVIDER=""
+# Extract owner/repo from GIT_REPO_URL for --repo flag
+REPO_OWNER_REPO=""
 if [[ "$GIT_REPO_URL" == *"github.com"* ]]; then
     PROVIDER="github"
+    REPO_OWNER_REPO="${GIT_REPO_URL#*github.com/}"
+    REPO_OWNER_REPO="${REPO_OWNER_REPO%.git}"
 elif [[ "$GIT_REPO_URL" == *"gitlab.com"* ]]; then
     PROVIDER="gitlab"
+    REPO_OWNER_REPO="${GIT_REPO_URL#*gitlab.com/}"
+    REPO_OWNER_REPO="${REPO_OWNER_REPO%.git}"
 else
     log "ERROR: Could not determine provider from GIT_REPO_URL ($GIT_REPO_URL). Only github.com and gitlab.com are supported."
     exit 0
 fi
 
-log "MR/PR sync enabled for $PROVIDER (user: $RESPONDER_USER)"
+if [ -z "$REPO_OWNER_REPO" ]; then
+    log "ERROR: Could not extract owner/repo from GIT_REPO_URL ($GIT_REPO_URL)"
+    exit 0
+fi
+
+log "MR/PR sync enabled for $PROVIDER (user: $RESPONDER_USER, repo: $REPO_OWNER_REPO)"
 
 # Configuration
 SYNC_INTERVAL="${MR_PR_SYNC_INTERVAL:-300}"
@@ -122,11 +133,11 @@ with open('$STATE_FILE', 'w') as f:
     mr_pr_list=()
 
     if [[ "$PROVIDER" == "github" ]]; then
-        log "Fetching GitHub PRs assigned to $RESPONDER_USER..."
+        log "Fetching GitHub PRs assigned to $RESPONDER_USER in $REPO_OWNER_REPO..."
         rc=0
         output=$(setpriv --reuid="$RUN_USER" --regid="$RUN_USER" --init-groups \
             env HOME="$SYNC_HOME" GH_TOKEN="${GH_TOKEN:-}" \
-            gh pr list --assignee "$RESPONDER_USER" --state open --json number,title,headRefName,url 2>&1) || rc=$?
+            gh pr list --assignee "$RESPONDER_USER" --state open --json number,title,headRefName,url --repo "$REPO_OWNER_REPO" 2>&1) || rc=$?
 
         if [[ $rc -eq 0 && -n "$output" && "$output" != "[]" ]]; then
             mr_pr_list=($(echo "$output" | python3 -c "
@@ -140,11 +151,11 @@ except:
 "))
         fi
     elif [[ "$PROVIDER" == "gitlab" ]]; then
-        log "Fetching GitLab MRs assigned to $RESPONDER_USER..."
+        log "Fetching GitLab MRs assigned to $RESPONDER_USER in $REPO_OWNER_REPO..."
         rc=0
         output=$(setpriv --reuid="$RUN_USER" --regid="$RUN_USER" --init-groups \
             env HOME="$SYNC_HOME" GITLAB_TOKEN="${GITLAB_TOKEN:-}" \
-            glab mr list --assignee "$RESPONDER_USER" --state opened --json iid,title,source_branch,web_url 2>&1) || rc=$?
+            glab mr list --assignee "$RESPONDER_USER" --state opened --json iid,title,source_branch,web_url --repo "$REPO_OWNER_REPO" 2>&1) || rc=$?
 
         if [[ $rc -eq 0 && -n "$output" && "$output" != "[]" ]]; then
             mr_pr_list=($(echo "$output" | python3 -c "
