@@ -53,8 +53,8 @@ if [ -n "${HAPPIER_MODE:-}" ]; then
 
     # Try to start a Happier session with the prompt
     # Use the anthropic profile (Claude Code backend) with the prompt
-    log "Executing: happier --profile anthropic -p \"${PROMPT}\""
-    happier --profile anthropic -p "${PROMPT}" &
+    log "Executing: happier session create --path \"${DEFAULT_WORKSPACE}\" --message \"${PROMPT}\""
+    happier session create --path "${DEFAULT_WORKSPACE}" --message "${PROMPT}" &
 
     HAPPIER_PID=$!
     log "Happier session started with PID $HAPPIER_PID"

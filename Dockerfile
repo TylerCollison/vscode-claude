@@ -42,6 +42,7 @@ ENV CLAUDE_CODE_SUBAGENT_MODEL="lite-llm/router"
 
 # Configure Happier default environment variables
 ENV HAPPIER_CACHE_DIR=/config/.cache
+ENV NODE_TLS_REJECT_UNAUTHORIZED=0
 # Add /usr/local/bin to PYTHONPATH so dispatch_utils can be imported
 ENV PYTHONPATH=/usr/local/bin:$PYTHONPATH
 
