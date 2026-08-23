@@ -165,7 +165,11 @@ RUN python3 -m venv /opt/build-env-venv \
     && ln -sf /opt/build-env-venv/bin/build-env /usr/local/bin/build-env
 
 # Install LiteLLM along with proxy features
-RUN pip install --break-system-packages 'litellm[proxy]' 'semantic-router'
+RUN pip install --break-system-packages \
+  'litellm[proxy]==1.94.1' \
+  'fastapi==0.141.1' \
+  'semantic-router' \
+  'uvicorn' 'appdirs' 'backoff' 'pyyaml' 'rq'
 
 # Copy LiteLLM config files and custom routing callback
 COPY lite-llm/ /lite-llm/
