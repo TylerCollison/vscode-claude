@@ -2,7 +2,7 @@
 # Start the MR/PR Responder Sync daemon.
 # Opt-in via MR_PR_DISPATCH=true (the same switch that enables the dispatcher,
 # which provides the socket this daemon triggers).
-# Polls GitHub/GitLab for MRs/PRs assigned to MR_RESPONDER_USER.
+# Polls GitHub/GitLab for MRs/PRs assigned to MR_PR_USER.
 # Runs at the specified interval.
 
 set -euo pipefail
@@ -18,10 +18,10 @@ if [[ "${MR_PR_DISPATCH:-}" != "true" ]]; then
     exit 0
 fi
 
-# MR_RESPONDER_USER is required
-RESPONDER_USER="${MR_RESPONDER_USER:-}"
+# MR_PR_USER is required
+RESPONDER_USER="${MR_PR_USER:-}"
 if [ -z "$RESPONDER_USER" ]; then
-    log "ERROR: MR_RESPONDER_USER is not set but MR_PR_DISPATCH is true. Skipping."
+    log "ERROR: MR_PR_USER is not set but MR_PR_DISPATCH is true. Skipping."
     exit 0
 fi
 
@@ -327,7 +327,7 @@ fi
         sleep "$SYNC_INTERVAL"
         run_sync
     done
-) > /tmp/mr-pr-sync.log 2>&1 &
+) > /tmp/mr-pr-dispatch.log 2>&1 &
 
 echo $! > "$PID_FILE"
-log "MR/PR sync daemon started (PID $(cat "$PID_FILE")). Log: /tmp/mr-pr-sync.log"
+log "MR/PR sync daemon started (PID $(cat "$PID_FILE")). Log: /tmp/mr-pr-dispatch.log"

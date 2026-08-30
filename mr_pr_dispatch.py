@@ -58,7 +58,7 @@ def default_mr_pr_prompt(mr_pr_id, title, branch, repo_url, provider):
         cmd_prefix = "mr"
 
     return (
-        "You are an AI assistant tasked with reviewing and responding to a %s.\n"
+        "You are tasked with reviewing and responding to a %s.\n"
         "\n"
         "Context:\n"
         "- %s ID: %s\n"
@@ -79,6 +79,7 @@ def default_mr_pr_prompt(mr_pr_id, title, branch, repo_url, provider):
         "   - If a comment is a question or doesn't require code: Reply to the comment directly using the CLI.\n"
         "   - Ensure you acknowledge or address every piece of feedback.\n"
         "5. Your goal is to move the %s toward being ready for merge.\n"
+        "6. After responding, unassign the %s to indicate you have responded.\n"
         "\n"
         "Use the appropriate CLI tools as needed."
     ) % (id_label, id_label, mr_pr_id, title, branch, repo_url, cli, cmd_prefix, id_label, id_label, id_label, id_label)
