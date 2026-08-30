@@ -219,6 +219,9 @@ COPY mr_pr_dispatch.py /usr/local/bin/mr_pr_dispatch.py
 # Copy master startup script to cont-init.d (so it runs automatically)
 COPY master-startup.sh /etc/cont-init.d/90-master-startup
 
+# Copy shutdown script to bin (so it can be called as "shutdown")
+COPY shutdown.sh /usr/local/bin/shutdown
+
 # Copy litellm-health-check script to bin
 COPY litellm-health-check.py /usr/local/bin/litellm-health-check
 
@@ -226,6 +229,7 @@ COPY litellm-health-check.py /usr/local/bin/litellm-health-check
 RUN chmod +x /92-configure-code-server-theme \
     /93-git-repo-setup \
     /usr/local/bin/litellm-health-check \
+    /usr/local/bin/shutdown \
     /94-combine-markdowns \
     /95-configure-claude-skip-onboarding \
     /96-start-lite-llm \
