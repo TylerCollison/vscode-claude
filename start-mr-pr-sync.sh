@@ -247,6 +247,48 @@ PYTHON_EOF
         fi
     fi
 
+    # Collect currently assigned MR/PR IDs
+    current_ids=()
+    for entry in "${mr_pr_list[@]}"; do
+        IFS='|' read -r mr_pr_id title branch url <<< "$entry"
+        current_ids+=("$mr_pr_id")
+    done
+
+    # Remove unassigned MRs/PRs from seen: keep only seen IDs that are still currently assigned
+    # This enables re-processing when an MR/PR is reassigned or has new comments added
+    if [[ ${#current_ids[@]} -gt 0 ]]; then
+        # Filter seen to keep only items that are still in current_ids
+        seen=$(python3 -c "
+import json, sys
+try:
+    with open('$STATE_FILE', 'r') as f:
+        data = json.load(f)
+        seen = data.get('seen', [])
+except Exception:
+    seen = []
+
+current_ids = sys.argv[1:]
+# Keep only seen items that are still in current_ids (i.e., still assigned)
+new_seen = [item for item in seen if item in current_ids]
+
+with open('$STATE_FILE', 'w') as f:
+    json.dump({'seen': new_seen}, f)
+
+for item in new_seen:
+    print(item)
+" "${current_ids[@]}")
+        # Reload seen into bash array
+        mapfile -t seen <<< "$seen"
+    else
+        # No MRs/PRs currently assigned - clear the seen list entirely
+        python3 -c "
+import json
+with open('$STATE_FILE', 'w') as f:
+    json.dump({'seen': []}, f)
+"
+        seen=()
+    fi
+
     if [[ ${#mr_pr_list[@]} -eq 0 ]]; then
         log "No MRs/PRs found assigned to $RESPONDER_USER"
     else
