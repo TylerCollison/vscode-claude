@@ -468,6 +468,9 @@ environment:
 4. The worker clones the repo, checks out the branch, and runs the prompt via Claude Code.
 5. Both daemons track seen MR/PR IDs in `/config/.mr-pr-dispatch/state.json` to avoid duplicates.
 
+**Automatic re-dispatch on unassign/reassign:**
+If an MR/PR becomes unassigned (e.g., the worker unassigns it after responding, as instructed by the default prompt), the sync daemon will no longer find it in the assigned list on the next poll. The daemon **automatically removes unassigned MRs/PRs from the seen-set**, allowing them to be re-dispatched if they are later reassigned or have new comments added. This enables the workflow where additional comments or responses can trigger a new worker run on the same MR/PR.
+
 **Custom prompt example:**
 ```yaml
 environment:
