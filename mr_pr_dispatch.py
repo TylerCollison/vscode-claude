@@ -257,11 +257,27 @@ def main(argv):
         du.log("WARNING: Docker socket not found at /var/run/docker.sock or /run/docker.sock. Exiting.")
         return 0
 
+    worker_image = du.env("MR_PR_WORKER_IMAGE")
     container_id = du.self_container_id()
     self_info = du.inspect_self(container_id) if container_id else None
-    if not self_info or not self_info.get("image"):
-        du.log("ERROR: could not determine this container's image (is the docker socket mounted?). Exiting.")
-        return 0
+
+    if not self_info:
+        if worker_image:
+            du.log("WARNING: could not inspect self, but MR_PR_WORKER_IMAGE is set. Using that.")
+            self_info = {
+                "image": worker_image,
+                "env": list(os.environ),
+                "dns": [],
+                "dns_search": [],
+                "dns_options": [],
+                "extra_hosts": [],
+            }
+        else:
+            du.log("ERROR: could not determine this container's image (is the docker socket mounted?). Provide MR_PR_WORKER_IMAGE to override. Exiting.")
+            return 0
+    elif worker_image:
+        du.log("Using MR_PR_WORKER_IMAGE override: %s" % worker_image)
+        self_info["image"] = worker_image
 
     seen = du.load_state(state_path(cfg))
 

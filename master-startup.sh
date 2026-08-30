@@ -44,8 +44,8 @@ STARTUP_SCRIPTS=(
     "/106-start-beads-dispatch"
     "/107-start-beads-sync"
     "/108-start-prompt-session"
-    "/109-start-mr-pr-sync"
     "/110-start-mr-pr-dispatch"
+    "/109-start-mr-pr-sync"
 )
 
 log "Starting master startup sequence..."

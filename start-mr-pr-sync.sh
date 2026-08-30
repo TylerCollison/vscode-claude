@@ -97,14 +97,16 @@ run_sync() {
     # Load seen state
     seen=()
     if [ -f "$STATE_FILE" ]; then
-        seen=($(cat "$STATE_FILE" | python3 -c "
+        mapfile -t seen < <(python3 -c "
 import sys, json
 try:
-    data = json.load(sys.stdin)
-    print(' '.join(data.get('seen', [])))
-except:
-    pass
-"))
+    with open('$STATE_FILE', 'r') as f:
+        data = json.load(f)
+        for item in data.get('seen', []):
+            print(str(item))
+except Exception as e:
+    print(f\"ERROR: Failed to load seen state: {e}\", file=sys.stderr)
+")
     fi
 
     # Function to check if an MR/PR is in seen
@@ -123,50 +125,124 @@ except:
         local id="$1"
         seen+=("$id")
         python3 -c "
-import json
+import json, sys
 with open('$STATE_FILE', 'w') as f:
-    json.dump({'seen': $seen}, f)
-"
+    json.dump({'seen': sys.argv[1:]}, f)
+" "${seen[@]}"
     }
 
     # Get MRs/PRs based on provider
     mr_pr_list=()
 
     if [[ "$PROVIDER" == "github" ]]; then
-        log "Fetching GitHub PRs assigned to $RESPONDER_USER in $REPO_OWNER_REPO..."
+        output=""
         rc=0
-        output=$(setpriv --reuid="$RUN_USER" --regid="$RUN_USER" --init-groups \
-            env HOME="$SYNC_HOME" GH_TOKEN="${GH_TOKEN:-}" \
-            gh pr list --assignee "$RESPONDER_USER" --state open --json number,title,headRefName,url --repo "$REPO_OWNER_REPO" 2>&1) || rc=$?
+        for attempt in 1 2 3; do
+            log "Attempting to fetch GitHub PRs (attempt $attempt/3) for user: $RESPONDER_USER, repo: $REPO_OWNER_REPO"
+            local gh_cmd=(
+                setpriv --reuid="$RUN_USER" --regid="$RUN_USER" --init-groups \
+                env HOME="$SYNC_HOME" GH_TOKEN="${GH_TOKEN:-}" \
+                gh pr list --assignee "$RESPONDER_USER" --state open --json number,title,headRefName,url --repo "$REPO_OWNER_REPO"
+            )
+            rc=0
+            output=$( "${gh_cmd[@]}" 2>"$STATE_DIR/gh_error.log" ) || rc=$?
+            local gh_stderr=$(cat "$STATE_DIR/gh_error.log") || true
 
-        if [[ $rc -eq 0 && -n "$output" && "$output" != "[]" ]]; then
-            mr_pr_list=($(echo "$output" | python3 -c "
+            if [[ $rc -eq 0 ]]; then
+                if [[ -n "$output" && "$output" != "[]" ]]; then # Found PRs
+                    break
+                elif [[ "$output" == "[]" ]]; then # No PRs, but successful empty list
+                    log "INFO: gh pr list returned an empty list for $RESPONDER_USER in $REPO_OWNER_REPO (rc=0)."
+                    break
+                fi
+            fi
+
+            if [[ $attempt -lt 3 ]]; then
+                log "WARNING: gh pr list attempt $attempt failed (rc=$rc). Stderr: $gh_stderr. Output: $(echo "$output" | head -c 200). Retrying in 2s..."
+                sleep 2
+            fi
+        done
+
+        if [[ $rc -ne 0 ]]; then
+            log "WARNING: gh pr list failed after 3 attempts (rc=$rc). Stderr: $gh_stderr. Output: $(echo "$output" | head -c 200)"
+        elif [[ -z "$output" || "$output" == "[]" ]]; then
+            log "No open PRs found for $RESPONDER_USER in $REPO_OWNER_REPO (output: '$output')"
+        else
+            local python_script=$(cat <<PYTHON_EOF
 import sys, json
+
 try:
-    data = json.load(sys.stdin)
-    for item in data:
-        print(f\"{item['number']}|{item['title']}|{item['headRefName']}|{item['url']}\")
-except:
-    pass
-"))
+    content = sys.stdin.read()
+    start = content.find('[')
+    if start != -1:
+        data = json.loads(content[start:])
+        for item in data:
+            print(f"{item.get('number', '')}|{item.get('title', '')}|{item.get('headRefName', '')}|{item.get('url', '')}")
+    else:
+        print(f"ERROR: No JSON array start character '[' found in GitHub output. Content: {content[:200]}", file=sys.stderr)
+except Exception as e:
+    print(f"ERROR: Python parsing failed for GitHub: {e}. Content: {content[:200]}", file=sys.stderr)
+PYTHON_EOF
+            )
+            mapfile -t mr_pr_list < <(echo "$output" | python3 -c "$python_script" 2>&1)
+            if [[ ${#mr_pr_list[@]} -eq 0 ]]; then
+                 log "WARNING: GitHub Python parsing returned empty list despite non-empty output. Output: $(echo "$output" | head -c 200)"
+            fi
         fi
     elif [[ "$PROVIDER" == "gitlab" ]]; then
-        log "Fetching GitLab MRs assigned to $RESPONDER_USER in $REPO_OWNER_REPO..."
+        output=""
         rc=0
-        output=$(setpriv --reuid="$RUN_USER" --regid="$RUN_USER" --init-groups \
-            env HOME="$SYNC_HOME" GITLAB_TOKEN="${GITLAB_TOKEN:-}" \
-            glab mr list --assignee "$RESPONDER_USER" --state opened --json iid,title,source_branch,web_url --repo "$REPO_OWNER_REPO" 2>&1) || rc=$?
+        for attempt in 1 2 3; do
+            log "Attempting to fetch GitLab MRs (attempt $attempt/3) for user: $RESPONDER_USER, repo: $REPO_OWNER_REPO"
+            local glab_cmd=(
+                setpriv --reuid="$RUN_USER" --regid="$RUN_USER" --init-groups \
+                env HOME="$SYNC_HOME" GITLAB_TOKEN="${GITLAB_TOKEN:-}" \
+                glab mr list --assignee "$RESPONDER_USER" --state opened --json iid,title,source_branch,web_url --repo "$REPO_OWNER_REPO"
+            )
+            rc=0
+            output=$( "${glab_cmd[@]}" 2>"$STATE_DIR/glab_error.log" ) || rc=$?
+            local glab_stderr=$(cat "$STATE_DIR/glab_error.log") || true
 
-        if [[ $rc -eq 0 && -n "$output" && "$output" != "[]" ]]; then
-            mr_pr_list=($(echo "$output" | python3 -c "
+            if [[ $rc -eq 0 ]]; then
+                if [[ -n "$output" && "$output" != "[]" ]]; then # Found MRs
+                    break
+                elif [[ "$output" == "[]" ]]; then # No MRs, but successful empty list
+                    log "INFO: glab mr list returned an empty list for $RESPONDER_USER in $REPO_OWNER_REPO (rc=0)."
+                    break
+                fi
+            fi
+
+            if [[ $attempt -lt 3 ]]; then
+                log "WARNING: glab mr list attempt $attempt failed (rc=$rc). Stderr: $glab_stderr. Output: $(echo "$output" | head -c 200). Retrying in 2s..."
+                sleep 2
+            fi
+        done
+
+        if [[ $rc -ne 0 ]]; then
+            log "WARNING: glab mr list failed after 3 attempts (rc=$rc). Stderr: $glab_stderr. Output: $(echo "$output" | head -c 200)"
+        elif [[ -z "$output" || "$output" == "[]" ]]; then
+            log "No open MRs found for $RESPONDER_USER in $REPO_OWNER_REPO (output: '$output')"
+        else
+            local python_script=$(cat <<PYTHON_EOF
 import sys, json
+
 try:
-    data = json.load(sys.stdin)
-    for item in data:
-        print(f\"{item['iid']}|{item['title']}|{item['source_branch']}|{item['web_url']}\")
-except:
-    pass
-"))
+    content = sys.stdin.read()
+    start = content.find('[')
+    if start != -1:
+        data = json.loads(content[start:])
+        for item in data:
+            print(f"{item.get('iid', '')}|{item.get('title', '')}|{item.get('source_branch', '')}|{item.get('web_url', '')}")
+    else:
+        print(f"ERROR: No JSON array start character '[' found in GitLab output. Content: {content[:200]}", file=sys.stderr)
+except Exception as e:
+    print(f"ERROR: Python parsing failed for GitLab: {e}. Content: {content[:200]}", file=sys.stderr)
+PYTHON_EOF
+            )
+            mapfile -t mr_pr_list < <(echo "$output" | python3 -c "$python_script" 2>&1)
+            if [[ ${#mr_pr_list[@]} -eq 0 ]]; then
+                 log "WARNING: GitLab Python parsing returned empty list despite non-empty output. Output: $(echo "$output" | head -c 200)"
+            fi
         fi
     fi
 
@@ -186,27 +262,32 @@ except:
 
             log "New MR/PR #$mr_pr_id: $title (branch: $branch) - triggering dispatcher"
 
-            # Trigger the MR/PR dispatcher
+            # Trigger the MR/PR dispatcher with retries
             python3 -c "
-import socket, json, sys
-try:
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(1.0)
-    s.connect('/run/mr-pr-dispatch.sock')
-    msg = json.dumps({
-        'mr_pr_id': '$mr_pr_id',
-        'title': '$title',
-        'branch': '$branch',
-        'url': '$url',
-        'provider': '$PROVIDER',
-        'repo_url': '$GIT_REPO_URL'
-    }).encode()
-    s.sendall(msg)
-    s.close()
-    print('MR/PR dispatcher triggered successfully for #$mr_pr_id.')
-except Exception as e:
-    print(f'WARNING: Failed to trigger MR/PR dispatcher: {e}', file=sys.stderr)
-    sys.exit(1)
+import socket, json, sys, time
+for attempt in range(5):
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(2.0)
+        s.connect('/run/mr-pr-dispatch.sock')
+        msg = json.dumps({
+            'mr_pr_id': '$mr_pr_id',
+            'title': '$title',
+            'branch': '$branch',
+            'url': '$url',
+            'provider': '$PROVIDER',
+            'repo_url': '$GIT_REPO_URL'
+        }).encode()
+        s.sendall(msg)
+        s.close()
+        print(f'MR/PR dispatcher triggered successfully for #$mr_pr_id.')
+        sys.exit(0)
+    except Exception as e:
+        if attempt < 4:
+            time.sleep(1)
+            continue
+        print(f'WARNING: Failed to trigger MR/PR dispatcher after 5 attempts: {e}', file=sys.stderr)
+        sys.exit(1)
 " 2>&1 | while IFS= read -r line; do
                 log "[dispatcher-trigger] $line"
             done
