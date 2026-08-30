@@ -37,7 +37,7 @@ class Config:
         self.state_dir = du.env("MR_PR_DISPATCH_STATE_DIR", "/config/.mr-pr-dispatch")
         self.worker_port = int(du.env("MR_PR_DISPATCH_WORKER_PORT", "8443"))
         # Custom prompt for MR/PR responder, with placeholder replacement
-        self.responder_prompt = du.env("MR_RESPONDER_PROMPT")
+        self.responder_prompt = du.env("MR_PR_RESPONDER_PROMPT")
         # Placeholder for MR/PR ID in the prompt
         self.id_placeholder = du.env("MR_PR_ID_PLACEHOLDER", "{{MR_PR_ID}}")
 

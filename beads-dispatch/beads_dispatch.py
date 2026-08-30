@@ -238,6 +238,21 @@ def compose_worker_env(parent_env, branch, repo_url, beads_remote=None, dispatch
         env.append("GIT_REPO_URL=%s" % repo_url)
     env = [e for e in env if not e.startswith("BEADS_DISPATCH=")]
     env.append("BEADS_DISPATCH=false")
+
+    # Override BEADS_ENABLED, ENABLE_SCOTTY, MR_PR_DISPATCH to false in the worker
+    env = [e for e in env if not e.startswith("BEADS_ENABLED=")]
+    env.append("BEADS_ENABLED=false")
+    env = [e for e in env if not e.startswith("ENABLE_SCOTTY=")]
+    env.append("ENABLE_SCOTTY=false")
+    env = [e for e in env if not e.startswith("MR_PR_DISPATCH=")]
+    env.append("MR_PR_DISPATCH=false")
+
+    # Override HAPPIER_MODE to "agent" if parent has it set (don't add if parent doesn't have it)
+    parent_has_happier_mode = any(e.startswith("HAPPIER_MODE=") for e in parent_env)
+    if parent_has_happier_mode:
+        env = [e for e in env if not e.startswith("HAPPIER_MODE=")]
+        env.append("HAPPIER_MODE=agent")
+
     # BEADS_REMOTE tells the worker where to clone/pull the beads Dolt DB from.
     # Defaults to repo_url when not explicitly provided.
     remote = beads_remote or repo_url

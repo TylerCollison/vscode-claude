@@ -288,6 +288,36 @@ In stealth mode (when `BEADS_DIR` is set), data lives at `$BEADS_DIR` instead �
 | `ENABLE_SCOTTY` | *(not set)* | Set to `true` to start the Beads web UI (Scotty) on container startup |
 | `SCOTTY_PORT` | `3000` | Port the Scotty web UI listens on |
 
+### Beads Sync Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BEADS_SYNC_PROVIDERS` | *(not set)* | Comma-separated list of providers to sync: `jira,github,gitlab,linear,dolt` |
+| `BEADS_SYNC_INTERVAL` | `300` | Sync interval in seconds |
+| `BEADS_SYNC_RUN_ON_START` | `true` | Run sync immediately on container startup |
+
+### MR/PR Dispatch Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MR_PR_DISPATCH` | *(not set)* | Set to `true` to enable the MR/PR responder feature (dispatcher + sync) |
+| `MR_PR_USER` | *(not set)* | **Required.** GitHub/GitLab username to watch for MR/PR assignments |
+| `MR_PR_DISPATCH_PORT_BASE` | `8100` | Lowest host port for worker code-server (8443) mapping |
+| `MR_PR_DISPATCH_WORKER_PORT` | `8443` | Internal port published on the worker |
+| `MR_PR_DISPATCH_STATE_DIR` | `/config/.mr-pr-dispatch` | Where the seen-set state file lives |
+| `MR_PR_RESPONDER_PROMPT` | *(not set)* | Custom prompt template override for workers (supports `{{MR_PR_ID}}` placeholder) |
+| `MR_PR_ID_PLACEHOLDER` | `{{MR_PR_ID}}` | Placeholder token in custom prompt replaced with actual MR/PR number |
+| `MR_PR_WORKER_IMAGE` | *(not set)* | Override the worker container image (defaults to parent's image) |
+| `MR_PR_SYNC_INTERVAL` | `300` | Polling interval in seconds for the sync daemon |
+| `MR_PR_SYNC_RUN_ON_START` | `true` | Run initial sync on container startup |
+
+### Auto Start Prompt Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PROMPT` | *(not set)* | Prompt to send to Claude Code on container startup. If set, a session is started automatically. |
+| `HAPPIER_MODE` | *(not set)* | If set (`server` or `agent`), starts the session via Happier for web UI access. If unset, runs regular `claude -p`. |
+
 **Scotty (Bead UI) Usage:**
 
 Scotty is a five-column kanban board for Beads issues (Backlog · Ready · In Progress · Blocked · Done) with drag-and-drop, epics, a dependency graph, comments, and create/edit. It shells out to the `bd` CLI, which stays the single source of truth.
@@ -313,6 +343,8 @@ Every time you **commit** in the workspace repo, the dispatcher checks the Beads
 | `BEADS_DISPATCH_PORT_BASE` | `8000` | Lowest host port considered for the worker's code-server (8443) mapping |
 | `BEADS_DISPATCH_WORKER_PORT` | `8443` | Internal port published on the worker (code-server) |
 | `BEADS_DISPATCH_STATE_DIR` | `/config/.beads-dispatch` | Where the seen-set state file lives |
+| `BEADS_DISPATCH_PROMPT` | *(unset)* | Custom prompt to inject into worker containers (overrides default) |
+| `BEADS_DISPATCH_GIT_USER` | *(unset)* | Git user to use for dolt sync operations (defaults to workspace owner) |
 
 **Usage:**
 
@@ -336,6 +368,112 @@ When you commit and a task is ready (e.g. `probe-n5h`, "Task A"), the dispatcher
 The worker inherits the full environment (API keys, providers) but sets `BEADS_DISPATCH=false`, so workers never dispatch their own workers. Each task is dispatched once — a later commit won't duplicate it (state is tracked in `/config/.beads-dispatch/state.json`).
 
 > **Prerequisite:** the parent container must be able to sync the Dolt DB to its origin (a credential helper / token), or the dispatcher logs a clear error and skips the task.
+
+### Beads Sync (sync tasks from external providers)
+
+Periodically syncs tasks from external issue trackers into the local Beads database. Supports **Jira, GitHub, GitLab, Linear, and Dolt** (DoltHub/DoltLab). Runs `bd <provider> sync` for external providers or `bd dolt pull` for Dolt at a configurable interval. The sync runs as the `abc` user to access git credentials (gh/glab credential helpers).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BEADS_SYNC_PROVIDERS` | *(unset)* | Comma-separated list of providers: `jira,github,gitlab,linear,dolt` |
+| `BEADS_SYNC_INTERVAL` | `300` | Sync interval in seconds |
+| `BEADS_SYNC_RUN_ON_START` | `true` | Run sync immediately on container startup |
+
+**Usage:**
+
+```yaml
+environment:
+  - BEADS_SYNC_PROVIDERS=github,gitlab,dolt # Comma-separated
+  - BEADS_SYNC_INTERVAL=300                 # Optional (default 5 minutes)
+  - BEADS_SYNC_RUN_ON_START=true            # Optional
+  - BEADS_ENABLED=true                      # Required (or run bd init)
+  - GIT_REPO_URL=https://github.com/user/repo.git # Required for github/gitlab
+```
+
+**External provider setup (run once inside the container):**
+
+```bash
+# GitHub
+bd github auth login   # opens browser / device flow
+bd github sync --directory /workspace
+
+# GitLab
+bd gitlab auth login
+bd gitlab sync --directory /workspace
+
+# Jira
+bd jira auth login
+bd jira sync --directory /workspace
+
+# Linear
+bd linear auth login
+bd linear sync --directory /workspace
+
+# Dolt (DoltHub / DoltLab)
+bd dolt remote add origin dolthub://user/repo
+bd dolt pull --directory /workspace
+```
+
+After initial auth, the daemon runs sync automatically on the interval. On each successful sync, it triggers the **Beads Dispatcher** (if `BEADS_DISPATCH=true`) so new ready tasks are immediately dispatched as workers.
+
+> **Note:** The `dolt` provider requires a configured Dolt remote (`bd dolt remote add origin ...`). Other providers require the respective CLI auth to be set up once.
+
+### MR/PR Dispatch (auto-dispatch worker for assigned MRs/PRs)
+
+When a Merge Request (GitLab) or Pull Request (GitHub) is assigned to a designated user, the dispatcher creates a **worker container** to review and respond to it. The worker gets a branch checked out, the full environment (API keys, providers), and a prompt instructing it to:
+1. Examine the MR/PR (description, comments, code changes)
+2. Provide constructive feedback or implement fixes
+3. Address all existing comments
+4. Push fixes to the branch
+5. Unassign the MR/PR to indicate response is complete
+
+The feature consists of two components gated by the same switch `MR_PR_DISPATCH=true`:
+- **Dispatcher daemon** (root) — listens on a unix socket, creates worker containers
+- **Sync daemon** (runs as `abc` user) — polls GitHub/GitLab for MRs/PRs assigned to `MR_PR_USER` and triggers the dispatcher
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MR_PR_DISPATCH` | *(unset)* | Set to `true` to enable the entire MR/PR responder feature (dispatcher + sync) |
+| `MR_PR_USER` | *(unset)* | **Required.** GitHub/GitLab username to watch for assignments |
+| `MR_PR_DISPATCH_PORT_BASE` | `8100` | Lowest host port for worker code-server (8443) mapping |
+| `MR_PR_DISPATCH_WORKER_PORT` | `8443` | Internal port published on the worker |
+| `MR_PR_DISPATCH_STATE_DIR` | `/config/.mr-pr-dispatch` | Where the seen-set state file lives |
+| `MR_PR_RESPONDER_PROMPT` | *(unset)* | Custom prompt template for workers (supports `{{MR_PR_ID}}` placeholder) |
+| `MR_PR_ID_PLACEHOLDER` | `{{MR_PR_ID}}` | Placeholder token in custom prompt replaced with actual MR/PR number |
+| `MR_PR_WORKER_IMAGE` | *(unset)* | Override the worker container image (defaults to parent's image) |
+| `MR_PR_SYNC_INTERVAL` | `300` | Polling interval in seconds for the sync daemon |
+| `MR_PR_SYNC_RUN_ON_START` | `true` | Run initial sync on container startup |
+
+**Usage:**
+
+```yaml
+environment:
+  - MR_PR_DISPATCH=true
+  - MR_PR_USER=your-github-username        # Required
+  - MR_PR_DISPATCH_PORT_BASE=8100          # Optional
+  - MR_PR_SYNC_INTERVAL=300                # Optional
+  - GIT_REPO_URL=https://github.com/user/repo.git # Required
+  - GH_TOKEN=your-github-token             # Required for GitHub (or GITLAB_TOKEN for GitLab)
+```
+
+**How it works:**
+1. The sync daemon (configured via `MR_PR_SYNC_INTERVAL`) polls GitHub (`gh pr list --assignee`) or GitLab (`glab mr list --assignee`) for open MRs/PRs assigned to `MR_PR_USER`.
+2. For each new MR/PR not in the seen-set, it sends a trigger to the dispatcher's unix socket (`/run/mr-pr-dispatch.sock`).
+3. The dispatcher (root) creates a worker container named `mr-pr-<slug>-<id>` with:
+   - `GIT_BRANCH_NAME` set to the MR/PR's branch
+   - `MR_PR_ID` set to the MR/PR number
+   - `PROMPT` set to the responder prompt (default or custom via `MR_PR_RESPONDER_PROMPT`)
+   - `BEADS_DISPATCH=false`, `BEADS_ENABLED=false`, `ENABLE_SCOTTY=false`, `MR_PR_DISPATCH=false` (no recursion)
+4. The worker clones the repo, checks out the branch, and runs the prompt via Claude Code.
+5. Both daemons track seen MR/PR IDs in `/config/.mr-pr-dispatch/state.json` to avoid duplicates.
+
+**Custom prompt example:**
+```yaml
+environment:
+  - MR_PR_RESPONDER_PROMPT=Review PR {{MR_PR_ID}}: check for security issues, add tests, and approve if ready. Use gh pr commands.
+```
+
+> **Prerequisites:** Docker socket mounted, `gh`/`glab` authenticated for the `abc` user, `GIT_REPO_URL` set, and the container must be able to push to the repo origin (for the dispatcher to sync branch state if needed).
 
 ### Knowledge Repository Integration
 | Variable | Description |
@@ -409,11 +547,21 @@ services:
       - BEADS_DISPATCH=true
       - BEADS_DISPATCH_BRANCH_PREFIX=task # Optional
       - BEADS_DISPATCH_PORT_BASE=8000     # Optional
+      # Beads Sync — sync tasks from external providers (optional)
+      - BEADS_SYNC_PROVIDERS=github,gitlab,dolt
+      - BEADS_SYNC_INTERVAL=300           # Optional (default 5 minutes)
+      # MR/PR Dispatch — auto-dispatch workers for assigned MRs/PRs (optional)
+      - MR_PR_DISPATCH=true
+      - MR_PR_USER=your-github-username   # Required if enabled
+      - MR_PR_DISPATCH_PORT_BASE=8100     # Optional
+      - MR_PR_SYNC_INTERVAL=300           # Optional
+      - GH_TOKEN=your-github-token        # Required for GitHub (or GITLAB_TOKEN for GitLab)
     ports:
       - "8443:8443" # VSCode UI
       - "3005:3005" # Happier UI
       - "4000:4000" # LiteLLM UI
       - "3000:3000" # Scotty (Beads UI) — only if ENABLE_SCOTTY=true
+      - "8000-8100:8000-8100" # Beads/MR-PR Dispatch workers — port range for worker code-server access
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock # Optional for docker support
       - /path/to/code-server/config:/config # Only specify if using existing configuration
@@ -576,6 +724,36 @@ The container will:
 2. Create/checkout the specified branch
 3. Set appropriate permissions
 
+### Auto Start Prompt (run a prompt on container startup)
+
+Start a Claude Code session automatically on container startup by providing a prompt via the `PROMPT` environment variable. This is useful for initializing a workspace with a specific task, running a one-shot automation, or kicking off an agent workflow without manual intervention. Optionally integrates with Happier for web UI access.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PROMPT` | *(unset)* | The prompt to send to Claude Code on startup. If set, a session is started automatically. |
+| `HAPPIER_MODE` | *(unset)* | If set (`server` or `agent`), the session is started via Happier for web UI access at `https://localhost:3005`. If unset, runs a regular `claude -p` session. |
+
+**Usage (regular Claude Code):**
+
+```yaml
+environment:
+  - PROMPT=Create a REST API for a todo list with CRUD operations, using FastAPI and SQLite. Include tests.
+```
+
+**Usage (via Happier for web UI access):**
+
+```yaml
+environment:
+  - PROMPT=Review the codebase and create a comprehensive README.md documenting the architecture.
+  - HAPPIER_MODE=agent
+  - HAPPIER_SERVER_URL=https://your-happier-server:3005
+  - HAPPIER_ACCESS_KEY={"access_key":"...","server_url":"..."} # From `happier auth login`
+```
+
+When `HAPPIER_MODE` is set, the container starts a Happier session with the prompt, making the agent's work visible and controllable through the Happier web UI (or mobile app). When `HAPPIER_MODE` is not set, it runs `claude -p "<prompt>"` directly in the background.
+
+> **Note:** The prompt session runs in the background. For long-running tasks, consider using Beads Dispatch or MR/PR Dispatch which provide persistent worker containers with code-server access.
+
 ### Knowledge Repository Integration
 
 Combine markdown documentation from multiple repositories:
@@ -736,6 +914,42 @@ docker exec claude-dev curl -I http://localhost:3000
 - Ensure `ENABLE_SCOTTY=true` is set and the port (`SCOTTY_PORT`, default `3000`) isn't already in use
 
 **Beads Dispatch Issues:**
+- Verify the daemon is running: `docker exec claude-dev ps aux | grep beads-dispatch`
+- Check the daemon log: `docker exec claude-dev cat /tmp/beads-dispatch.log`
+- Confirm the post-commit hook is installed: `docker exec claude-dev cat /workspace/.git/hooks/post-commit`
+- Inspect the seen-set state: `docker exec claude-dev cat /config/.beads-dispatch/state.json`
+- List dispatched workers: `docker service ls --filter label=beads.task` (swarm) or `docker ps --filter label=beads.task` (local)
+- If you committed but no worker appeared: check the log for "Commit trigger received" and any "could not push branch" error (the parent needs git push credentials for its origin)
+- Ensure `BEADS_DISPATCH=true`, the docker socket is mounted, and `GIT_REPO_URL` (or a workspace git origin) is set
+
+**Beads Sync Issues:**
+- Verify the sync daemon is running: `docker exec claude-dev ps aux | grep beads-sync`
+- Check the sync log: `docker exec claude-dev cat /tmp/beads-sync.log`
+- Ensure `BEADS_SYNC_PROVIDERS` is set and contains valid providers (`jira,github,gitlab,linear,dolt`)
+- For GitHub/GitLab: verify `GIT_REPO_URL` is set and `gh`/`glab` auth is configured for the `abc` user
+- For Dolt: verify `bd dolt remote list` shows a configured origin
+- Run sync manually: `docker exec -u abc claude-dev bd github sync --directory /workspace`
+
+**MR/PR Dispatch Issues:**
+- Verify the dispatcher daemon is running: `docker exec claude-dev ps aux | grep mr-pr-dispatch`
+- Check the dispatcher log: `docker exec claude-dev cat /tmp/mr-pr-dispatch.log`
+- Verify the sync daemon is running: `docker exec claude-dev ps aux | grep mr-pr-sync`
+- Check the sync log: `docker exec claude-dev cat /tmp/mr-pr-dispatch.log` (shared log)
+- Confirm the unix socket exists: `docker exec claude-dev ls -la /run/mr-pr-dispatch.sock`
+- Inspect the seen-set state: `docker exec claude-dev cat /config/.mr-pr-dispatch/state.json`
+- List dispatched workers: `docker service ls --filter label=mr_pr.id` (swarm) or `docker ps --filter label=mr_pr.id` (local)
+- Test sync manually: `docker exec -u abc claude-dev gh pr list --assignee "$MR_PR_USER" --state open --json number,title,headRefName,url --repo "owner/repo"`
+- Ensure `MR_PR_DISPATCH=true`, `MR_PR_USER` is set, docker socket is mounted, and `GIT_REPO_URL` is set
+- For GitHub: ensure `GH_TOKEN` is set; for GitLab: ensure `GITLAB_TOKEN` is set
+
+**Auto Start Prompt Issues:**
+- Verify `PROMPT` environment variable is set and non-empty
+- If using Happier: check Happier daemon is running (`happier daemon status`)
+- For Happier web UI access: ensure `HAPPIER_SERVER_URL` is correct and `HAPPIER_ACCESS_KEY` is valid
+- Check container logs for session startup: `docker logs claude-dev`
+- For regular Claude Code: verify `claude` command works (`docker exec claude-dev claude --version`)
+
+## Credits
 - Verify the daemon is running: `docker exec claude-dev ps aux | grep beads-dispatch`
 - Check the daemon log: `docker exec claude-dev cat /tmp/beads-dispatch.log`
 - Confirm the post-commit hook is installed: `docker exec claude-dev cat /workspace/.git/hooks/post-commit`
