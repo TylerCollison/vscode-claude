@@ -206,6 +206,7 @@ COPY start-beads-sync.sh /107-start-beads-sync
 COPY start-prompt-session.sh /108-start-prompt-session
 COPY start-mr-pr-sync.sh /109-start-mr-pr-sync
 COPY start-mr-pr-dispatch.sh /110-start-mr-pr-dispatch
+COPY shutdown.sh /111-shutdown
 COPY happier-tls-tunnel.js /app/happier-tls-tunnel.js
 
 # Install the Beads dispatch watcher (dispatches a worker container/service when a task becomes ready)
@@ -241,6 +242,7 @@ RUN chmod +x /92-configure-code-server-theme \
     /107-start-beads-sync \
     /109-start-mr-pr-sync \
     /110-start-mr-pr-dispatch \
+    /111-shutdown \
     /108-start-prompt-session \
     /usr/local/bin/beads-dispatch \
     /usr/local/bin/dispatch_utils.py \
