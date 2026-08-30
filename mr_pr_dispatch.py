@@ -238,9 +238,8 @@ def run_daemon(cfg, self_info, seen):
 def main(argv):
     cfg = Config()
 
-    # Dispatch is required for MR/PR sync, so run whenever either is enabled.
-    if du.env("MR_PR_DISPATCH") != "true" and du.env("MR_PR_SYNC_ENABLED") != "true":
-        du.log("MR/PR dispatch not enabled (neither MR_PR_DISPATCH nor MR_PR_SYNC_ENABLED is 'true'). Exiting.")
+    if du.env("MR_PR_DISPATCH") != "true":
+        du.log("MR/PR dispatch not enabled (MR_PR_DISPATCH is not 'true'). Exiting.")
         return 0
 
     for binary in ("docker", "git", "python3", "gh", "glab"):

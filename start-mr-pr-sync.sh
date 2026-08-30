@@ -1,6 +1,7 @@
 #!/usr/bin/with-contenv bash
 # Start the MR/PR Responder Sync daemon.
-# Opt-in via MR_PR_SYNC_ENABLED=true.
+# Opt-in via MR_PR_DISPATCH=true (the same switch that enables the dispatcher,
+# which provides the socket this daemon triggers).
 # Polls GitHub/GitLab for MRs/PRs assigned to MR_RESPONDER_USER.
 # Runs at the specified interval.
 
@@ -10,17 +11,17 @@ log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
 }
 
-# Skip unless explicitly enabled
-SYNC_ENABLED="${MR_PR_SYNC_ENABLED:-false}"
-if [[ "$SYNC_ENABLED" != "true" ]]; then
-    log "MR/PR sync not enabled (MR_PR_SYNC_ENABLED is not 'true'). Skipping."
+# Skip unless explicitly enabled. The dispatch switch gates the whole MR/PR
+# responder feature (dispatcher + sync).
+if [[ "${MR_PR_DISPATCH:-}" != "true" ]]; then
+    log "MR/PR sync not enabled (MR_PR_DISPATCH is not 'true'). Skipping."
     exit 0
 fi
 
 # MR_RESPONDER_USER is required
 RESPONDER_USER="${MR_RESPONDER_USER:-}"
 if [ -z "$RESPONDER_USER" ]; then
-    log "ERROR: MR_RESPONDER_USER is not set but MR_PR_SYNC_ENABLED is true. Skipping."
+    log "ERROR: MR_RESPONDER_USER is not set but MR_PR_DISPATCH is true. Skipping."
     exit 0
 fi
 
