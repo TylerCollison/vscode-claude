@@ -9,9 +9,12 @@ log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
 }
 
-# Skip unless explicitly enabled
-if [[ "${MR_PR_DISPATCH:-}" != "true" ]]; then
-    log "MR/PR dispatch not enabled (MR_PR_DISPATCH is not 'true'). Skipping."
+# Skip unless explicitly enabled.
+# Dispatch is required for MR/PR sync (it provides the socket the sync daemon
+# triggers), so it is effectively enabled whenever either MR_PR_DISPATCH=true
+# or MR_PR_SYNC_ENABLED=true.
+if [[ "${MR_PR_DISPATCH:-}" != "true" && "${MR_PR_SYNC_ENABLED:-}" != "true" ]]; then
+    log "MR/PR dispatch not enabled (neither MR_PR_DISPATCH nor MR_PR_SYNC_ENABLED is 'true'). Skipping."
     exit 0
 fi
 
