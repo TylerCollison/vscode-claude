@@ -365,7 +365,7 @@ When you commit and a task is ready (e.g. `probe-n5h`, "Task A"), the dispatcher
 4. as a **swarm service** if the node is a swarm manager, else a **local container**.
 5. The worker (via `git-repo-setup.sh`) clones the repo and **automatically creates the branch off the default branch** (typically `main`) if it doesn't exist, or checks it out if it does.
 
-The worker inherits the full environment (API keys, providers) but sets `BEADS_DISPATCH=false`, so workers never dispatch their own workers. Each task is dispatched once — a later commit won't duplicate it (state is tracked in `/config/.beads-dispatch/state.json`).
+The worker inherits the full environment (API keys, providers) but sets `BEADS_DISPATCH=false`, `BEADS_ENABLED=false`, `ENABLE_SCOTTY=false`, `MR_PR_DISPATCH=false`, so workers never dispatch their own workers, enable Beads, start Scotty, or respond to MRs/PRs. If the parent container has `HAPPIER_MODE` set (to `server` or `agent`), the worker receives `HAPPIER_MODE=agent` to enable web UI access via Happier. Each task is dispatched once — a later commit won't duplicate it (state is tracked in `/config/.beads-dispatch/state.json`).
 
 > **Prerequisite:** the parent container must be able to sync the Dolt DB to its origin (a credential helper / token), or the dispatcher logs a clear error and skips the task.
 
@@ -464,6 +464,7 @@ environment:
    - `MR_PR_ID` set to the MR/PR number
    - `PROMPT` set to the responder prompt (default or custom via `MR_PR_RESPONDER_PROMPT`)
    - `BEADS_DISPATCH=false`, `BEADS_ENABLED=false`, `ENABLE_SCOTTY=false`, `MR_PR_DISPATCH=false` (no recursion)
+   - If the parent container has `HAPPIER_MODE` set (to `server` or `agent`), the worker receives `HAPPIER_MODE=agent` to enable web UI access via Happier
 4. The worker clones the repo, checks out the branch, and runs the prompt via Claude Code.
 5. Both daemons track seen MR/PR IDs in `/config/.mr-pr-dispatch/state.json` to avoid duplicates.
 
