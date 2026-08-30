@@ -304,8 +304,19 @@ for attempt in range(5):
 # Start the sync daemon
 log "Starting MR/PR sync daemon (workspace: $DEFAULT_WORKSPACE, interval: ${SYNC_INTERVAL}s)..."
 
-# Run initial sync if enabled
+# Wait for the MR/PR dispatch socket to be ready before initial sync (max 15 seconds)
 if [[ "$RUN_ON_START" == "true" ]]; then
+    SOCKET_PATH="/run/mr-pr-dispatch.sock"
+    for i in {1..15}; do
+        if [ -S "$SOCKET_PATH" ]; then
+            log "MR/PR dispatch socket ready at $SOCKET_PATH"
+            break
+        fi
+        if [[ $i -eq 15 ]]; then
+            log "WARNING: MR/PR dispatch socket not ready after 15 seconds. Initial sync may fail."
+        fi
+        sleep 1
+    done
     run_sync
 fi
 

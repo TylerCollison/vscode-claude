@@ -49,5 +49,25 @@ fi
 
 log "Starting MR/PR dispatch daemon (workspace: $DEFAULT_WORKSPACE, state: $STATE_DIR)..."
 /usr/local/bin/mr_pr_dispatch.py --daemon > /tmp/mr-pr-dispatch.log 2>&1 &
-echo $! > "$PID_FILE"
-log "MR/PR dispatch daemon started (PID $(cat "$PID_FILE")). Log: /tmp/mr-pr-dispatch.log"
+DISPATCH_PID=$!
+echo $DISPATCH_PID > "$PID_FILE"
+
+# Wait for the unix socket to be created (max 10 seconds)
+SOCKET_PATH="/run/mr-pr-dispatch.sock"
+for i in {1..10}; do
+    if [ -S "$SOCKET_PATH" ]; then
+        log "MR/PR dispatch daemon socket ready at $SOCKET_PATH"
+        break
+    fi
+    if ! kill -0 $DISPATCH_PID 2>/dev/null; then
+        log "ERROR: MR/PR dispatch daemon process died before socket was created. Check /tmp/mr-pr-dispatch.log"
+        exit 1
+    fi
+    sleep 1
+done
+
+if [ ! -S "$SOCKET_PATH" ]; then
+    log "WARNING: MR/PR dispatch daemon socket not ready after 10 seconds. Sync may fail initially."
+fi
+
+log "MR/PR dispatch daemon started (PID $DISPATCH_PID). Log: /tmp/mr-pr-dispatch.log"
