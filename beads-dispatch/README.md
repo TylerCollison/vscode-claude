@@ -90,6 +90,9 @@ python3 beads-dispatch/tests/test_beads_dispatch.py
 # One-shot install + dispatch (manual testing)
 BEADS_DISPATCH=true /usr/local/bin/beads-dispatch --once
 
+# Manual trigger (if daemon is already running)
+dispatch-beads
+
 # Watch the daemon log
 tail -f /tmp/beads-dispatch.log
 ```

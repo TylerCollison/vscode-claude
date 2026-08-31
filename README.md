@@ -925,6 +925,7 @@ docker exec claude-dev curl -I http://localhost:3000
 - List dispatched workers: `docker service ls --filter label=beads.task` (swarm) or `docker ps --filter label=beads.task` (local)
 - If you committed but no worker appeared: check the log for "Commit trigger received" and any "could not push branch" error (the parent needs git push credentials for its origin)
 - Ensure `BEADS_DISPATCH=true`, the docker socket is mounted, and `GIT_REPO_URL` (or a workspace git origin) is set
+- **Manual trigger**: Run `docker exec claude-dev dispatch-beads` to manually trigger the dispatcher (requires daemon running)
 
 **Beads Sync Issues:**
 - Verify the sync daemon is running: `docker exec claude-dev ps aux | grep beads-sync`

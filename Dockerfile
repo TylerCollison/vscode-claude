@@ -225,11 +225,15 @@ COPY shutdown.sh /usr/local/bin/shutdown
 # Copy litellm-health-check script to bin
 COPY litellm-health-check.py /usr/local/bin/litellm-health-check
 
+# Copy dispatch-beads command to bin
+COPY dispatch-beads /usr/local/bin/dispatch-beads
+
 # Set execute permissions
 RUN chmod +x /92-configure-code-server-theme \
     /93-git-repo-setup \
     /usr/local/bin/litellm-health-check \
     /usr/local/bin/shutdown \
+    /usr/local/bin/dispatch-beads \
     /94-combine-markdowns \
     /95-configure-claude-skip-onboarding \
     /96-start-lite-llm \
