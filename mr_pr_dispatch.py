@@ -82,7 +82,7 @@ def default_mr_pr_prompt(mr_pr_id, title, branch, repo_url, provider):
         "6. After responding, unassign the %s to indicate you have responded.\n"
         "\n"
         "Use the appropriate CLI tools as needed."
-    ) % (id_label, id_label, mr_pr_id, title, branch, repo_url, cli, cmd_prefix, id_label, id_label, id_label, id_label)
+    ) % (id_label, id_label, mr_pr_id, title, branch, repo_url, cli, cmd_prefix, id_label, id_label, id_label, id_label, id_label)
 
 
 def compose_worker_env(parent_env, branch, repo_url, mr_pr_id, dispatch_prompt=None):
