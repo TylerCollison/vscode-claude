@@ -24,3 +24,17 @@ Prefer the `Read` tool over `cat`/`head`/`tail`/`sed` for reading file contents.
 ## File editing
 
 Prefer `Edit` (targeted string replacement) over `Write` (full file overwrite) for incremental changes. Always `Read` a file before editing it — edits fail without a recent read.
+
+## Testing changes
+
+After making any code changes, rebuild the container and use it to verify the changes work correctly. Run the following commands:
+
+```bash
+# Rebuild the container
+docker build -t test-container .
+
+# Run the container to test changes
+docker run --rm test-container
+```
+
+Ensure all tests pass before committing changes.
