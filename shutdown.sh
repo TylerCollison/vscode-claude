@@ -113,6 +113,7 @@ sys.exit(1)
       RESPONSE=$(curl -k -s -w "\n%{http_code}" -X DELETE \
         -H "Authorization: Bearer $ACCESS_KEY" \
         -H "Content-Type: application/json" \
+        -d '{}' \
         "$SERVER_URL/v1/machines/$MACHINE_ID" 2>/dev/null || true)
 
       HTTP_CODE=$(echo "$RESPONSE" | tail -n1)

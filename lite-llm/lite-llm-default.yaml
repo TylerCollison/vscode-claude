@@ -168,6 +168,8 @@ model_list:
 litellm_settings:
   # Fixes a bug in translating between an Anthropic client and an OpenAI provider
   use_chat_completions_url_for_anthropic_messages: true
+  convert_lm_reasoning_to_text: true # Forces reasoning tokens into standard text blocks
+  modify_params: true
   drop_params: true
 
   callbacks: ["router_callback.router_handler", "websearch_interception"]
