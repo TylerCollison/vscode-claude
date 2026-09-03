@@ -171,6 +171,9 @@ litellm_settings:
   convert_lm_reasoning_to_text: true # Forces reasoning tokens into standard text blocks
   modify_params: true
   drop_params: true
+  # Force-sanitize historical empty texts that cause agent loop crashes
+  sanitize_input_messages: true 
+  remove_empty_system_messages: true
 
   callbacks: ["router_callback.router_handler", "websearch_interception"]
   websearch_interception_params:
