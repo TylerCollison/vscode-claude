@@ -27,6 +27,8 @@ model_list:
       api_key: os.environ/NIM_API_KEY
       stream_timeout: 30.0
       timeout: 180.0
+      # Force LiteLLM to use standard chat completion block rules
+      custom_llm_provider: openai  
 
   - model_name: deepseek-ai/deepseek-v4-pro-0813
     litellm_params:
