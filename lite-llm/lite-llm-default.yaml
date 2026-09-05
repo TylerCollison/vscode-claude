@@ -166,6 +166,7 @@ model_list:
       timeout: 180.0
 
 litellm_settings:
+  use_chat_completions_url_for_anthropic_messages: true
   modify_params: true
   drop_params: true
   stream: false
