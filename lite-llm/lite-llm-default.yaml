@@ -27,8 +27,6 @@ model_list:
       api_key: os.environ/NIM_API_KEY
       stream_timeout: 30.0
       timeout: 180.0
-      # Force LiteLLM to use standard chat completion block rules
-      custom_llm_provider: openai  
 
   - model_name: deepseek-ai/deepseek-v4-pro-0813
     litellm_params:
@@ -168,14 +166,9 @@ model_list:
       timeout: 180.0
 
 litellm_settings:
-  # Fixes a bug in translating between an Anthropic client and an OpenAI provider
-  use_chat_completions_url_for_anthropic_messages: true
-  convert_lm_reasoning_to_text: true # Forces reasoning tokens into standard text blocks
   modify_params: true
   drop_params: true
-  # Force-sanitize historical empty texts that cause agent loop crashes
-  sanitize_input_messages: true 
-  remove_empty_system_messages: true
+  stream: false
 
   callbacks: ["router_callback.router_handler", "websearch_interception"]
   websearch_interception_params:
