@@ -167,8 +167,8 @@ RUN python3 -m venv /opt/build-env-venv \
 
 # Install LiteLLM along with proxy features
 RUN pip install --break-system-packages \
-  'litellm[proxy]==1.94.1' \
-  'fastapi==0.141.1' \
+  'litellm[proxy]' \
+  'fastapi' \
   'semantic-router' \
   'uvicorn' 'appdirs' 'backoff' 'pyyaml' 'rq'
 
