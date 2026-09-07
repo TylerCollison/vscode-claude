@@ -100,33 +100,44 @@ sys.exit(1)
   if [ -n "$ACCESS_KEY_FILE" ] && [ -f "$ACCESS_KEY_FILE" ]; then
     log "Found access key at $ACCESS_KEY_FILE"
 
-    # Read the access key (strip whitespace)
-    ACCESS_KEY=$(cat "$ACCESS_KEY_FILE" | tr -d '[:space:]')
+    # Read the access key. The file is a JSON object with the auth token in
+    # the "token" field (not the raw file contents); extract that token.
+    ACCESS_KEY=$(node -e "
+const fs = require('fs');
+try {
+  const key = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+  console.log(key.token || '');
+} catch {
+  // Fall back to raw contents for legacy non-JSON access keys
+  console.log(fs.readFileSync(process.argv[1], 'utf8').replace(/\s+/g, ''));
+}
+" "$ACCESS_KEY_FILE")
 
     # Get machine ID
     MACHINE_ID=$(get_machine_id "$SERVER_URL" || true)
     if [ -n "$MACHINE_ID" ]; then
       log "Found machine ID: $MACHINE_ID"
 
-      # Delete the machine via API
-      log "Deleting machine from Happier server..."
-      RESPONSE=$(curl -k -s -w "\n%{http_code}" -X DELETE \
+      # Remove this machine from the server's active machine list.
+      # The Happier server has no DELETE /v1/machines/:id endpoint (it returns
+      # 404). The correct way to de-register a machine is POST .../revoke,
+      # which marks the machine active=false and sets revokedAt.
+      log "Revoking machine $MACHINE_ID from Happier server..."
+      RESPONSE=$(curl -k -s -w "\n%{http_code}" -X POST \
         -H "Authorization: Bearer $ACCESS_KEY" \
-        -H "Content-Type: application/json" \
-        -d '{}' \
-        "$SERVER_URL/v1/machines/$MACHINE_ID" 2>/dev/null || true)
+        "$SERVER_URL/v1/machines/$MACHINE_ID/revoke" 2>/dev/null || true)
 
       HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
       BODY=$(echo "$RESPONSE" | head -n-1)
 
       if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then
-        log "Successfully deleted machine $MACHINE_ID from Happier server"
+        log "Successfully revoked machine $MACHINE_ID from Happier server"
       elif [ "$HTTP_CODE" = "404" ]; then
         log "Machine $MACHINE_ID not found on server (already removed)"
       elif [ "$HTTP_CODE" = "401" ]; then
-        log "WARNING: Authentication failed when deleting machine (token may be expired)"
+        log "WARNING: Authentication failed when revoking machine (token may be expired)"
       else
-        log "WARNING: Failed to delete machine (HTTP $HTTP_CODE): $BODY"
+        log "WARNING: Failed to revoke machine (HTTP $HTTP_CODE): $BODY"
       fi
     else
       log "No machine ID found in settings, skipping machine deletion"
@@ -135,10 +146,8 @@ sys.exit(1)
     log "No access key found, skipping machine deletion"
   fi
 
-  # Stop the Happier daemon if running
-  log "Stopping Happier daemon..."
-  happier --server-url "$SERVER_URL" daemon stop 2>/dev/null || true
-  log "Happier daemon stopped"
+  # NOTE: do NOT stop the Happier daemon here — we intentionally leave it
+  # running so other sessions/tools on the machine keep working.
 fi
 
 # Shutdown the container by sending SIGTERM to PID 1 (the s6-overlay init process)
