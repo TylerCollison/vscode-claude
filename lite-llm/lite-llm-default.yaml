@@ -3,6 +3,102 @@ model_list:
   # 1) UNDERLYING MODELS (DEPLOYMENTS)
   # =========================================================================
 
+  # --- Pollination Models ---
+  - model_name: community/NamanSoni78/Glm-5.3-Thinking-Max
+    litellm_params:
+      model: openai/community/NamanSoni78/Glm-5.3-Thinking-Max
+      api_base: https://gen.pollinations.ai/v1
+      api_key: os.environ/POLLINATION_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  - model_name: community/YoannDev90/kilocode-laguna-s-2.1:free
+    litellm_params:
+      model: openai/community/YoannDev90/kilocode-laguna-s-2.1:free
+      api_base: https://gen.pollinations.ai/v1
+      api_key: os.environ/POLLINATION_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  # This model is currently not available
+  # - model_name: community/AkshayCoder48/poolside-laguna-s-2.1:free
+  #   litellm_params:
+  #     model: openai/community/AkshayCoder48/poolside-laguna-s-2.1:free
+  #     api_base: https://gen.pollinations.ai/v1
+  #     api_key: os.environ/POLLINATION_API_KEY
+  #     stream_timeout: 30.0
+  #     timeout: 180.0
+
+  - model_name: community/NamanSoni78/nemotron-3-ultra-550b-a55b
+    litellm_params:
+      model: openai/community/NamanSoni78/nemotron-3-ultra-550b-a55b
+      api_base: https://gen.pollinations.ai/v1
+      api_key: os.environ/POLLINATION_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  # This model is currently not available
+  # - model_name: community/AkshayCoder48/gemini-3.6-flash
+  #   litellm_params:
+  #     model: openai/community/AkshayCoder48/gemini-3.6-flash
+  #     api_base: https://gen.pollinations.ai/v1
+  #     api_key: os.environ/POLLINATION_API_KEY
+  #     stream_timeout: 30.0
+  #     timeout: 180.0
+
+  # This model is currently not available
+  # - model_name: community/AkshayCoder48/gemini-3.1-flash-lite
+  #   litellm_params:
+  #     model: openai/community/AkshayCoder48/gemini-3.1-flash-lite
+  #     api_base: https://gen.pollinations.ai/v1
+  #     api_key: os.environ/POLLINATION_API_KEY
+  #     stream_timeout: 30.0
+  #     timeout: 180.0
+
+  # This model is currently not available
+  # - model_name: community/AkshayCoder48/gemini-3-flash
+  #   litellm_params:
+  #     model: openai/community/AkshayCoder48/gemini-3-flash
+  #     api_base: https://gen.pollinations.ai/v1
+  #     api_key: os.environ/POLLINATION_API_KEY
+  #     stream_timeout: 30.0
+  #     timeout: 180.0
+
+  - model_name: community/NamanSoni78/gpt-5.4-nano
+    litellm_params:
+      model: openai/community/NamanSoni78/gpt-5.4-nano
+      api_base: https://gen.pollinations.ai/v1
+      api_key: os.environ/POLLINATION_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  # This model is currently not available
+  # - model_name: community/AkshayCoder48/kilo-auto-free
+  #   litellm_params:
+  #     model: openai/community/AkshayCoder48/kilo-auto-free
+  #     api_base: https://gen.pollinations.ai/v1
+  #     api_key: os.environ/POLLINATION_API_KEY
+  #     stream_timeout: 30.0
+  #     timeout: 180.0
+
+  # --- Ollama Cloud Models ---
+  # This endpoint is fairly slow
+  - model_name: nemotron-3-ultra:cloud
+    litellm_params:
+      model: openai/nemotron-3-ultra:cloud
+      api_base: https://ollama.com/v1
+      api_key: os.environ/OLLAMA_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  - model_name: nemotron-3-super:cloud
+    litellm_params:
+      model: openai/nemotron-3-super:cloud
+      api_base: https://ollama.com/v1
+      api_key: os.environ/OLLAMA_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
   # --- Google AI Studio Models ---
   # Note: all of the models from this provider respond quickly
   - model_name: gemini-3.5-flash-lite
@@ -19,14 +115,40 @@ model_list:
       stream_timeout: 30.0
       timeout: 180.0
 
-  # --- Nvidia NIM Models ---
-  # Note: All of the models from this provider respond rather 
-  - model_name: moonshotai/kimi-k3
+  # --- LLM7 Models ---
+  - model_name: default
     litellm_params:
-      model: nvidia_nim/moonshotai/kimi-k3
-      api_key: os.environ/NIM_API_KEY
+      model: openai/default
+      api_base: https://api.llm7.io/v1
+      api_key: os.environ/LLM7_API_KEY
       stream_timeout: 30.0
       timeout: 180.0
+
+  - model_name: fast
+    litellm_params:
+      model: openai/fast
+      api_base: https://api.llm7.io/v1
+      api_key: os.environ/LLM7_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  - model_name: minimax-m2.7
+    litellm_params:
+      model: openai/minimax-m2.7
+      api_base: https://api.llm7.io/v1
+      api_key: os.environ/LLM7_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  # --- Nvidia NIM Models ---
+  # Note: All of the models from this provider respond rather 
+  # Kimi is buggy in this harness; disabling for now
+  # - model_name: moonshotai/kimi-k3
+  #   litellm_params:
+  #     model: nvidia_nim/moonshotai/kimi-k3
+  #     api_key: os.environ/NIM_API_KEY
+  #     stream_timeout: 30.0
+  #     timeout: 180.0
 
   - model_name: deepseek-ai/deepseek-v4-pro-0813
     litellm_params:
@@ -44,53 +166,64 @@ model_list:
 
   # --- OpenAI Compatible (OpenCode Zen) ---
   # Note: All of the models from this provider respond very quickly
-  - model_name: nemotron-3-ultra-free
-    litellm_params:
-      model: openai/nemotron-3-ultra-free
-      api_base: https://opencode.ai/zen/v1
-      api_key: os.environ/OPENCODE_ZEN_API_KEY
-      stream_timeout: 30.0
-      timeout: 180.0
+  # OpenCode recently locked-down all free models to only work with
+  # the opencode harness; disabling for now
+  # - model_name: nemotron-3-ultra-free
+  #   litellm_params:
+  #     model: openai/nemotron-3-ultra-free
+  #     api_base: https://opencode.ai/zen/v1
+  #     api_key: os.environ/OPENCODE_ZEN_API_KEY
+  #     stream_timeout: 30.0
+  #     timeout: 180.0
+  #     extra_headers:
+  #       User-Agent: opencode/1.18.16
 
-  - model_name: mimo-v2.5-free
-    litellm_params:
-      model: openai/mimo-v2.5-free
-      api_base: https://opencode.ai/zen/v1
-      api_key: os.environ/OPENCODE_ZEN_API_KEY
-      stream_timeout: 30.0
-      timeout: 180.0
+  # - model_name: mimo-v2.5-free
+  #   litellm_params:
+  #     model: openai/mimo-v2.5-free
+  #     api_base: https://opencode.ai/zen/v1
+  #     api_key: os.environ/OPENCODE_ZEN_API_KEY
+  #     stream_timeout: 30.0
+  #     timeout: 180.0
+  #     extra_headers:
+  #       User-Agent: opencode/1.18.16
 
-  - model_name: muse-spark-1.2-contributor-free
-    litellm_params:
-      model: openai/muse-spark-1.2-contributor-free
-      api_base: https://opencode.ai/zen/v1
-      api_key: os.environ/OPENCODE_ZEN_API_KEY
-      stream_timeout: 30.0
-      timeout: 180.0
+  # - model_name: muse-spark-1.2-contributor-free
+  #   litellm_params:
+  #     model: openai/muse-spark-1.2-contributor-free
+  #     api_base: https://opencode.ai/zen/v1
+  #     api_key: os.environ/OPENCODE_ZEN_API_KEY
+  #     stream_timeout: 30.0
+  #     timeout: 180.0
+  #     extra_headers:
+  #       User-Agent: opencode/1.18.16
 
-  - model_name: big-pickle
-    litellm_params:
-      model: openai/big-pickle
-      api_base: https://opencode.ai/zen/v1
-      api_key: os.environ/OPENCODE_ZEN_API_KEY
-      stream_timeout: 30.0
-      timeout: 180.0
+  # - model_name: big-pickle
+  #   litellm_params:
+  #     model: openai/big-pickle
+  #     api_base: https://opencode.ai/zen/v1
+  #     api_key: os.environ/OPENCODE_ZEN_API_KEY
+  #     stream_timeout: 30.0
+  #     timeout: 180.0
+  #     extra_headers:
+  #       User-Agent: opencode/1.18.16
 
   # --- Mistral Models ---
   # Note: all of the models from this provider respond quickly
-  - model_name: mistral-medium-latest
-    litellm_params:
-      model: mistral/mistral-medium-latest
-      api_key: os.environ/MISTRAL_API_KEY
-      stream_timeout: 30.0
-      timeout: 180.0
+  # Mistral has effectively eliminated their free API access (for now)
+  # - model_name: mistral-medium-latest
+  #   litellm_params:
+  #     model: mistral/mistral-medium-latest
+  #     api_key: os.environ/MISTRAL_API_KEY
+  #     stream_timeout: 30.0
+  #     timeout: 180.0
 
-  - model_name: mistral-large-latest
-    litellm_params:
-      model: mistral/mistral-large-latest
-      api_key: os.environ/MISTRAL_API_KEY
-      stream_timeout: 30.0
-      timeout: 180.0
+  # - model_name: mistral-large-latest
+  #   litellm_params:
+  #     model: mistral/mistral-large-latest
+  #     api_key: os.environ/MISTRAL_API_KEY
+  #     stream_timeout: 30.0
+  #     timeout: 180.0
 
   # =========================================================================
   # 2) UNIFIED ROUTER (TWO-STAGE PIPELINE)
@@ -107,9 +240,8 @@ model_list:
     litellm_params:
       # The callback (router_callback.py) intercepts every request and
       # rewrites the model
-      model: openai/deepseek-v4-flash-free
-      api_base: https://opencode.ai/zen/v1
-      api_key: os.environ/OPENCODE_ZEN_API_KEY
+      model: nvidia_nim/deepseek-ai/deepseek-v4-flash-0731
+      api_key: os.environ/NIM_API_KEY
       stream_timeout: 30.0
       timeout: 180.0
 
@@ -139,14 +271,14 @@ model_list:
 
   - model_name: lite-llm/think
     litellm_params:
-      model: nvidia_nim/moonshotai/kimi-k3
+      model: nvidia_nim/deepseek-ai/deepseek-v4-pro-0813
       api_key: os.environ/NIM_API_KEY
       stream_timeout: 30.0
       timeout: 180.0
 
   - model_name: lite-llm/longContext
     litellm_params:
-      model: nvidia_nim/moonshotai/kimi-k3
+      model: nvidia_nim/deepseek-ai/deepseek-v4-pro-0813
       api_key: os.environ/NIM_API_KEY
       stream_timeout: 30.0
       timeout: 180.0
@@ -166,8 +298,14 @@ model_list:
       timeout: 180.0
 
 litellm_settings:
-  #modify_params: true
-  #drop_params: true
+  # Fixes a bug in translating between an Anthropic client and an OpenAI provider
+  use_chat_completions_url_for_anthropic_messages: true
+  #convert_lm_reasoning_to_text: true # Forces reasoning tokens into standard text blocks
+  modify_params: true
+  drop_params: true
+  # Force-sanitize historical empty texts that cause agent loop crashes
+  #sanitize_input_messages: true 
+  #remove_empty_system_messages: true
 
   callbacks: ["router_callback.router_handler", "websearch_interception"]
   websearch_interception_params:
@@ -198,4 +336,4 @@ router_settings:
   num_retries: 0
   request_timeout: 30.0
   timeout: 180
-  fallbacks: [{"lite-llm/router": ["muse-spark-1.2-contributor-free", "nemotron-3-ultra-free", "mimo-v2.5-free", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "moonshotai/kimi-k3", "mistral-medium-latest", "big-pickle"]}, {"lite-llm/default": ["muse-spark-1.2-contributor-free", "nemotron-3-ultra-free", "mimo-v2.5-free", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "moonshotai/kimi-k3", "mistral-medium-latest", "big-pickle"]}, {"lite-llm/think": ["deepseek-ai/deepseek-v4-pro-0813", "muse-spark-1.2-contributor-free", "nemotron-3-ultra-free", "deepseek-ai/deepseek-v4-flash-0731", "mimo-v2.5-free", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "mistral-large-latest", "mistral-medium-latest", "big-pickle"]}, {"lite-llm/longContext": ["deepseek-ai/deepseek-v4-pro-0813", "muse-spark-1.2-contributor-free", "nemotron-3-ultra-free", "deepseek-ai/deepseek-v4-flash-0731", "mimo-v2.5-free", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]}, {"lite-llm/webSearch": ["gemini-3.1-flash-lite", "muse-spark-1.2-contributor-free", "mimo-v2.5-free", "nemotron-3-ultra-free", "deepseek-ai/deepseek-v4-flash-0731", "mistral-medium-latest", "big-pickle"]}, {"lite-llm/image": ["gemini-3.1-flash-lite", "muse-spark-1.2-contributor-free", "mimo-v2.5-free"]}, {"lite-llm/complexity": ["muse-spark-1.2-contributor-free", "nemotron-3-ultra-free", "mimo-v2.5-free", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "moonshotai/kimi-k3", "mistral-medium-latest", "big-pickle"]}]
+  fallbacks: [{"lite-llm/router": ["community/NamanSoni78/gpt-5.4-nano", "nemotron-3-super:cloud", "default", "fast"]}, {"lite-llm/default": ["community/NamanSoni78/gpt-5.4-nano", "nemotron-3-super:cloud", "default", "fast"]}, {"lite-llm/think": ["community/NamanSoni78/Glm-5.3-Thinking-Max", "community/NamanSoni78/nemotron-3-ultra-550b-a55b", "community/YoannDev90/kilocode-laguna-s-2.1:free", "nemotron-3-ultra:cloud", "deepseek-ai/deepseek-v4-flash-0731", "minimax-m2.7"]}, {"lite-llm/longContext": ["community/NamanSoni78/Glm-5.3-Thinking-Max", "community/NamanSoni78/nemotron-3-ultra-550b-a55b", "community/YoannDev90/kilocode-laguna-s-2.1:free", "nemotron-3-ultra:cloud", "deepseek-ai/deepseek-v4-flash-0731", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]}, {"lite-llm/webSearch": ["gemini-3.1-flash-lite", "community/NamanSoni78/gpt-5.4-nano", "nemotron-3-super:cloud", "default", "fast", "deepseek-ai/deepseek-v4-flash-0731"]}, {"lite-llm/image": ["gemini-3.1-flash-lite"]}, {"lite-llm/complexity": ["community/NamanSoni78/gpt-5.4-nano", "nemotron-3-super:cloud", "default", "fast"]}]
