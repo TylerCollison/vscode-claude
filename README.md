@@ -459,17 +459,17 @@ environment:
 **How it works:**
 1. The sync daemon (configured via `MR_PR_SYNC_INTERVAL`) polls GitHub (`gh pr list --assignee`) or GitLab (`glab mr list --assignee`) for open MRs/PRs assigned to `MR_PR_USER`.
 2. For each new MR/PR not in the seen-set, it sends a trigger to the dispatcher's unix socket (`/run/mr-pr-dispatch.sock`).
-3. The dispatcher (root) creates a worker container named `mr-pr-<slug>-<id>` with:
+3. The dispatcher (root) creates a worker container named `mr-pr-<slug>-<id>-<timestamp>` with:
    - `GIT_BRANCH_NAME` set to the MR/PR's branch
    - `MR_PR_ID` set to the MR/PR number
    - `PROMPT` set to the responder prompt (default or custom via `MR_PR_RESPONDER_PROMPT`)
    - `BEADS_DISPATCH=false`, `BEADS_ENABLED=false`, `ENABLE_SCOTTY=false`, `MR_PR_DISPATCH=false` (no recursion)
    - If the parent container has `HAPPIER_MODE` set (to `server` or `agent`), the worker receives `HAPPIER_MODE=agent` to enable web UI access via Happier
 4. The worker clones the repo, checks out the branch, and runs the prompt via Claude Code.
-5. Both daemons track seen MR/PR IDs in `/config/.mr-pr-dispatch/state.json` to avoid duplicates.
+5. The sync daemon tracks seen MR/PR IDs in `/config/.mr-pr-dispatch/seen.json` to avoid re-dispatching on every poll. The dispatcher itself does not deduplicate by MR/PR — each trigger (a new assignment, or a reassignment after being unassigned) dispatches a fresh worker, with the timestamp in the worker name guaranteeing a unique container/service name.
 
 **Automatic re-dispatch on unassign/reassign:**
-If an MR/PR becomes unassigned (e.g., the worker unassigns it after responding, as instructed by the default prompt), the sync daemon will no longer find it in the assigned list on the next poll. The daemon **automatically removes unassigned MRs/PRs from the seen-set**, allowing them to be re-dispatched if they are later reassigned or have new comments added. This enables the workflow where additional comments or responses can trigger a new worker run on the same MR/PR.
+If an MR/PR becomes unassigned (e.g., the worker unassigns it after responding, as instructed by the default prompt), the sync daemon will no longer find it in the assigned list on the next poll. The daemon **automatically removes unassigned MRs/PRs from the seen-set**, so that when the MR/PR is reassigned — typically because new feedback or comments were added — the sync daemon triggers the dispatcher again. The dispatcher then starts a **new worker** for that MR/PR (rather than skipping because a previous worker still exists), made possible by the timestamp-suffixed worker name. Re-dispatch happens only on this unassign→reassign transition; a continuously-assigned MR/PR is not re-dispatched on every poll.
 
 **Custom prompt example:**
 ```yaml
@@ -941,7 +941,7 @@ docker exec claude-dev curl -I http://localhost:3000
 - Verify the sync daemon is running: `docker exec claude-dev ps aux | grep mr-pr-sync`
 - Check the sync log: `docker exec claude-dev cat /tmp/mr-pr-dispatch.log` (shared log)
 - Confirm the unix socket exists: `docker exec claude-dev ls -la /run/mr-pr-dispatch.sock`
-- Inspect the seen-set state: `docker exec claude-dev cat /config/.mr-pr-dispatch/state.json`
+- Inspect the seen-set state: `docker exec claude-dev cat /config/.mr-pr-dispatch/seen.json`
 - List dispatched workers: `docker service ls --filter label=mr_pr.id` (swarm) or `docker ps --filter label=mr_pr.id` (local)
 - Test sync manually: `docker exec -u abc claude-dev gh pr list --assignee "$MR_PR_USER" --state open --json number,title,headRefName,url --repo "owner/repo"`
 - Ensure `MR_PR_DISPATCH=true`, `MR_PR_USER` is set, docker socket is mounted, and `GIT_REPO_URL` is set

@@ -25,7 +25,7 @@ import pwd
 import re
 import shutil
 import subprocess
-import time
+import datetime
 
 SOCKET_PATH = "/run/mr-pr-dispatch.sock"
 
@@ -40,10 +40,6 @@ class Config:
         self.responder_prompt = du.env("MR_PR_RESPONDER_PROMPT")
         # Placeholder for MR/PR ID in the prompt
         self.id_placeholder = du.env("MR_PR_ID_PLACEHOLDER", "{{MR_PR_ID}}")
-
-
-def state_path(cfg):
-    return os.path.join(cfg.state_dir, "state.json")
 
 
 def default_mr_pr_prompt(mr_pr_id, title, branch, repo_url, provider):
@@ -117,6 +113,27 @@ def compose_worker_env(parent_env, branch, repo_url, mr_pr_id, dispatch_prompt=N
     return env
 
 
+def worker_name(title, mr_pr_id):
+    """Derive a unique worker name from the MR/PR title, id, and a timestamp.
+
+    The date/time stamp suffix ensures distinct names when multiple workers are
+    dispatched for the same MR/PR (e.g. after it is unassigned and reassigned
+    with new feedback), so each worker gets a unique container/service name.
+    """
+    # Microsecond precision keeps names unique even when multiple workers for the
+    # same MR/PR are dispatched within the same second.
+    ts = datetime.datetime.now().strftime("%Y%m%d%H%M%S%f")
+    slug = du.slugify(title)
+    if slug:
+        base = "mr-pr-%s-%s" % (slug, mr_pr_id)
+    else:
+        base = "mr-pr-%s" % mr_pr_id
+    base = re.sub(r"[^a-zA-Z0-9]+", "-", base).strip("-").lower()
+    # Cap the slug portion so the timestamp (which guarantees uniqueness) always
+    # survives Docker's 128-char name limit (truncated to 120 here for safety).
+    return "%s-%s" % (base[:120 - len(ts) - 1], ts)
+
+
 def dispatch_mr_pr_worker(mr_pr_info, cfg, self_info):
     """Dispatch a worker for an MR/PR. Returns True when handled."""
     mr_pr_id = mr_pr_info["mr_pr_id"]
@@ -125,13 +142,7 @@ def dispatch_mr_pr_worker(mr_pr_info, cfg, self_info):
     repo_url = mr_pr_info["repo_url"]
     provider = mr_pr_info["provider"]
 
-    # Generate worker name
-    slug = du.slugify(title)
-    if slug:
-        worker = "mr-pr-%s-%s" % (slug, mr_pr_id)
-    else:
-        worker = "mr-pr-%s" % mr_pr_id
-    worker = re.sub(r"[^a-zA-Z0-9]+", "-", worker).strip("-").lower()[:120]
+    worker = worker_name(title, mr_pr_id)
 
     git_user = du.env("MR_PR_DISPATCH_GIT_USER") or du.get_workspace_owner(cfg.workspace)
 
@@ -155,10 +166,6 @@ def dispatch_mr_pr_worker(mr_pr_info, cfg, self_info):
                                   dispatch_prompt=dispatch_prompt)
 
     swarm = du.is_swarm_manager()
-    if du.worker_exists(worker, swarm):
-        du.log("Worker %s already exists for MR/PR #%s — skipping." % (worker, mr_pr_id))
-        return True  # treated as handled (dedup)
-
     if swarm:
         du.log("Swarm manager detected — dispatching service %s for MR/PR #%s (branch %s)"
             % (worker, mr_pr_id, branch))
@@ -181,20 +188,19 @@ def dispatch_mr_pr_worker(mr_pr_info, cfg, self_info):
     return True
 
 
-def dispatch_mr_pr(cfg, self_info, mr_pr_info, seen):
-    """Dispatch a worker for the MR/PR if not already seen."""
-    mr_pr_id = mr_pr_info["mr_pr_id"]
-    if mr_pr_id in seen:
-        return 0
+def dispatch_mr_pr(cfg, self_info, mr_pr_info):
+    """Dispatch a worker for the MR/PR.
 
+    Always dispatches, even when a worker already exists for the MR/PR, so that
+    new feedback added to an already-responded MR/PR triggers a fresh worker.
+    Worker names include a timestamp, so each dispatch is unique.
+    """
     if dispatch_mr_pr_worker(mr_pr_info, cfg, self_info):
-        seen.add(mr_pr_id)
-        du.save_state(state_path(cfg), seen)
         return 1
     return 0
 
 
-def run_daemon(cfg, self_info, seen):
+def run_daemon(cfg, self_info):
     """Listen on the unix socket; on each trigger, dispatch the MR/PR."""
     try:
         os.unlink(SOCKET_PATH)
@@ -239,7 +245,7 @@ def run_daemon(cfg, self_info, seen):
 
         du.log("MR/PR trigger received: #%s (%s)" % (mr_pr_info.get("mr_pr_id", "unknown"), mr_pr_info.get("title", "")))
         try:
-            dispatch_mr_pr(cfg, self_info, mr_pr_info, seen)
+            dispatch_mr_pr(cfg, self_info, mr_pr_info)
         except Exception as e:
             du.log("ERROR: unexpected error during MR/PR dispatch: %s" % str(e))
 
@@ -295,24 +301,20 @@ def main(argv):
         du.log("Using MR_PR_WORKER_IMAGE override: %s" % worker_image)
         self_info["image"] = worker_image
 
-    seen = du.load_state(state_path(cfg))
-
     du.ensure_safe_directory(cfg.workspace)
     du.copy_abc_git_credentials(cfg.workspace)
     du.configure_credential_helpers()
 
     if "--once" in argv:
-        n = dispatch_mr_pr(cfg, self_info, argv[1] if len(argv) > 1 else {}, seen)
-        du.save_state(state_path(cfg), seen)
+        n = dispatch_mr_pr(cfg, self_info, argv[1] if len(argv) > 1 else {})
         du.log("One-shot dispatch complete (%d dispatched)." % n)
         return 0
 
     if "--daemon" in argv:
-        return run_daemon(cfg, self_info, seen)
+        return run_daemon(cfg, self_info)
 
     # Default: run once
-    n = dispatch_mr_pr(cfg, self_info, {}, seen)
-    du.save_state(state_path(cfg), seen)
+    n = dispatch_mr_pr(cfg, self_info, {})
     du.log("One-shot dispatch complete (%d dispatched)." % n)
     return 0
 
