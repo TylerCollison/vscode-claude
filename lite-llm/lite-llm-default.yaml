@@ -4,6 +4,7 @@ model_list:
   # =========================================================================
 
   # --- Pollination Models ---
+  # These models are all generally quite fast (<2sec of latency in healthcheck)
   - model_name: community/NamanSoni78/Glm-5.3-Thinking-Max
     litellm_params:
       model: openai/community/NamanSoni78/Glm-5.3-Thinking-Max
@@ -20,15 +21,6 @@ model_list:
       stream_timeout: 30.0
       timeout: 180.0
 
-  # This model is currently not available
-  # - model_name: community/AkshayCoder48/poolside-laguna-s-2.1:free
-  #   litellm_params:
-  #     model: openai/community/AkshayCoder48/poolside-laguna-s-2.1:free
-  #     api_base: https://gen.pollinations.ai/v1
-  #     api_key: os.environ/POLLINATION_API_KEY
-  #     stream_timeout: 30.0
-  #     timeout: 180.0
-
   - model_name: community/NamanSoni78/nemotron-3-ultra-550b-a55b
     litellm_params:
       model: openai/community/NamanSoni78/nemotron-3-ultra-550b-a55b
@@ -36,33 +28,6 @@ model_list:
       api_key: os.environ/POLLINATION_API_KEY
       stream_timeout: 30.0
       timeout: 180.0
-
-  # This model is currently not available
-  # - model_name: community/AkshayCoder48/gemini-3.6-flash
-  #   litellm_params:
-  #     model: openai/community/AkshayCoder48/gemini-3.6-flash
-  #     api_base: https://gen.pollinations.ai/v1
-  #     api_key: os.environ/POLLINATION_API_KEY
-  #     stream_timeout: 30.0
-  #     timeout: 180.0
-
-  # This model is currently not available
-  # - model_name: community/AkshayCoder48/gemini-3.1-flash-lite
-  #   litellm_params:
-  #     model: openai/community/AkshayCoder48/gemini-3.1-flash-lite
-  #     api_base: https://gen.pollinations.ai/v1
-  #     api_key: os.environ/POLLINATION_API_KEY
-  #     stream_timeout: 30.0
-  #     timeout: 180.0
-
-  # This model is currently not available
-  # - model_name: community/AkshayCoder48/gemini-3-flash
-  #   litellm_params:
-  #     model: openai/community/AkshayCoder48/gemini-3-flash
-  #     api_base: https://gen.pollinations.ai/v1
-  #     api_key: os.environ/POLLINATION_API_KEY
-  #     stream_timeout: 30.0
-  #     timeout: 180.0
 
   - model_name: community/NamanSoni78/gpt-5.4-nano
     litellm_params:
@@ -72,14 +37,45 @@ model_list:
       stream_timeout: 30.0
       timeout: 180.0
 
-  # This model is currently not available
-  # - model_name: community/AkshayCoder48/kilo-auto-free
-  #   litellm_params:
-  #     model: openai/community/AkshayCoder48/kilo-auto-free
-  #     api_base: https://gen.pollinations.ai/v1
-  #     api_key: os.environ/POLLINATION_API_KEY
-  #     stream_timeout: 30.0
-  #     timeout: 180.0
+  - model_name: community/NamanSoni78/opus-5-max
+    litellm_params:
+      model: openai/community/NamanSoni78/opus-5-max
+      api_base: https://gen.pollinations.ai/v1
+      api_key: os.environ/POLLINATION_API_KEY
+      stream_timeout: 600.0
+      timeout: 600.0
+
+  - model_name: community/scriptsnsenses-sys/muse-spark-1.2-contributor-free
+    litellm_params:
+      model: openai/community/scriptsnsenses-sys/muse-spark-1.2-contributor-free
+      api_base: https://gen.pollinations.ai/v1
+      api_key: os.environ/POLLINATION_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  - model_name: community/scriptsnsenses-sys/glm-5.3-flash-free
+    litellm_params:
+      model: openai/community/scriptsnsenses-sys/glm-5.3-flash-free
+      api_base: https://gen.pollinations.ai/v1
+      api_key: os.environ/POLLINATION_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  - model_name: community/scriptsnsenses-sys/gpt-5.6-luna
+    litellm_params:
+      model: openai/community/scriptsnsenses-sys/gpt-5.6-luna
+      api_base: https://gen.pollinations.ai/v1
+      api_key: os.environ/POLLINATION_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  - model_name: community/iotserver24/deepseek-v4f
+    litellm_params:
+      model: openai/community/iotserver24/deepseek-v4f
+      api_base: https://gen.pollinations.ai/v1
+      api_key: os.environ/POLLINATION_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
 
   # --- Ollama Cloud Models ---
   # This endpoint is fairly slow
@@ -100,7 +96,7 @@ model_list:
       timeout: 180.0
 
   # --- Google AI Studio Models ---
-  # Note: all of the models from this provider respond quickly
+  # These models are all generally (<1sec of latency) fast but sometimes fairly slow (more than 1min of latency)
   - model_name: gemini-3.5-flash-lite
     litellm_params:
       model: gemini/gemini-3.5-flash-lite
@@ -116,6 +112,8 @@ model_list:
       timeout: 180.0
 
   # --- LLM7 Models ---
+  # These models are all generally quite fast (<2sec of latency in healthcheck)
+  # The default and fast model groups tend to be flaky
   - model_name: default
     litellm_params:
       model: openai/default
@@ -141,7 +139,7 @@ model_list:
       timeout: 180.0
 
   # --- Nvidia NIM Models ---
-  # Note: All of the models from this provider respond rather 
+  # Note: All of the models from this provider respond rather slowly, but it varies by model
   # Kimi is buggy in this harness; disabling for now
   # - model_name: moonshotai/kimi-k3
   #   litellm_params:
@@ -150,16 +148,26 @@ model_list:
   #     stream_timeout: 30.0
   #     timeout: 180.0
 
-  - model_name: deepseek-ai/deepseek-v4-pro-0813
+  # healthcheck latency of <1.5min
+  - model_name: z-ai/glm-5.3
     litellm_params:
-      model: nvidia_nim/deepseek-ai/deepseek-v4-pro-0813
+      model: nvidia_nim/z-ai/glm-5.3
       api_key: os.environ/NIM_API_KEY
       stream_timeout: 30.0
       timeout: 180.0
 
-  - model_name: deepseek-ai/deepseek-v4-flash-0731
+  # healthcheck latency of <10sec, but can be flaky
+  - model_name: z-ai/glm-5.3-flash
     litellm_params:
-      model: nvidia_nim/deepseek-ai/deepseek-v4-flash-0731
+      model: nvidia_nim/z-ai/glm-5.3-flash
+      api_key: os.environ/NIM_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+ 
+  # healthcheck latency of <30sec, but can be flaky
+  - model_name: nvidia/nemotron-3-ultra-550b-a55b
+    litellm_params:
+      model: nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b
       api_key: os.environ/NIM_API_KEY
       stream_timeout: 30.0
       timeout: 180.0
@@ -240,7 +248,7 @@ model_list:
     litellm_params:
       # The callback (router_callback.py) intercepts every request and
       # rewrites the model
-      model: nvidia_nim/deepseek-ai/deepseek-v4-flash-0731
+      model: nvidia_nim/deepseek-ai/deepseek-v4-pro-0813
       api_key: os.environ/NIM_API_KEY
       stream_timeout: 30.0
       timeout: 180.0
@@ -264,7 +272,7 @@ model_list:
 
   - model_name: lite-llm/default
     litellm_params:
-      model: nvidia_nim/deepseek-ai/deepseek-v4-flash-0731
+      model: nvidia_nim/deepseek-ai/deepseek-v4-pro-0813
       api_key: os.environ/NIM_API_KEY
       stream_timeout: 30.0
       timeout: 180.0
@@ -273,6 +281,13 @@ model_list:
     litellm_params:
       model: nvidia_nim/deepseek-ai/deepseek-v4-pro-0813
       api_key: os.environ/NIM_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  - model_name: lite-llm/ultra-think
+    litellm_params:
+      model: gemini/gemini-3.5-flash-lite
+      api_key: os.environ/GOOGLE_API_KEY
       stream_timeout: 30.0
       timeout: 180.0
 
@@ -334,6 +349,4 @@ router_settings:
 
   allowed_fails: 1
   num_retries: 0
-  request_timeout: 30.0
-  timeout: 180
-  fallbacks: [{"lite-llm/router": ["community/NamanSoni78/gpt-5.4-nano", "nemotron-3-super:cloud", "default", "fast"]}, {"lite-llm/default": ["community/NamanSoni78/gpt-5.4-nano", "nemotron-3-super:cloud", "default", "fast"]}, {"lite-llm/think": ["community/NamanSoni78/Glm-5.3-Thinking-Max", "community/NamanSoni78/nemotron-3-ultra-550b-a55b", "community/YoannDev90/kilocode-laguna-s-2.1:free", "nemotron-3-ultra:cloud", "deepseek-ai/deepseek-v4-flash-0731", "minimax-m2.7"]}, {"lite-llm/longContext": ["community/NamanSoni78/Glm-5.3-Thinking-Max", "community/NamanSoni78/nemotron-3-ultra-550b-a55b", "community/YoannDev90/kilocode-laguna-s-2.1:free", "nemotron-3-ultra:cloud", "deepseek-ai/deepseek-v4-flash-0731", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]}, {"lite-llm/webSearch": ["gemini-3.1-flash-lite", "community/NamanSoni78/gpt-5.4-nano", "nemotron-3-super:cloud", "default", "fast", "deepseek-ai/deepseek-v4-flash-0731"]}, {"lite-llm/image": ["gemini-3.1-flash-lite"]}, {"lite-llm/complexity": ["community/NamanSoni78/gpt-5.4-nano", "nemotron-3-super:cloud", "default", "fast"]}]
+  fallbacks: [{"lite-llm/router": ["lite-llm/default"]}, {"lite-llm/default": ["community/NamanSoni78/Glm-5.3-Thinking-Max", "community/scriptsnsenses-sys/muse-spark-1.2-contributor-free", "community/scriptsnsenses-sys/gpt-5.6-luna", "community/scriptsnsenses-sys/glm-5.3-flash-free", "community/iotserver24/deepseek-v4f", "community/YoannDev90/kilocode-laguna-s-2.1:free", "community/NamanSoni78/nemotron-3-ultra-550b-a55b", "minimax-m2.7", "z-ai/glm-5.3-flash", "nemotron-3-super:cloud", "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3", "community/NamanSoni78/gpt-5.4-nano", "default", "fast"]}, {"lite-llm/think": ["community/NamanSoni78/Glm-5.3-Thinking-Max", "community/scriptsnsenses-sys/muse-spark-1.2-contributor-free", "community/scriptsnsenses-sys/gpt-5.6-luna", "community/scriptsnsenses-sys/glm-5.3-flash-free", "community/iotserver24/deepseek-v4f", "z-ai/glm-5.3", "z-ai/glm-5.3-flash", "community/YoannDev90/kilocode-laguna-s-2.1:free", "community/NamanSoni78/nemotron-3-ultra-550b-a55b", "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "minimax-m2.7", "nemotron-3-super:cloud", "community/NamanSoni78/gpt-5.4-nano", "default", "fast"]}, {"lite-llm/ultra-think": ["community/NamanSoni78/opus-5-max", "lite-llm/think"]}, {"lite-llm/longContext": ["community/NamanSoni78/Glm-5.3-Thinking-Max", "community/scriptsnsenses-sys/muse-spark-1.2-contributor-free", "community/scriptsnsenses-sys/gpt-5.6-luna", "community/scriptsnsenses-sys/glm-5.3-flash-free", "community/iotserver24/deepseek-v4f", "z-ai/glm-5.3", "z-ai/glm-5.3-flash", "community/YoannDev90/kilocode-laguna-s-2.1:free", "community/NamanSoni78/opus-5-max"]}, {"lite-llm/webSearch": ["gemini-3.1-flash-lite", "lite-llm/default"]}, {"lite-llm/image": ["gemini-3.1-flash-lite", "z-ai/glm-5.3-flash"]}, {"lite-llm/complexity": ["lite-llm/default"]}]
