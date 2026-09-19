@@ -1,0 +1,51 @@
+#!/usr/bin/with-contenv bash
+# Manual trigger for the Beads Dispatch daemon.
+# Connects to the unix socket /run/beads-dispatch.sock and sends a trigger
+# to make the dispatcher check for ready tasks and spawn workers.
+#
+# Usage: dispatch-beads
+
+set -euo pipefail
+
+SOCKET_PATH="/run/beads-dispatch.sock"
+TRIGGER="manual"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+}
+
+# Check if socket exists
+if [ ! -S "$SOCKET_PATH" ]; then
+    log "ERROR: Beads dispatch socket not found at $SOCKET_PATH"
+    log "The beads dispatcher daemon is not running."
+    log "Enable it with BEADS_DISPATCH=true or check /tmp/beads-dispatch.log for errors."
+    exit 1
+fi
+
+# Send trigger to the socket
+log "Sending manual trigger to beads dispatch daemon..."
+python3 - <<'PY'
+import socket
+import sys
+
+sock_path = "/run/beads-dispatch.sock"
+trigger = "manual"
+
+try:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(1.0)
+    s.connect(sock_path)
+    s.sendall(trigger.encode())
+    s.close()
+    print("Trigger sent successfully. Check /tmp/beads-dispatch.log for results.")
+    sys.exit(0)
+except socket.timeout:
+    print("ERROR: Connection to beads dispatch daemon timed out", file=sys.stderr)
+    sys.exit(1)
+except ConnectionRefusedError:
+    print("ERROR: Beads dispatch daemon refused connection (not running?)", file=sys.stderr)
+    sys.exit(1)
+except Exception as e:
+    print(f"ERROR: Failed to send trigger: {e}", file=sys.stderr)
+    sys.exit(1)
+PY

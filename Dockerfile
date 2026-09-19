@@ -1,3 +1,29 @@
+# ── Stage: build bead-me-up-scotty (Beads web UI) ────────────────────────────
+# Next.js 16 standalone server that shells out to the `bd` CLI. Built in an
+# Alpine stage (matching the upstream project's own Dockerfile), then the
+# standalone output is copied into the final image. Pinned to a commit SHA
+# for reproducible builds.
+FROM node:26.4.0-alpine AS scotty-builder
+ARG SCOTTY_COMMIT=e26e446cba697a522ecceabdeeb11dc99239a071
+RUN apk add --no-cache git
+WORKDIR /scotty
+RUN git clone https://github.com/brendan-appstart/bead-me-up-scotty.git . \
+    && git checkout "${SCOTTY_COMMIT}"
+RUN npm ci
+# Standalone output is opt-in (see next.config.ts); local `next start` flows
+# keep the default output.
+ENV NEXT_STANDALONE=1
+RUN npm run build
+
+# ── Stage: full eleventy tree for the showcase publisher ─────────────────────
+# The app locates node_modules/@11ty/eleventy/cmd.cjs by scanning the
+# filesystem — it is deliberately never imported, so Next's standalone output
+# tracing only includes a PARTIAL copy. Install the full tree here and copy it
+# into the final image (see the rm+COPY below). Keep in sync with package.json.
+FROM node:26.4.0-alpine AS scotty-eleventy
+WORKDIR /eleventy
+RUN npm install --no-save @11ty/eleventy@3.1.6
+
 FROM lscr.io/linuxserver/code-server:latest
 
 # Enable Docker BuildKit for faster builds
@@ -16,6 +42,9 @@ ENV CLAUDE_CODE_SUBAGENT_MODEL="lite-llm/router"
 
 # Configure Happier default environment variables
 ENV HAPPIER_CACHE_DIR=/config/.cache
+ENV NODE_TLS_REJECT_UNAUTHORIZED=0
+# Add /usr/local/bin to PYTHONPATH so dispatch_utils can be imported
+ENV PYTHONPATH=/usr/local/bin:$PYTHONPATH
 
 # Install dependencies
 RUN apt-get update && apt-get install -y \
@@ -67,6 +96,11 @@ RUN npm install -g @happier-dev/relay-server@dev
 
 # Install the Happier CLI (provides happier, happier daemon, auth, etc.)
 RUN npm install -g @happier-dev/cli@dev
+
+# Install Beads — distributed graph issue tracker for AI agents
+# Uses the official install script which handles checksum verification,
+# platform detection, and places the binary in /usr/local/bin.
+RUN curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh | bash
 
 # Strip unused platform-specific binaries from happier CLI dependencies
 # — macOS/Windows binaries are not needed in this Linux container
@@ -132,10 +166,25 @@ RUN python3 -m venv /opt/build-env-venv \
     && ln -sf /opt/build-env-venv/bin/build-env /usr/local/bin/build-env
 
 # Install LiteLLM along with proxy features
-RUN pip install --break-system-packages 'litellm[proxy]' 'semantic-router'
+RUN pip install --break-system-packages \
+  'litellm[proxy]' \
+  'fastapi' \
+  'semantic-router' \
+  'uvicorn' 'appdirs' 'backoff' 'pyyaml' 'rq'
 
 # Copy LiteLLM config files and custom routing callback
 COPY lite-llm/ /lite-llm/
+
+# Install the Beads web UI (bead-me-up-scotty) — standalone Next.js server
+# that shells out to the `bd` CLI. Runs as abc on /opt/bead-me-up-scotty.
+COPY --from=scotty-builder /scotty/.next/standalone /opt/bead-me-up-scotty
+COPY --from=scotty-builder /scotty/.next/static /opt/bead-me-up-scotty/.next/static
+COPY --from=scotty-builder /scotty/public /opt/bead-me-up-scotty/public
+# Drop the partial @11ty/eleventy that Next's tracing put into standalone (it
+# would shadow the complete tree below), then provide the full eleventy install
+# at /node_modules where the app's upward filesystem search can find it.
+RUN rm -rf /opt/bead-me-up-scotty/node_modules/@11ty
+COPY --from=scotty-eleventy /eleventy/node_modules /node_modules
 
 # Copy startup scripts to root directory
 COPY configure-code-server-theme.sh /92-configure-code-server-theme
@@ -150,18 +199,41 @@ COPY configure-threads-settings.sh /100-configure-threads-settings
 COPY start-claude-threads.sh /101-start-claude-threads
 COPY start-happier.sh /102-start-happier
 COPY configure-buildx.sh /103-configure-buildx
+COPY configure-beads.sh /104-configure-beads
+COPY start-scotty.sh /105-start-scotty
+COPY start-beads-dispatch.sh /106-start-beads-dispatch
+COPY start-beads-sync.sh /107-start-beads-sync
+COPY start-prompt-session.sh /108-start-prompt-session
+COPY start-mr-pr-sync.sh /109-start-mr-pr-sync
+COPY start-mr-pr-dispatch.sh /110-start-mr-pr-dispatch
+COPY shutdown.sh /111-shutdown
 COPY happier-tls-tunnel.js /app/happier-tls-tunnel.js
+
+# Install the Beads dispatch watcher (dispatches a worker container/service when a task becomes ready)
+COPY beads-dispatch/beads_dispatch.py /usr/local/bin/beads-dispatch
+COPY beads-dispatch/dispatch_utils.py /usr/local/bin/dispatch_utils.py
+
+# Install the MR/PR responder dispatcher
+COPY mr_pr_dispatch.py /usr/local/bin/mr_pr_dispatch.py
 
 # Copy master startup script to cont-init.d (so it runs automatically)
 COPY master-startup.sh /etc/cont-init.d/90-master-startup
 
+# Copy shutdown script to bin (so it can be called as "shutdown")
+COPY shutdown.sh /usr/local/bin/shutdown
+
 # Copy litellm-health-check script to bin
 COPY litellm-health-check.py /usr/local/bin/litellm-health-check
+
+# Copy dispatch-beads command to bin
+COPY dispatch-beads /usr/local/bin/dispatch-beads
 
 # Set execute permissions
 RUN chmod +x /92-configure-code-server-theme \
     /93-git-repo-setup \
     /usr/local/bin/litellm-health-check \
+    /usr/local/bin/shutdown \
+    /usr/local/bin/dispatch-beads \
     /94-combine-markdowns \
     /95-configure-claude-skip-onboarding \
     /96-start-lite-llm \
@@ -172,7 +244,17 @@ RUN chmod +x /92-configure-code-server-theme \
     /101-start-claude-threads \
     /102-start-happier \
     /103-configure-buildx \
-    /etc/cont-init.d/90-master-startup
+    /104-configure-beads \
+    /105-start-scotty \
+    /106-start-beads-dispatch \
+    /107-start-beads-sync \
+    /109-start-mr-pr-sync \
+    /110-start-mr-pr-dispatch \
+    /111-shutdown \
+    /108-start-prompt-session \
+    /usr/local/bin/beads-dispatch \
+    /usr/local/bin/dispatch_utils.py \
+    /usr/local/bin/mr_pr_dispatch.py
 
 # Remove build toolchain packages no longer needed at runtime
 # (gcc, g++, binutils, and their dev headers were only needed to compile
