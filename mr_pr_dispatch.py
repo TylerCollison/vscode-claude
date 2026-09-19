@@ -54,7 +54,7 @@ def default_mr_pr_prompt(mr_pr_id, title, branch, repo_url, provider):
         cmd_prefix = "mr"
 
     return (
-        "You are tasked with reviewing and responding to a %s.\n"
+        "You are tasked with addressing a %s.\n"
         "\n"
         "Context:\n"
         "- %s ID: %s\n"
@@ -65,7 +65,7 @@ def default_mr_pr_prompt(mr_pr_id, title, branch, repo_url, provider):
         "Instructions:\n"
         "1. Use the `%s %s` commands to interact with the %s.\n"
         "2. First, examine the current state of the %s, including its description and any existing comments.\n"
-        "3. **If there are NO comments yet**:\n"
+        "3. **If there are NO comments**:\n"
         "   - Review the code changes thoroughly.\n"
         "   - Provide constructive feedback by adding comments directly on the %s.\n"
         "   - Suggest improvements or ask clarifying questions where necessary.\n"
@@ -75,10 +75,10 @@ def default_mr_pr_prompt(mr_pr_id, title, branch, repo_url, provider):
         "   - If a comment is a question or doesn't require code: Reply to the comment directly using the CLI.\n"
         "   - Ensure you acknowledge or address every piece of feedback.\n"
         "5. Your goal is to move the %s toward being ready for merge.\n"
-        "6. After responding, unassign the %s to indicate you have responded.\n"
+        "6. After addressing the %s, unassign the %s to indicate you have addressed it.\n"
         "\n"
         "Use the appropriate CLI tools as needed."
-    ) % (id_label, id_label, mr_pr_id, title, branch, repo_url, cli, cmd_prefix, id_label, id_label, id_label, id_label, id_label)
+    ) % (id_label, id_label, mr_pr_id, title, branch, repo_url, cli, cmd_prefix, id_label, id_label, id_label, id_label, id_label, id_label)
 
 
 def compose_worker_env(parent_env, branch, repo_url, mr_pr_id, dispatch_prompt=None):
