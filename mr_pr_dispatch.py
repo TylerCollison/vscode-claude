@@ -130,8 +130,8 @@ def worker_name(title, mr_pr_id):
         base = "mr-pr-%s" % mr_pr_id
     base = re.sub(r"[^a-zA-Z0-9]+", "-", base).strip("-").lower()
     # Cap the slug portion so the timestamp (which guarantees uniqueness) always
-    # survives Docker's 128-char name limit (truncated to 120 here for safety).
-    return "%s-%s" % (base[:120 - len(ts) - 1], ts)
+    # survives Docker Swarm's 63-char service name limit.
+    return "%s-%s" % (base[:63 - len(ts) - 1], ts)
 
 
 def dispatch_mr_pr_worker(mr_pr_info, cfg, self_info):

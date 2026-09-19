@@ -63,7 +63,7 @@ def test_worker_name_falls_back_to_id_only_when_title_empty():
 def test_worker_name_capped_and_timestamp_always_preserved():
     # A very long title must not cause the timestamp suffix to be truncated away.
     name = md.worker_name("A" * 300, "123")
-    assert len(name) <= 120
+    assert len(name) <= 63
     assert re.search(r"-\d{20}$", name), name
 
 
