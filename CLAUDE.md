@@ -40,3 +40,28 @@ docker run --rm test-container
 Ensure all tests pass before committing changes.
 
 Once all tests pass and the changes are verified, commit and push the changes.
+
+## Container Registry
+
+After successful testing and verification, push the working container to the container registry at `registry.home.com`. Build the container with a tag following the format:
+
+```
+registry.home.com/system-utilities/container-registry/vscode-claude:<version>-amd64
+```
+
+Where `<version>` is a bump of the patch octet over the latest version in the `registry.home.com` container registry.
+
+Authenticate with the container registry using the `GITLAB_TOKEN` and `GITLAB_USER` environment variables:
+
+```bash
+# Login to the container registry
+echo "$GITLAB_TOKEN" | docker login registry.home.com -u "$GITLAB_USER" --password-stdin
+
+# Build with the proper tag (replace <version> with the bumped patch version)
+docker build -t registry.home.com/system-utilities/container-registry/vscode-claude:<version>-amd64 .
+
+# Push to the registry
+docker push registry.home.com/system-utilities/container-registry/vscode-claude:<version>-amd64
+```
+
+Ensure the container pushes successfully before considering the release complete.
