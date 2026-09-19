@@ -39,6 +39,13 @@ STARTUP_SCRIPTS=(
     "/101-start-claude-threads"
     "/102-start-happier"
     "/103-configure-buildx"
+    "/104-configure-beads"
+    "/105-start-scotty"
+    "/106-start-beads-dispatch"
+    "/107-start-beads-sync"
+    "/108-start-prompt-session"
+    "/110-start-mr-pr-dispatch"
+    "/109-start-mr-pr-sync"
 )
 
 log "Starting master startup sequence..."

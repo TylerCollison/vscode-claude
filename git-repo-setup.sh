@@ -4,6 +4,7 @@
 # - GIT_REPO_URL: Repository URL (required)
 # - DEFAULT_WORKSPACE: Target directory (optional, defaults to /workspace)
 # - GIT_BRANCH_NAME: Branch name (optional, generates procedural name if not specified)
+# - GIT_CHECKOUT_BASE_BRANCH: Base branch to create new branch from if target branch doesn't exist (optional, defaults to default branch/HEAD)
 
 set -euo pipefail
 
@@ -78,6 +79,7 @@ fi
 # Optional environment variables with defaults
 DEFAULT_WORKSPACE="${DEFAULT_WORKSPACE:-/workspace}"
 GIT_BRANCH_NAME="${GIT_BRANCH_NAME:-}"
+GIT_CHECKOUT_BASE_BRANCH="${GIT_CHECKOUT_BASE_BRANCH:-}"
 
 # If no branch name specified, generate procedural name
 if [ -z "$GIT_BRANCH_NAME" ]; then
@@ -101,6 +103,9 @@ fi
 log "Preparing to clone repository:"
 log "  URL: $GIT_REPO_URL"
 log "  Branch: $GIT_BRANCH_NAME"
+if [ -n "$GIT_CHECKOUT_BASE_BRANCH" ]; then
+    log "  Base branch (for new branch creation): $GIT_CHECKOUT_BASE_BRANCH"
+fi
 log "  Target: $TARGET_DIR"
 
 # Clone repository
@@ -127,8 +132,18 @@ if branch_exists "$TARGET_DIR" "$GIT_BRANCH_NAME"; then
         error_exit "Failed to checkout branch '$GIT_BRANCH_NAME'"
     fi
 else
-    # Branch doesn't exist, create new branch from current HEAD
+    # Branch doesn't exist, create new branch
     log "Branch '$GIT_BRANCH_NAME' does not exist, creating new branch..."
+
+    # If GIT_CHECKOUT_BASE_BRANCH is set, check it out first
+    if [ -n "$GIT_CHECKOUT_BASE_BRANCH" ]; then
+        log "Checking out base branch '$GIT_CHECKOUT_BASE_BRANCH' before creating new branch..."
+        if ! git checkout "$GIT_CHECKOUT_BASE_BRANCH"; then
+            error_exit "Failed to checkout base branch '$GIT_CHECKOUT_BASE_BRANCH'"
+        fi
+    fi
+
+    # Create new branch from current HEAD (which is either the base branch or default branch)
     if ! git checkout -b "$GIT_BRANCH_NAME"; then
         error_exit "Failed to create branch '$GIT_BRANCH_NAME'"
     fi
