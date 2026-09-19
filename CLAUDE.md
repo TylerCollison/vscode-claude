@@ -38,3 +38,5 @@ docker run --rm test-container
 ```
 
 Ensure all tests pass before committing changes.
+
+Once all tests pass and the changes are verified, commit and push the changes.
