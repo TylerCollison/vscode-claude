@@ -27,9 +27,9 @@ fi
 
 log "Configuring code-server theme: $VSCODE_THEME"
 
-# code-server stores user settings under ~/.local/share/code-server/User/settings.json.
-# The linuxserver image runs code-server as the abc user (HOME=/config).
-SETTINGS_DIR="/config/.local/share/code-server/User"
+# code-server is started with --user-data-dir /config/data in the linuxserver image.
+# Settings are stored under /config/data/User/settings.json.
+SETTINGS_DIR="/config/data/User"
 SETTINGS_FILE="$SETTINGS_DIR/settings.json"
 
 mkdir -p "$SETTINGS_DIR"
