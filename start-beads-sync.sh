@@ -109,8 +109,8 @@ run_sync() {
     done
     log "Sync cycle completed"
 
-    # Trigger the beads dispatcher if enabled
-    if [[ "${BEADS_DISPATCH:-}" == "true" ]]; then
+    # Trigger the beads dispatcher if enabled (requires both BEADS_DISPATCH and BEADS_SYNC_DISPATCH)
+    if [[ "${BEADS_DISPATCH:-}" == "true" && "${BEADS_SYNC_DISPATCH:-}" == "true" ]]; then
         log "Triggering Beads dispatcher..."
         python3 -c '
 import socket

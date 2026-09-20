@@ -20,23 +20,53 @@ du = importlib.util.module_from_spec(UTIL_SPEC)
 UTIL_SPEC.loader.exec_module(du)
 
 
-def test_worker_name_basic():
-    # worker name is derived from the issue title + id (not the parent)
-    assert bd.worker_name({"id": "probe-n5h", "title": "Update README"}, "parent") == "update-readme-probe-n5h"
+def test_worker_name_includes_timestamp():
+    # worker name includes a timestamp suffix for uniqueness
+    name = bd.worker_name({"id": "probe-n5h", "title": "Update README"}, "parent")
+    # Format: base-timestamp where base is slugified title + issue id
+    assert name.startswith("beads-update-readme-probe-n5h-")
+    # Timestamp suffix should be 20 digits (YYYYMMDDHHMMSSffffff)
+    suffix = name.split("-")[-1]
+    assert suffix.isdigit()
+    assert len(suffix) == 20
 
 
 def test_worker_name_sanitizes_invalid_chars():
     # underscores/dots/uppercase are normalized; safe for containers and services
     name = bd.worker_name({"id": "probe-n5h", "title": "Task A.B!"}, "vsclaude-code")
-    assert name == "task-a-b-probe-n5h"
+    assert name.startswith("beads-task-a-b-probe-n5h-")
+    suffix = name.split("-")[-1]
+    assert suffix.isdigit()
+    assert len(suffix) == 20
     assert not name.startswith("-")
     assert not name.endswith("-")
 
 
 def test_worker_name_fallback_to_parent_when_title_empty():
-    # empty / non-slug-able title falls back to <parent>-<issue-id>
-    assert bd.worker_name({"id": "x", "title": ""}, "claude-dev") == "claude-dev-x"
-    assert bd.worker_name({"id": "x", "title": "!!!"}, "-bad-.parent") == "bad-parent-x"
+    # empty / non-slug-able title falls back to <parent>-<issue-id> with timestamp
+    name = bd.worker_name({"id": "x", "title": ""}, "claude-dev")
+    assert name.startswith("beads-claude-dev-x-")
+    suffix = name.split("-")[-1]
+    assert suffix.isdigit()
+    assert len(suffix) == 20
+
+    name = bd.worker_name({"id": "x", "title": "!!!"}, "-bad-.parent")
+    assert name.startswith("beads-bad-parent-x-")
+    suffix = name.split("-")[-1]
+    assert suffix.isdigit()
+    assert len(suffix) == 20
+
+
+def test_worker_name_respects_swarm_length_limit():
+    # Total length should not exceed 63 characters (Docker Swarm service name limit)
+    # Test with a very long title
+    long_title = "a" * 100
+    name = bd.worker_name({"id": "probe-n5h", "title": long_title}, "parent")
+    assert len(name) <= 63
+    # Timestamp should always be preserved
+    suffix = name.split("-")[-1]
+    assert suffix.isdigit()
+    assert len(suffix) == 20
 
 
 def test_slugify():
@@ -221,19 +251,6 @@ def test_find_free_host_port_skips_used():
     assert port == 8003
 
 
-def test_install_post_commit_hook_backs_up_existing():
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = os.path.join(tmp, "repo")
-        os.makedirs(os.path.join(repo, ".git", "hooks"))
-        existing = os.path.join(repo, ".git", "hooks", "post-commit")
-        with open(existing, "w") as fh:
-            fh.write("#!/bin/sh\necho existing\n")
-        assert bd.install_post_commit_hook(repo, socket_path="/tmp/test-dispatch.sock") is True
-        assert os.path.exists(existing + ".beads-dispatch.bak")
-        with open(existing) as fh:
-            hook = fh.read()
-        assert "test-dispatch.sock" in hook
-        assert "/tmp/test-dispatch.sock" in hook
 
 
 def test_git_env_sets_terminal_prompt_off():

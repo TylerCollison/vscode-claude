@@ -51,6 +51,7 @@ import re
 import shutil
 import subprocess
 import time
+import datetime
 
 SOCKET_PATH = "/run/beads-dispatch.sock"
 
@@ -174,20 +175,25 @@ def derive_branch_name(issue, prefix):
 
 
 def worker_name(issue, parent_name):
-    """Derive the worker name/hostname from the issue title + id.
+    """Derive a unique worker name from the issue title, id, and a timestamp.
 
-    Format: <slugified-title>-<issue-id> (e.g. 'update-readme-workspace-4yd').
-    Falls back to <parent>-<issue-id> when the title has no slug-able content.
-    Safe for both container and swarm service names: lowercase, digits, '-'.
+    The date/time stamp suffix ensures distinct names when multiple workers are
+    dispatched for the same issue (e.g. after re-dispatch), so each worker gets
+    a unique container/service name.
     """
+    # Microsecond precision keeps names unique even when multiple workers for the
+    # same issue are dispatched within the same second.
+    ts = datetime.datetime.now().strftime("%Y%m%d%H%M%S%f")
     issue_id = issue["id"]
     slug = du.slugify(issue.get("title", ""))
     if slug:
-        name = "%s-%s" % (slug, issue_id)
+        base = "beads-%s-%s" % (slug, issue_id)
     else:
-        name = "%s-%s" % (parent_name, issue_id)
-    name = re.sub(r"[^a-zA-Z0-9]+", "-", name).strip("-").lower()
-    return (name or "beads-worker")[:120]
+        base = "beads-%s-%s" % (parent_name, issue_id)
+    base = re.sub(r"[^a-zA-Z0-9]+", "-", base).strip("-").lower()
+    # Cap the base portion so the timestamp (which guarantees uniqueness) always
+    # survives Docker Swarm's 63-char service name limit.
+    return "%s-%s" % (base[:63 - len(ts) - 1], ts)
 
 
 def default_dispatch_prompt(issue_id, branch, repo_url):
@@ -278,60 +284,6 @@ def compose_worker_env(parent_env, branch, repo_url, beads_remote=None, dispatch
 
 
 
-def effective_hooks_dir(workspace):
-    """Return the git hooks dir for the workspace, honoring core.hooksPath (set by beads)."""
-    if os.path.isdir(os.path.join(workspace, ".git")):
-        rc, out, _ = du.run(["git", "-C", workspace, "config", "--get", "core.hooksPath"])
-        if rc == 0 and out:
-            hooks = out if os.path.isabs(out) else os.path.join(workspace, out)
-            if os.path.isdir(hooks):
-                return hooks
-    return os.path.join(workspace, ".git", "hooks")
-
-
-def install_post_commit_hook(workspace, socket_path=SOCKET_PATH):
-    """Install a post-commit hook that pings the dispatcher socket (non-blocking).
-
-    Installs into the effective hooks dir (beads sets core.hooksPath to
-    .beads/hooks), backing up any existing post-commit.
-    """
-    if not os.path.isdir(os.path.join(workspace, ".git")):
-        return False
-    hooks_dir = effective_hooks_dir(workspace)
-    os.makedirs(hooks_dir, exist_ok=True)
-    hook_path = os.path.join(hooks_dir, "post-commit")
-
-    backup = hook_path + ".beads-dispatch.bak"
-    if os.path.exists(hook_path) and not os.path.exists(backup):
-        shutil.copy2(hook_path, backup)
-
-    # Use absolute path to python3 to avoid PATH issues in git hooks
-    python3_path = shutil.which("python3") or "/usr/bin/python3"
-    hook = """#!/bin/sh
-# Beads Dispatch post-commit hook (installed by beads-dispatch).
-# Pings the dispatcher daemon so it can create workers for ready tasks.
-# Non-blocking; failures are ignored so commits are never slowed or broken.
-%(python)s - <<'PY'
-import socket
-try:
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(0.5)
-    s.connect("%(sock)s")
-    s.sendall(b"commit")
-    s.close()
-except Exception:
-    pass
-PY
-""" % {"sock": socket_path, "python": python3_path}
-    try:
-        with open(hook_path, "w") as fh:
-            fh.write(hook)
-        os.chmod(hook_path, 0o755)
-    except OSError as e:
-        du.log("WARNING: could not install post-commit hook: %s" % e)
-        return False
-    du.log("Installed post-commit hook at %s" % hook_path)
-    return True
 
 
 # --------------------------------------------------------------------------- ports
@@ -508,13 +460,11 @@ def main(argv):
     du.configure_credential_helpers()
 
     if "--once" in argv:
-        installed = install_post_commit_hook(cfg.workspace)
         n = dispatch_all(cfg, self_info, seen)
         du.save_state(state_path(cfg), seen)
-        du.log("One-shot dispatch complete (%d dispatched, hook installed=%s)." % (n, installed))
+        du.log("One-shot dispatch complete (%d dispatched)." % n)
         return 0
 
-    install_post_commit_hook(cfg.workspace)
     return run_daemon(cfg, self_info, seen)
 
 

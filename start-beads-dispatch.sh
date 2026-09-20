@@ -1,10 +1,10 @@
 #!/usr/bin/with-contenv bash
 # Start the Beads Dispatch daemon.
-# Opt-in via BEADS_DISPATCH=true. Installs a git post-commit hook in the
-# workspace repo and runs a root daemon that listens on a unix socket. On
-# every commit the hook pings the socket; the daemon checks bd for ready
-# tasks and dispatches a worker (swarm service or local container) for each,
-# creating the task branch off the current HEAD and pushing it.
+# Opt-in via BEADS_DISPATCH=true. Runs a root daemon that listens on a unix
+# socket. The daemon can be triggered via the socket (e.g. by the Beads sync
+# daemon when BEADS_SYNC_DISPATCH=true) to check bd for ready tasks and
+# dispatch a worker (swarm service or local container) for each, creating the
+# task branch off the current HEAD and pushing it.
 #
 # Runs as ROOT: dispatch shells out to `docker` via the mounted host socket,
 # which is only accessible to root/group 989 in this image.
