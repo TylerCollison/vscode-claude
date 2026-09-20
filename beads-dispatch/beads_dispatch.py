@@ -393,8 +393,7 @@ def dispatch_worker(issue, cfg, self_info):
         du.log("Local mode — dispatching container %s for %s (branch %s)"
             % (worker, issue_id, branch))
         rc, out, err = du.dispatch_local(worker, self_info["image"], env_vars, port,
-                                      cfg.worker_port, self_info.get("restart_policy", ""),
-                                      issue_id, net=self_info)
+                                      cfg.worker_port, issue_id, net=self_info)
 
     if rc != 0:
         du.log("ERROR: dispatch failed for %s: %s" % (issue_id, err or out))

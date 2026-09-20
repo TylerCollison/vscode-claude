@@ -407,13 +407,13 @@ def add_network_args(cmd, net, swarm=False):
     return cmd
 
 
-def dispatch_local(worker, image, env, port, worker_port, restart_policy, issue_id, net=None, labels=None):
+def dispatch_local(worker, image, env, port, worker_port, issue_id, net=None, labels=None):
     cmd = ["docker", "run", "-d", "--name", worker, "--hostname", worker]
     if labels:
         for k, v in labels.items():
             cmd += ["-l", f"{k}={v}"]
-    if restart_policy and restart_policy not in ("", "no"):
-        cmd += ["--restart", restart_policy]
+    # Workers should never restart once they shut down
+    cmd += ["--restart", "no"]
     for e in env:
         cmd += ["-e", e]
     cmd += ["-v", f"{DOCKER_SOCK_SOURCE}:{DOCKER_SOCK_TARGET}"]
@@ -429,7 +429,7 @@ def dispatch_swarm(worker, image, env, port, worker_port, issue_id, net=None, la
         "--name", worker,
         "--hostname", worker,
         "--detach",
-        "--restart-condition", "any",
+        "--restart-condition", "none",
     ]
     if labels:
         for k, v in labels.items():

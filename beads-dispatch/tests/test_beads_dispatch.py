@@ -9,9 +9,15 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# Load beads_dispatch module
 SPEC = importlib.util.spec_from_file_location("beads_dispatch", os.path.join(HERE, "..", "beads_dispatch.py"))
 bd = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(bd)
+
+# Load dispatch_utils module for utility functions
+UTIL_SPEC = importlib.util.spec_from_file_location("dispatch_utils", os.path.join(HERE, "..", "dispatch_utils.py"))
+du = importlib.util.module_from_spec(UTIL_SPEC)
+UTIL_SPEC.loader.exec_module(du)
 
 
 def test_worker_name_basic():
@@ -34,10 +40,10 @@ def test_worker_name_fallback_to_parent_when_title_empty():
 
 
 def test_slugify():
-    assert bd.slugify("Task A") == "task-a"
-    assert bd.slugify("HELLO, World!!") == "hello-world"
-    assert bd.slugify("") == ""
-    assert bd.slugify("foo---bar") == "foo-bar"
+    assert du.slugify("Task A") == "task-a"
+    assert du.slugify("HELLO, World!!") == "hello-world"
+    assert du.slugify("") == ""
+    assert du.slugify("foo---bar") == "foo-bar"
 
 
 def test_derive_branch_name_with_title():
@@ -95,18 +101,21 @@ def test_dispatch_local_sets_hostname_and_socket_mount():
     def fake_run(cmd, **kwargs):
         captured["cmd"] = cmd
         return 0, "created", ""
-    orig = bd.run
-    bd.run = fake_run
+    orig = du.run
+    du.run = fake_run
     try:
-        bd.dispatch_local("myparent-probe-n5h", "img", ["A=B"], 8000, 8443, "", "probe-n5h")
+        du.dispatch_local("myparent-probe-n5h", "img", ["A=B"], 8000, 8443, "probe-n5h")
     finally:
-        bd.run = orig
+        du.run = orig
     cmd = captured["cmd"]
     assert cmd[:3] == ["docker", "run", "-d"]
     assert "--hostname" in cmd
     assert cmd[cmd.index("--hostname") + 1] == "myparent-probe-n5h"
     assert "--name" in cmd
     assert cmd[cmd.index("--name") + 1] == "myparent-probe-n5h"
+    # Workers should never restart
+    assert "--restart" in cmd
+    assert cmd[cmd.index("--restart") + 1] == "no"
     # the ONLY volume mount is the docker socket
     mount_idx = [i for i, c in enumerate(cmd) if c == "-v"]
     assert len(mount_idx) == 1
@@ -118,14 +127,17 @@ def test_dispatch_local_copies_dns_config():
     def fake_run(cmd, **kwargs):
         captured["cmd"] = cmd
         return 0, "created", ""
-    orig = bd.run
-    bd.run = fake_run
+    orig = du.run
+    du.run = fake_run
     try:
-        bd.dispatch_local("w-probe", "img", ["A=B"], 8000, 8443, "", "probe",
+        du.dispatch_local("w-probe", "img", ["A=B"], 8000, 8443, "probe",
                           net=NET)
     finally:
-        bd.run = orig
+        du.run = orig
     cmd = captured["cmd"]
+    # Workers should never restart
+    assert "--restart" in cmd
+    assert cmd[cmd.index("--restart") + 1] == "no"
     # DNS server, search, options, extra hosts all replicated
     assert "--dns" in cmd and cmd[cmd.index("--dns") + 1] == "192.168.1.245"
     assert "--dns-search" in cmd and cmd[cmd.index("--dns-search") + 1] == "corp.example.com"
@@ -138,16 +150,19 @@ def test_dispatch_swarm_sets_hostname_and_docker_socket_mount():
     def fake_run(cmd, **kwargs):
         captured["cmd"] = cmd
         return 0, "created", ""
-    orig = bd.run
-    bd.run = fake_run
+    orig = du.run
+    du.run = fake_run
     try:
-        bd.dispatch_swarm("myparent-probe-n5h", "img", ["A=B"], 8000, 8443, "probe-n5h")
+        du.dispatch_swarm("myparent-probe-n5h", "img", ["A=B"], 8000, 8443, "probe-n5h")
     finally:
-        bd.run = orig
+        du.run = orig
     cmd = captured["cmd"]
     assert cmd[:3] == ["docker", "service", "create"]
     assert "--hostname" in cmd
     assert cmd[cmd.index("--hostname") + 1] == "myparent-probe-n5h"
+    # Workers should never restart
+    assert "--restart-condition" in cmd
+    assert cmd[cmd.index("--restart-condition") + 1] == "none"
     # only one --mount and it's the docker socket
     mounts = [cmd[i + 1] for i, c in enumerate(cmd) if c == "--mount"]
     assert mounts == ["type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock"]
@@ -158,13 +173,16 @@ def test_dispatch_swarm_copies_dns_config():
     def fake_run(cmd, **kwargs):
         captured["cmd"] = cmd
         return 0, "created", ""
-    orig = bd.run
-    bd.run = fake_run
+    orig = du.run
+    du.run = fake_run
     try:
-        bd.dispatch_swarm("w-probe", "img", ["A=B"], 8000, 8443, "probe", net=NET)
+        du.dispatch_swarm("w-probe", "img", ["A=B"], 8000, 8443, "probe", net=NET)
     finally:
-        bd.run = orig
+        du.run = orig
     cmd = captured["cmd"]
+    # Workers should never restart
+    assert "--restart-condition" in cmd
+    assert cmd[cmd.index("--restart-condition") + 1] == "none"
     assert "--dns" in cmd and cmd[cmd.index("--dns") + 1] == "192.168.1.245"
     assert "--dns-search" in cmd and cmd[cmd.index("--dns-search") + 1] == "corp.example.com"
     assert "--dns-option" in cmd and cmd[cmd.index("--dns-option") + 1] == "ndots:2"
@@ -175,30 +193,31 @@ def test_dispatch_swarm_copies_dns_config():
 
 def test_derive_git_repo_url_from_env():
     env = ["OTHER=1", "GIT_REPO_URL=https://env.git"]
-    assert bd.derive_git_repo_url(env, "/tmp") == "https://env.git"
+    assert du.derive_git_repo_url(env, "/tmp") == "https://env.git"
 
 
 def test_derive_git_repo_url_none_when_missing():
-    assert bd.derive_git_repo_url([], "/nonexistent-dir-xyz") is None
+    assert du.derive_git_repo_url([], "/nonexistent-dir-xyz") is None
 
 
 def test_load_save_state_roundtrip():
     with tempfile.TemporaryDirectory() as tmp:
         cfg = bd.Config.__new__(bd.Config)
         cfg.state_dir = tmp
-        assert bd.load_state(cfg) == set()
-        bd.save_state(cfg, {"a", "b"})
-        assert bd.load_state(cfg) == {"a", "b"}
+        state_file = os.path.join(cfg.state_dir, "state.json")
+        assert du.load_state(state_file) == set()
+        du.save_state(state_file, {"a", "b"})
+        assert du.load_state(state_file) == {"a", "b"}
 
 
 def test_find_free_host_port_skips_used():
     used = {8000, 8001, 8002}
-    orig = bd.used_host_ports
-    bd.used_host_ports = lambda: used
+    orig = du.used_host_ports
+    du.used_host_ports = lambda: used
     try:
-        port = bd.find_free_host_port(8000)
+        port = du.find_free_host_port(8000)
     finally:
-        bd.used_host_ports = orig
+        du.used_host_ports = orig
     assert port == 8003
 
 
@@ -218,44 +237,44 @@ def test_install_post_commit_hook_backs_up_existing():
 
 
 def test_git_env_sets_terminal_prompt_off():
-    e = bd.git_env()
+    e = du.git_env()
     assert e.get("GIT_TERMINAL_PROMPT") == "0"
 
 
 def test_get_workspace_owner_prefers_non_root():
     # A temp dir owned by the current user (root here) falls back to 'abc'
     with tempfile.TemporaryDirectory() as tmp:
-        owner = bd.get_workspace_owner(tmp)
+        owner = du.get_workspace_owner(tmp)
         assert owner in ("abc", "coder", "user", "root")
     # When root-owned and abc exists, prefer abc (non-root).
     try:
-        pwd_entry = bd.pwd.getpwuid(0)
+        pwd_entry = du.pwd.getpwuid(0)
     except KeyError:
         pwd_entry = None
     if pwd_entry:
-        assert bd.get_workspace_owner("/") not in ("", None)
+        assert du.get_workspace_owner("/") not in ("", None)
 
 
 def test_derive_git_repo_url_prefers_credentialed_remote():
-    real_run = bd.run
+    real_run = du.run
     def fake_run(cmd, **kwargs):
         if len(cmd) >= 2 and cmd[-2:] == ["get-url", "origin"]:
             return 0, "https://user:token@github.com/org/repo.git", ""
         return real_run(cmd, **kwargs)
-    old = bd.run
-    bd.run = fake_run
+    old = du.run
+    du.run = fake_run
     try:
         with tempfile.TemporaryDirectory() as tmp:
-            url = bd.derive_git_repo_url(
+            url = du.derive_git_repo_url(
                 ["GIT_REPO_URL=https://github.com/org/repo.git"], tmp, "abc")
         assert url == "https://user:token@github.com/org/repo.git"
     finally:
-        bd.run = old
+        du.run = old
 
 
 def test_has_credential_helper_detects_existing():
     # Not configured yet -> False
-    assert bd._has_credential_helper("gh auth git-credential") in (True, False)
+    assert du._has_credential_helper("gh auth git-credential") in (True, False)
 
 
 def test_env_function_not_shadowed_in_dispatch_worker():
@@ -276,10 +295,10 @@ def test_env_function_not_shadowed_in_dispatch_worker():
 def test_configure_credential_helpers_idempotent():
     # This machine has at least one of gh/glab; calling twice should not
     # duplicate helpers and should still report configured.
-    first = bd.configure_credential_helpers()
-    before = bd.run(["git", "config", "--global", "--get-all", "credential.helper"])[1]
-    second = bd.configure_credential_helpers()
-    after = bd.run(["git", "config", "--global", "--get-all", "credential.helper"])[1]
+    first = du.configure_credential_helpers()
+    before = du.run(["git", "config", "--global", "--get-all", "credential.helper"])[1]
+    second = du.configure_credential_helpers()
+    after = du.run(["git", "config", "--global", "--get-all", "credential.helper"])[1]
     assert after == before, "second configure duplicated helpers"
 
 
