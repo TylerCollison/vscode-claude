@@ -78,7 +78,7 @@ Router Status: OPERATIONAL
 |--------|---------|--------|
 | `HEALTHY` | Proxy responding normally | No action needed |
 | `DEGRADED` | Proxy up but some providers missing | Check API keys for missing providers |
-| `UNHEALTHY` | Proxy not responding | Check `systemctl status litellm`; review logs |
+| `UNHEALTHY` | Proxy not responding | **Agent cannot restart** — instruct user to run startup command (see Note below); check `/tmp/litellm.log` |
 | `CONFIGURED` | Provider API key is set | Provider available for routing |
 | `NOT SET` | Provider API key missing | Set environment variable to enable |
 | `ERROR` | Provider configured but failing | Check API key validity; review provider dashboard |
@@ -87,8 +87,8 @@ Router Status: OPERATIONAL
 
 | Issue | Diagnosis | Solution |
 |-------|-----------|----------|
-| Proxy not responding | Health check shows `UNHEALTHY` | Restart LiteLLM: run the start script with `litellm --host 127.0.0.1 --port 5090 --config /lite-llm/lite-llm-default.yaml` (see `/workspace/start-lite-llm.sh`); check `/tmp/litellm.log` |
-| Models unavailable | Provider shows `NOT SET` | Set required API key environment variable; restart proxy |
+| Proxy not responding | Health check shows `UNHEALTHY` | **Agent must NOT run litellm directly** — it runs through LiteLLM and would kill its own connection. Instruct the user to run: `litellm --host 127.0.0.1 --port 5090 --config /lite-llm/lite-llm-default.yaml` (see `/workspace/start-lite-llm.sh`); check `/tmp/litellm.log` |
+| Models unavailable | Provider shows `NOT SET` | Set required API key environment variable; user must restart proxy |
 | Auth failures | Provider shows `ERROR` | Verify API key format and permissions; check provider quota |
 | Routing to wrong model | Groups misconfigured | Check `/etc/litellm/config.yaml` model group mappings |
 | Rate limited | Provider shows `CONFIGURED` but requests fail | Fallback chains should activate; check provider rate limits |
@@ -106,11 +106,15 @@ The health check reads these environment variables to determine provider configu
 | `OPENCODE_ZEN_API_KEY` | OpenCode Zen | `lite-llm/default` |
 | `EXA_API_KEY` | EXA AI | Web search fallback |
 
-**Note:** After setting environment variables, restart the LiteLLM proxy for changes to take effect. The proxy is managed by s6-overlay; restart it by running the start command directly:
+**Note:** After setting environment variables, the LiteLLM proxy must be restarted for changes to take effect.
+
+⚠️ **CRITICAL — Agent Safety:** The agent runs THROUGH the LiteLLM proxy. The agent must **NEVER** directly run the `litellm` command, stop the litellm process, or attempt to restart it — doing so would terminate the agent's own connection.
+
+The agent's role is to **provide guidance to the user** on how to restart the proxy. The user (or container orchestration) should run the restart command:
 ```bash
 litellm --host 127.0.0.1 --port 5090 --config /lite-llm/lite-llm-default.yaml
 ```
-(See `/workspace/start-lite-llm.sh` for the full startup script with environment variable handling.)
+(See `/workspace/start-lite-llm.sh` for the full startup script with environment variable handling. The proxy is managed by s6-overlay; check `/tmp/litellm.log` for logs.)
 
 ## Cross-Harness Notes
 
