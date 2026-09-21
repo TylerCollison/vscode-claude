@@ -30,9 +30,22 @@ if ! command -v docker &> /dev/null; then
     log "WARNING: docker not found on PATH — skipping."
     exit 0
 fi
-if [ ! -S /var/run/docker.sock ]; then
-    log "WARNING: /var/run/docker.sock not mounted — the dispatcher cannot talk to the host Docker daemon. Skipping."
-    exit 0
+# Check for docker socket at both common locations
+docker_sock=""
+for sock in "/var/run/docker.sock" "/run/docker.sock"; do
+    if [ -S "$sock" ]; then
+        docker_sock="$sock"
+        break
+    fi
+done
+if [ -z "$docker_sock" ]; then
+    # Allow override via BEADS_DISPATCH_WORKER_IMAGE if socket not available
+    if [ -n "${BEADS_DISPATCH_WORKER_IMAGE:-}" ]; then
+        log "Docker socket not found, but BEADS_DISPATCH_WORKER_IMAGE is set. Continuing."
+    else
+        log "WARNING: Docker socket not found at /var/run/docker.sock or /run/docker.sock — the dispatcher cannot talk to the host Docker daemon. Set BEADS_DISPATCH_WORKER_IMAGE to override. Skipping."
+        exit 0
+    fi
 fi
 
 DEFAULT_WORKSPACE="${DEFAULT_WORKSPACE:-/workspace}"

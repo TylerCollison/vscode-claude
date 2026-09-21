@@ -120,24 +120,38 @@ def save_state(state_path, seen):
 
 
 def self_container_id():
-    """Return this container's short id (via /etc/hostname + docker inspect)."""
+    """Return this container's ID.
+
+    Tries multiple methods in order of reliability:
+    1. /proc/self/cgroup (works without docker CLI, works with custom hostnames)
+    2. /etc/hostname + docker inspect (fallback if cgroup parsing fails)
+    """
+    # Method 1: Parse container ID from cgroup (works with custom hostnames, no docker CLI needed)
+    try:
+        with open("/proc/self/cgroup") as fh:
+            for line in fh:
+                # Match 64-char hex container ID (SHA256) in cgroup path
+                # cgroups v1: 12:devices:/docker/<64-char-id>
+                # cgroups v2: 0::/docker/<64-char-id> or 0::/system.slice/docker-<64-char-id>.scope
+                m = re.search(r"[0-9a-f]{64}", line)
+                if m:
+                    return m.group(1)
+    except OSError:
+        pass
+
+    # Method 2: Use hostname + docker inspect (fallback)
     try:
         with open("/etc/hostname") as fh:
             host = fh.read().strip()
     except OSError:
         host = ""
     if host:
-        rc, _, _ = run(["docker", "inspect", host, "--format", "{{.Id}}"])
-        if rc == 0:
-            return host
-    try:
-        with open("/proc/self/cgroup") as fh:
-            for line in fh:
-                m = re.search(r"[0-9a-f]{64}", line)
-                if m:
-                    return m.group(1)
-    except OSError:
-        pass
+        rc, out, err = run(["docker", "inspect", host, "--format", "{{.Id}}"])
+        if rc == 0 and out:
+            # docker inspect --format "{{.Id}}" returns the full 64-char ID
+            return out.strip()
+        else:
+            log("DEBUG: docker inspect %s failed (rc=%d): %s" % (host, rc, err or out))
     return None
 
 

@@ -443,13 +443,39 @@ def main(argv):
         if not shutil.which(binary):
             du.log("WARNING: %s not found on PATH. Exiting." % binary)
             return 0
-    if not os.path.exists("/var/run/docker.sock"):
-        du.log("WARNING: /var/run/docker.sock not found. Exiting.")
+
+    # Check for docker socket at both common locations
+    docker_sock = None
+    for sock in ("/var/run/docker.sock", "/run/docker.sock"):
+        if os.path.exists(sock):
+            docker_sock = sock
+            break
+    if not docker_sock:
+        du.log("WARNING: Docker socket not found at /var/run/docker.sock or /run/docker.sock. Exiting.")
         return 0
 
+    worker_image = du.env("BEADS_DISPATCH_WORKER_IMAGE")
     container_id = du.self_container_id()
     self_info = du.inspect_self(container_id) if container_id else None
-    if not self_info or not self_info.get("image"):
+
+    if not self_info:
+        if worker_image:
+            du.log("WARNING: could not inspect self, but BEADS_DISPATCH_WORKER_IMAGE is set. Using that.")
+            self_info = {
+                "image": worker_image,
+                "env": list(os.environ),
+                "dns": [],
+                "dns_search": [],
+                "dns_options": [],
+                "extra_hosts": [],
+            }
+        else:
+            du.log("ERROR: could not determine this container's image (is the docker socket mounted?). Provide BEADS_DISPATCH_WORKER_IMAGE to override. Exiting.")
+            return 0
+    elif worker_image:
+        du.log("Using BEADS_DISPATCH_WORKER_IMAGE override: %s" % worker_image)
+        self_info["image"] = worker_image
+    elif not self_info.get("image"):
         du.log("ERROR: could not determine this container's image (is the docker socket mounted?). Exiting.")
         return 0
 
