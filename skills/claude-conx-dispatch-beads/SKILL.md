@@ -12,7 +12,6 @@ Manually trigger the Beads Dispatch daemon to check for ready tasks and spawn wo
 - After running `bd update` or `bd create` to make tasks ready
 - When you want to dispatch workers without committing
 - During development/testing of Beads Dispatch workflows
-- When the post-commit hook hasn't fired but tasks are ready
 
 ## Command
 
@@ -61,16 +60,6 @@ Is the Beads Dispatch daemon running? (BEADS_DISPATCH=true)
 Error: Socket file not found at /run/beads-dispatch/trigger.sock
 ```
 
-## Relationship to Post-Commit Hook
-
-Both `dispatch-beads` and the git post-commit hook send a "manual" trigger to the same daemon socket. The daemon doesn't distinguish between them — it simply wakes up and processes ready tasks.
-
-| Trigger Source | Trigger Type | Use Case |
-|----------------|--------------|----------|
-| `git commit` | "manual" (via post-commit hook) | Automatic dispatch on commit |
-| `dispatch-beads` | "manual" (direct) | Manual dispatch without commit |
-| Scheduled cron | "scheduled" | Periodic check (if configured) |
-
 ## Common Use Case
 
 ```bash
@@ -78,7 +67,7 @@ Both `dispatch-beads` and the git post-commit hook send a "manual" trigger to th
 bd create "New feature" --description="..." --type=task
 bd update workspace-abc --claim
 
-# 2. Manually dispatch (instead of committing)
+# 2. Manually dispatch
 dispatch-beads
 
 # 3. Check worker status

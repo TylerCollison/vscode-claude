@@ -14,8 +14,8 @@ Install skills to your user-wide skill directory so they're available in all pro
 # Clone the marketplace
 git clone https://github.com/TylerCollison/vscode-claude.git /tmp/vscode-claude
 
-# Install a specific skill (e.g., beads)
-cp -r /tmp/vscode-claude/skills/claude-conx-beads ~/.agents/skills/
+# Install a specific skill (e.g., happier)
+cp -r /tmp/vscode-claude/skills/claude-conx-happier ~/.agents/skills/
 
 # Or install all skills at once
 cp -r /tmp/vscode-claude/skills/* ~/.agents/skills/
@@ -30,7 +30,7 @@ Install skills to a project's local skill directory:
 mkdir -p .agents/skills
 
 # Install a specific skill
-cp -r /path/to/skills/claude-conx-beads .agents/skills/
+cp -r /path/to/skills/claude-conx-happier .agents/skills/
 
 # Or install all skills
 cp -r /path/to/skills/* .agents/skills/
@@ -43,7 +43,7 @@ Set these environment variables when starting the container to auto-install skil
 ```bash
 docker run -d \
   -e SKILLS_MARKETPLACES="https://github.com/TylerCollison/vscode-claude.git,/workspace/skills" \
-  -e SKILLS="claude-conx-beads,claude-conx-build-env,claude-conx-happier" \
+  -e SKILLS="claude-conx-build-env,claude-conx-happier,claude-conx-dispatch-beads" \
   tylercollison2089/vscode-claude
 ```
 
@@ -56,8 +56,6 @@ docker run -d \
 ```
 /workspace/skills/
 ├── README.md                    # This file
-├── claude-conx-beads/           # Beads issue tracker skill
-│   └── SKILL.md
 ├── claude-conx-build-env/       # Persistent build environment skill
 │   └── SKILL.md
 ├── claude-conx-happier/         # Happier CLI orchestration skill
@@ -66,11 +64,9 @@ docker run -d \
 │   └── SKILL.md
 ├── claude-conx-shutdown/        # Container shutdown skill
 │   └── SKILL.md
-├── claude-conx-litellm-router/  # LiteLLM router configuration skill
+├── claude-conx-litellm-router/  # LiteLLM health check skill
 │   └── SKILL.md
 ├── claude-conx-cconx/           # cconx Docker management skill
-│   └── SKILL.md
-├── claude-conx-mr-pr-dispatch/  # MR/PR dispatch skill
 │   └── SKILL.md
 └── ...more skills as added
 ```
@@ -108,7 +104,7 @@ description: Use when <specific trigger conditions>. <One-sentence summary of wh
 ---
 ```
 
-- `name`: Unique identifier (kebab-case, e.g., `claude-conx-beads`)
+- `name`: Unique identifier (kebab-case, e.g., `claude-conx-happier`)
 - `description`: Must start with "Use when..." and include specific triggers
 
 ## Generic Tool Mapping Table
@@ -149,14 +145,12 @@ Every skill **MUST** include a "Cross-Harness Notes" section documenting:
 
 | Skill | Description | Container Feature |
 |-------|-------------|-------------------|
-| `claude-conx-beads` | Use Beads for durable project task tracking | Beads issue tracker |
 | `claude-conx-build-env` | Create persistent Docker build environments | `build-env` command |
 | `claude-conx-happier` | Use Happier CLI for agent orchestration | Happier CLI |
 | `claude-conx-dispatch-beads` | Manually trigger Beads Dispatch daemon | `dispatch-beads` command |
 | `claude-conx-shutdown` | Gracefully shut down container with cleanup | `shutdown` command |
-| `claude-conx-litellm-router` | Configure and use LiteLLM model router | LiteLLM Router |
+| `claude-conx-litellm-router` | Check LiteLLM router health and provider status | `litellm-health-check.py` |
 | `claude-conx-cconx` | Manage ClaudeConX Docker instances | `cconx` CLI |
-| `claude-conx-mr-pr-dispatch` | Dispatch workers for MR/PR review | MR/PR Dispatch |
 
 *(More skills added as container features are documented)*
 

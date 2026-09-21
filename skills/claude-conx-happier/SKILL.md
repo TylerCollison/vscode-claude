@@ -202,8 +202,13 @@ When `HAPPIER_SERVER_URL` is set, the container automatically:
 - **Daemon auto-starts** when `HAPPIER_SERVER_URL` is configured
 - **Machine registration** — container registers as a machine on the relay server
 - **Machine name** = container hostname (reflects the work: repo name, task ID, PR number)
-- **Beads Dispatch workers** appear as machines named like `beads-worker-<task-id>`
-- **MR/PR Dispatch workers** appear as machines named like `mr-pr-<repo>-<number>`
+  - **Machine names are always reflective of the work being done** on that machine (usually a repo name, task ID, or PR number)
+  - This applies to the main container AND all dispatched worker containers
+- **Dispatched workers appear as machines** — Every worker container spawned by dispatch systems (Beads Dispatch, MR/PR Dispatch) registers as its own machine on the Happier server
+  - The machine name matches the container hostname
+  - **Beads Dispatch workers**: `beads-worker-<task-id>`
+  - **MR/PR Dispatch workers**: `mr-pr-<platform>-<repo>-<number>` (e.g., `mr-pr-github-myorg-myapp-123`)
+  - Use `happier machine list` on the server to see all active workers
 - **Use `happier daemon list`** to see active sessions on this machine
 
 ## Troubleshooting
