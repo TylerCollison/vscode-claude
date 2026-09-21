@@ -1,6 +1,6 @@
 ---
-name: claude-conx-litellm-router
-description: Use when you need to check the health/status of the LiteLLM model router and its configured providers. Trigger when the user asks to run the health check, verify API keys, diagnose routing issues, or check model availability.
+name: claude-conx-litellm-health-check
+description: Use when you need to run the LiteLLM health check tool to verify router status, provider configuration, and model availability. Trigger when the user asks to run litellm-health-check.py, diagnose routing issues, verify API keys, or check model group status.
 ---
 
 # LiteLLM Health Check (ClaudeConX)

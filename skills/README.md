@@ -64,7 +64,7 @@ docker run -d \
 │   └── SKILL.md
 ├── claude-conx-shutdown/        # Container shutdown skill
 │   └── SKILL.md
-├── claude-conx-litellm-router/  # LiteLLM health check skill
+├── claude-conx-litellm-health-check/  # LiteLLM health check skill
 │   └── SKILL.md
 ├── claude-conx-cconx/           # cconx Docker management skill
 │   └── SKILL.md
@@ -149,7 +149,7 @@ Every skill **MUST** include a "Cross-Harness Notes" section documenting:
 | `claude-conx-happier` | Use Happier CLI for agent orchestration | Happier CLI |
 | `claude-conx-dispatch-beads` | Manually trigger Beads Dispatch daemon | `dispatch-beads` command |
 | `claude-conx-shutdown` | Gracefully shut down container with cleanup | `shutdown` command |
-| `claude-conx-litellm-router` | Check LiteLLM router health and provider status | `litellm-health-check.py` |
+| `claude-conx-litellm-health-check` | Run LiteLLM health check to verify router and providers | `litellm-health-check.py` |
 | `claude-conx-cconx` | Manage ClaudeConX Docker instances | `cconx` CLI |
 
 *(More skills added as container features are documented)*
