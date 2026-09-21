@@ -208,7 +208,7 @@ When `HAPPIER_SERVER_URL` is set, the container automatically:
   - The machine name matches the container hostname
   - **Beads Dispatch workers**: `beads-worker-<task-id>`
   - **MR/PR Dispatch workers**: `mr-pr-<platform>-<repo>-<number>` (e.g., `mr-pr-github-myorg-myapp-123`)
-  - Use `happier machine list` on the server to see all active workers
+  - View active workers via the Happier server's web UI or API
 - **Use `happier daemon list`** to see active sessions on this machine
 
 ## Troubleshooting

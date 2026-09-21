@@ -87,7 +87,7 @@ Router Status: OPERATIONAL
 
 | Issue | Diagnosis | Solution |
 |-------|-----------|----------|
-| Proxy not responding | Health check shows `UNHEALTHY` | Run `systemctl restart litellm`; check `journalctl -u litellm` |
+| Proxy not responding | Health check shows `UNHEALTHY` | Restart LiteLLM: run the start script with `litellm --host 127.0.0.1 --port 5090 --config /lite-llm/lite-llm-default.yaml` (see `/workspace/start-lite-llm.sh`); check `/tmp/litellm.log` |
 | Models unavailable | Provider shows `NOT SET` | Set required API key environment variable; restart proxy |
 | Auth failures | Provider shows `ERROR` | Verify API key format and permissions; check provider quota |
 | Routing to wrong model | Groups misconfigured | Check `/etc/litellm/config.yaml` model group mappings |
@@ -106,10 +106,11 @@ The health check reads these environment variables to determine provider configu
 | `OPENCODE_ZEN_API_KEY` | OpenCode Zen | `lite-llm/default` |
 | `EXA_API_KEY` | EXA AI | Web search fallback |
 
-**Note:** After setting environment variables, restart the LiteLLM proxy for changes to take effect:
+**Note:** After setting environment variables, restart the LiteLLM proxy for changes to take effect. The proxy is managed by s6-overlay; restart it by running the start command directly:
 ```bash
-systemctl restart litellm
+litellm --host 127.0.0.1 --port 5090 --config /lite-llm/lite-llm-default.yaml
 ```
+(See `/workspace/start-lite-llm.sh` for the full startup script with environment variable handling.)
 
 ## Cross-Harness Notes
 
