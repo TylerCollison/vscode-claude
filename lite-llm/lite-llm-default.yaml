@@ -45,6 +45,7 @@ model_list:
       stream_timeout: 600.0
       timeout: 600.0
 
+  # This model seems to stop Claude Code sessions immediately; disabling until a solution is found
   - model_name: community/scriptsnsenses-sys/muse-spark-1.2-contributor-free
     litellm_params:
       model: openai/community/scriptsnsenses-sys/muse-spark-1.2-contributor-free
@@ -248,8 +249,9 @@ model_list:
     litellm_params:
       # The callback (router_callback.py) intercepts every request and
       # rewrites the model
-      model: nvidia_nim/deepseek-ai/deepseek-v4-pro-0813
-      api_key: os.environ/NIM_API_KEY
+      model: openai/community/NamanSoni78/Glm-5.3-Thinking-Max
+      api_base: https://gen.pollinations.ai/v1
+      api_key: os.environ/POLLINATION_API_KEY
       stream_timeout: 30.0
       timeout: 180.0
 
@@ -272,29 +274,33 @@ model_list:
 
   - model_name: lite-llm/default
     litellm_params:
-      model: nvidia_nim/deepseek-ai/deepseek-v4-pro-0813
-      api_key: os.environ/NIM_API_KEY
+      model: openai/community/NamanSoni78/Glm-5.3-Thinking-Max
+      api_base: https://gen.pollinations.ai/v1
+      api_key: os.environ/POLLINATION_API_KEY
       stream_timeout: 30.0
       timeout: 180.0
 
   - model_name: lite-llm/think
     litellm_params:
-      model: nvidia_nim/deepseek-ai/deepseek-v4-pro-0813
-      api_key: os.environ/NIM_API_KEY
+      model: openai/community/NamanSoni78/Glm-5.3-Thinking-Max
+      api_base: https://gen.pollinations.ai/v1
+      api_key: os.environ/POLLINATION_API_KEY
       stream_timeout: 30.0
       timeout: 180.0
 
   - model_name: lite-llm/ultra-think
     litellm_params:
-      model: gemini/gemini-3.5-flash-lite
-      api_key: os.environ/GOOGLE_API_KEY
-      stream_timeout: 30.0
-      timeout: 180.0
+      model: openai/community/NamanSoni78/opus-5-max
+      api_base: https://gen.pollinations.ai/v1
+      api_key: os.environ/POLLINATION_API_KEY
+      stream_timeout: 600.0
+      timeout: 600.0
 
   - model_name: lite-llm/longContext
     litellm_params:
-      model: nvidia_nim/deepseek-ai/deepseek-v4-pro-0813
-      api_key: os.environ/NIM_API_KEY
+      model: openai/community/NamanSoni78/Glm-5.3-Thinking-Max
+      api_base: https://gen.pollinations.ai/v1
+      api_key: os.environ/POLLINATION_API_KEY
       stream_timeout: 30.0
       timeout: 180.0
 
@@ -349,4 +355,4 @@ router_settings:
 
   allowed_fails: 1
   num_retries: 0
-  fallbacks: [{"lite-llm/router": ["community/NamanSoni78/Glm-5.3-Thinking-Max", "community/scriptsnsenses-sys/muse-spark-1.2-contributor-free", "community/scriptsnsenses-sys/gpt-5.6-luna", "community/scriptsnsenses-sys/glm-5.3-flash-free", "community/iotserver24/deepseek-v4f", "community/YoannDev90/kilocode-laguna-s-2.1:free", "community/NamanSoni78/nemotron-3-ultra-550b-a55b", "minimax-m2.7", "z-ai/glm-5.3-flash", "nemotron-3-super:cloud", "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3", "community/NamanSoni78/gpt-5.4-nano", "default", "fast"]}, {"lite-llm/default": ["community/NamanSoni78/Glm-5.3-Thinking-Max", "community/scriptsnsenses-sys/muse-spark-1.2-contributor-free", "community/scriptsnsenses-sys/gpt-5.6-luna", "community/scriptsnsenses-sys/glm-5.3-flash-free", "community/iotserver24/deepseek-v4f", "community/YoannDev90/kilocode-laguna-s-2.1:free", "community/NamanSoni78/nemotron-3-ultra-550b-a55b", "minimax-m2.7", "z-ai/glm-5.3-flash", "nemotron-3-super:cloud", "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3", "community/NamanSoni78/gpt-5.4-nano", "default", "fast"]}, {"lite-llm/think": ["community/NamanSoni78/Glm-5.3-Thinking-Max", "community/scriptsnsenses-sys/muse-spark-1.2-contributor-free", "community/scriptsnsenses-sys/gpt-5.6-luna", "community/scriptsnsenses-sys/glm-5.3-flash-free", "community/iotserver24/deepseek-v4f", "z-ai/glm-5.3", "z-ai/glm-5.3-flash", "community/YoannDev90/kilocode-laguna-s-2.1:free", "community/NamanSoni78/nemotron-3-ultra-550b-a55b", "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "minimax-m2.7", "nemotron-3-super:cloud", "community/NamanSoni78/gpt-5.4-nano", "default", "fast"]}, {"lite-llm/ultra-think": ["community/NamanSoni78/opus-5-max", "community/NamanSoni78/Glm-5.3-Thinking-Max", "community/scriptsnsenses-sys/muse-spark-1.2-contributor-free", "community/scriptsnsenses-sys/gpt-5.6-luna", "community/scriptsnsenses-sys/glm-5.3-flash-free", "community/iotserver24/deepseek-v4f", "z-ai/glm-5.3", "z-ai/glm-5.3-flash", "community/YoannDev90/kilocode-laguna-s-2.1:free", "community/NamanSoni78/nemotron-3-ultra-550b-a55b", "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "minimax-m2.7", "nemotron-3-super:cloud", "community/NamanSoni78/gpt-5.4-nano", "default", "fast"]}, {"lite-llm/longContext": ["community/NamanSoni78/Glm-5.3-Thinking-Max", "community/scriptsnsenses-sys/muse-spark-1.2-contributor-free", "community/scriptsnsenses-sys/gpt-5.6-luna", "community/scriptsnsenses-sys/glm-5.3-flash-free", "community/iotserver24/deepseek-v4f", "z-ai/glm-5.3", "z-ai/glm-5.3-flash", "community/YoannDev90/kilocode-laguna-s-2.1:free", "community/NamanSoni78/opus-5-max"]}, {"lite-llm/webSearch": ["gemini-3.1-flash-lite", "community/NamanSoni78/Glm-5.3-Thinking-Max", "community/scriptsnsenses-sys/muse-spark-1.2-contributor-free", "community/scriptsnsenses-sys/gpt-5.6-luna", "community/scriptsnsenses-sys/glm-5.3-flash-free", "community/iotserver24/deepseek-v4f", "community/YoannDev90/kilocode-laguna-s-2.1:free", "community/NamanSoni78/nemotron-3-ultra-550b-a55b", "minimax-m2.7", "z-ai/glm-5.3-flash", "nemotron-3-super:cloud", "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3", "community/NamanSoni78/gpt-5.4-nano", "default", "fast"]}, {"lite-llm/image": ["gemini-3.1-flash-lite", "z-ai/glm-5.3-flash"]}, {"lite-llm/complexity": ["community/NamanSoni78/Glm-5.3-Thinking-Max", "community/scriptsnsenses-sys/muse-spark-1.2-contributor-free", "community/scriptsnsenses-sys/gpt-5.6-luna", "community/scriptsnsenses-sys/glm-5.3-flash-free", "community/iotserver24/deepseek-v4f", "community/YoannDev90/kilocode-laguna-s-2.1:free", "community/NamanSoni78/nemotron-3-ultra-550b-a55b", "minimax-m2.7", "z-ai/glm-5.3-flash", "nemotron-3-super:cloud", "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3", "community/NamanSoni78/gpt-5.4-nano", "default", "fast"]}]
+  fallbacks: [{"lite-llm/router": ["community/scriptsnsenses-sys/gpt-5.6-luna", "community/scriptsnsenses-sys/glm-5.3-flash-free", "community/iotserver24/deepseek-v4f", "community/YoannDev90/kilocode-laguna-s-2.1:free", "community/NamanSoni78/nemotron-3-ultra-550b-a55b", "minimax-m2.7", "z-ai/glm-5.3-flash", "nemotron-3-super:cloud", "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3", "community/NamanSoni78/gpt-5.4-nano", "default", "fast"]}, {"lite-llm/default": ["community/scriptsnsenses-sys/gpt-5.6-luna", "community/scriptsnsenses-sys/glm-5.3-flash-free", "community/iotserver24/deepseek-v4f", "community/YoannDev90/kilocode-laguna-s-2.1:free", "community/NamanSoni78/nemotron-3-ultra-550b-a55b", "minimax-m2.7", "z-ai/glm-5.3-flash", "nemotron-3-super:cloud", "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3", "community/NamanSoni78/gpt-5.4-nano", "default", "fast"]}, {"lite-llm/think": ["community/scriptsnsenses-sys/gpt-5.6-luna", "community/scriptsnsenses-sys/glm-5.3-flash-free", "community/iotserver24/deepseek-v4f", "z-ai/glm-5.3", "z-ai/glm-5.3-flash", "community/YoannDev90/kilocode-laguna-s-2.1:free", "community/NamanSoni78/nemotron-3-ultra-550b-a55b", "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "minimax-m2.7", "nemotron-3-super:cloud", "community/NamanSoni78/gpt-5.4-nano", "default", "fast"]}, {"lite-llm/ultra-think": ["community/NamanSoni78/Glm-5.3-Thinking-Max", "community/scriptsnsenses-sys/gpt-5.6-luna", "community/scriptsnsenses-sys/glm-5.3-flash-free", "community/iotserver24/deepseek-v4f", "z-ai/glm-5.3", "z-ai/glm-5.3-flash", "community/YoannDev90/kilocode-laguna-s-2.1:free", "community/NamanSoni78/nemotron-3-ultra-550b-a55b", "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "minimax-m2.7", "nemotron-3-super:cloud", "community/NamanSoni78/gpt-5.4-nano", "default", "fast"]}, {"lite-llm/longContext": ["community/scriptsnsenses-sys/gpt-5.6-luna", "community/scriptsnsenses-sys/glm-5.3-flash-free", "community/iotserver24/deepseek-v4f", "z-ai/glm-5.3", "z-ai/glm-5.3-flash", "community/YoannDev90/kilocode-laguna-s-2.1:free", "community/NamanSoni78/opus-5-max"]}, {"lite-llm/webSearch": ["gemini-3.1-flash-lite", "community/NamanSoni78/Glm-5.3-Thinking-Max", "community/scriptsnsenses-sys/gpt-5.6-luna", "community/scriptsnsenses-sys/glm-5.3-flash-free", "community/iotserver24/deepseek-v4f", "community/YoannDev90/kilocode-laguna-s-2.1:free", "community/NamanSoni78/nemotron-3-ultra-550b-a55b", "minimax-m2.7", "z-ai/glm-5.3-flash", "nemotron-3-super:cloud", "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3", "community/NamanSoni78/gpt-5.4-nano", "default", "fast"]}, {"lite-llm/image": ["gemini-3.1-flash-lite", "z-ai/glm-5.3-flash"]}, {"lite-llm/complexity": ["community/scriptsnsenses-sys/gpt-5.6-luna", "community/scriptsnsenses-sys/glm-5.3-flash-free", "community/iotserver24/deepseek-v4f", "community/YoannDev90/kilocode-laguna-s-2.1:free", "community/NamanSoni78/nemotron-3-ultra-550b-a55b", "minimax-m2.7", "z-ai/glm-5.3-flash", "nemotron-3-super:cloud", "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3", "community/NamanSoni78/gpt-5.4-nano", "default", "fast"]}]
