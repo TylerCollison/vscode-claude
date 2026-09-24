@@ -120,24 +120,27 @@ RUN rm -rf \
     /usr/lib/node_modules/@happier-dev/cli/node_modules/onnxruntime-node/bin/napi-v3/linux/x64/libonnxruntime_providers_cuda.so \
     /usr/lib/node_modules/@happier-dev/cli/node_modules/onnxruntime-node/bin/napi-v3/linux/x64/libonnxruntime_providers_tensorrt.so
 
-# Pre-cache the happier-server payload (downloaded by the runner) and extract
-# the Prisma SQLite migration files so auto-migrate works on first container
-# start without needing network access.
+# Pre-cache the happier-server payload and the separate ui-web release bundle
+# (both downloaded by the runner) and extract the Prisma SQLite migration
+# files so the relay server and its web UI work on first container start
+# without needing network access.
 #
 # The runner resolves the rolling channel tag (server-stable) from the GitHub
 # API on every invocation, and upstream occasionally publishes those releases
 # with unversioned asset names the runner cannot resolve ("missing release
 # asset: happier-server-v<version>-linux-x64.tar.gz"). So: try the default
-# channel first, then fall back to the latest versioned release tag
-# (server-vX.Y.Z), whose assets keep the versioned names. The build FAILS if
-# neither works — an image without a cached payload could not start the relay
-# server offline (the offline-first wrapper below requires it). --without-ui
-# is enough because the server payload embeds its own ui-web bundle, which is
-# what actually gets served.
+# channel first, then fall back to the latest versioned release tags
+# (server-vX.Y.Z / ui-web-vX.Y.Z), whose assets keep the versioned names. The
+# build FAILS if neither works — an image without a cached payload could not
+# start the relay server offline (the offline-first wrapper below requires
+# it). The server payload's own embedded ui-web copy is only a landing page;
+# the real web UI ships as the separate ui-web release bundle, so it is
+# downloaded too and the build fails if it was not cached.
 #
-# timeout -k: without a database the server cannot initialise fully and hangs
-# after SIGTERM, so force-kill it after a grace period (the payload persists
-# in cache even though the server is killed).
+# Each download attempt runs in the background and is stopped as soon as the
+# artifact is fully cached — the spawned server process (extraction
+# completed) is the success signal, so no artificial wait on the server
+# itself. Polling caps the download window at 5 minutes.
 # All /config files are chowned (using the default linuxserver PUID=911,
 # PGID=911) in this same layer so no overlay2 copy-up is triggered at
 # runtime — at runtime these files are already owned by 911:911.
@@ -161,27 +164,36 @@ RUN set -eux; \
       pkill -x happier-server 2>/dev/null || true; \
       wait "$RUNNER_PID" 2>/dev/null || true; \
     }; \
-    download_payload --without-ui; \
+    download_payload --ui; \
     if [ -z "$(cached_bin)" ]; then \
-      echo "Rolling channel download failed — falling back to the latest versioned release tag"; \
+      echo "Rolling channel download failed — falling back to the latest versioned release tags"; \
       # git/matching-refs returns plain refs (no release descriptions), so the
       # extraction cannot trip over control characters in release notes.
       SERVER_TAG=$(curl -fsSL "https://api.github.com/repos/happier-dev/happier/git/matching-refs/tags/server-v" \
         | grep -oE '"refs/tags/server-v[0-9]+\.[0-9]+\.[0-9]+"' \
         | sed 's|"refs/tags/||; s|"||g' | sort -V | tail -1); \
-      if [ -z "$SERVER_TAG" ]; then \
-        echo "ERROR: could not resolve a versioned server release tag"; \
+      UI_WEB_TAG=$(curl -fsSL "https://api.github.com/repos/happier-dev/happier/git/matching-refs/tags/ui-web-v" \
+        | grep -oE '"refs/tags/ui-web-v[0-9]+\.[0-9]+\.[0-9]+"' \
+        | sed 's|"refs/tags/||; s|"||g' | sort -V | tail -1); \
+      if [ -z "$SERVER_TAG" ] || [ -z "$UI_WEB_TAG" ]; then \
+        echo "ERROR: could not resolve versioned release tags (server='$SERVER_TAG' ui-web='$UI_WEB_TAG')"; \
         exit 1; \
       fi; \
-      echo "Pinned download: $SERVER_TAG"; \
-      download_payload --tag "$SERVER_TAG" --without-ui; \
+      echo "Pinned download: server=$SERVER_TAG ui-web=$UI_WEB_TAG"; \
+      download_payload --tag "$SERVER_TAG" --ui-tag "$UI_WEB_TAG"; \
     fi; \
     SERVER_BIN=$(cached_bin); \
     if [ -z "$SERVER_BIN" ] || [ ! -d "$(dirname "$SERVER_BIN")/prisma" ]; then \
       echo "ERROR: complete happier-server payload was not cached — the relay server could not start offline"; \
       exit 1; \
     fi; \
+    UI_INDEX=$(find /config/.cache/happier/ui-web -type f -name index.html -print -quit 2>/dev/null || true); \
+    if [ -z "$UI_INDEX" ]; then \
+      echo "ERROR: ui-web bundle was not cached — the web UI would be a landing page offline"; \
+      exit 1; \
+    fi; \
     echo "Cached happier-server payload: $(dirname "$SERVER_BIN")"; \
+    echo "Cached ui-web bundle: $(dirname "$UI_INDEX")"; \
     HAPPIER_CACHE_DIR="/config/.cache"; \
     MIGRATIONS_SRC=$(find "$HAPPIER_CACHE_DIR/happier/server" -path "*/prisma/sqlite/migrations" -type d -print -quit 2>/dev/null || true); \
     if [ -n "$MIGRATIONS_SRC" ] && [ -d "$MIGRATIONS_SRC" ]; then \
@@ -237,8 +249,26 @@ RUN printf '%s\n' \
     '  done | sort -V | tail -1' \
     '}' \
     '' \
+    '# The payload also has an embedded ui-web copy, but it is only a landing' \
+    '# page - the real web UI ships as a separate ui-web release bundle. Pick' \
+    '# the newest cached bundle root (sort -V).' \
+    'find_cached_ui() {' \
+    '  find "$CACHE_ROOT/happier/ui-web" -type f -name index.html 2>/dev/null | while read -r f; do' \
+    '    [ -f "$(dirname "$f")/canvaskit.wasm" ] && echo "$f"' \
+    '  done | sort -V | tail -1' \
+    '}' \
+    '' \
     'CACHED_BIN=$(find_cached_bin || true)' \
     'if [ -n "$CACHED_BIN" ] && [ -x "$CACHED_BIN" ]; then' \
+    '  # Point at the newest cached ui-web bundle when the UI is wanted, like' \
+    '  # the runner does when it downloads one. Without it the server would' \
+    '  # serve the payload-embedded landing page instead of the real web UI.' \
+    '  if ! printf "%s" "$*" | grep -q -- "--without-ui"; then' \
+    '    CACHED_UI=$(find_cached_ui || true)' \
+    '    if [ -n "$CACHED_UI" ]; then' \
+    '      export HAPPIER_SERVER_UI_DIR="$(dirname "$CACHED_UI")"' \
+    '    fi' \
+    '  fi' \
     '  exec "$CACHED_BIN" "$@"' \
     'else' \
     '  exec "$RUNNER" "$@"' \
