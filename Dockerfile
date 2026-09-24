@@ -120,31 +120,131 @@ RUN rm -rf \
     /usr/lib/node_modules/@happier-dev/cli/node_modules/onnxruntime-node/bin/napi-v3/linux/x64/libonnxruntime_providers_cuda.so \
     /usr/lib/node_modules/@happier-dev/cli/node_modules/onnxruntime-node/bin/napi-v3/linux/x64/libonnxruntime_providers_tensorrt.so
 
-# Pre-cache the happier-server binary (downloaded by the runner) and extract
+# Pre-cache the happier-server payload (downloaded by the runner) and extract
 # the Prisma SQLite migration files so auto-migrate works on first container
 # start without needing network access.
-# We timeout after 2 minutes — the binary persists in cache even though
-# the server is killed (it cannot initialise fully without a database yet).
+#
+# The runner resolves the rolling channel tag (server-stable) from the GitHub
+# API on every invocation, and upstream occasionally publishes those releases
+# with unversioned asset names the runner cannot resolve ("missing release
+# asset: happier-server-v<version>-linux-x64.tar.gz"). So: try the default
+# channel first, then fall back to the latest versioned release tag
+# (server-vX.Y.Z), whose assets keep the versioned names. The build FAILS if
+# neither works — an image without a cached payload could not start the relay
+# server offline (the offline-first wrapper below requires it). --without-ui
+# is enough because the server payload embeds its own ui-web bundle, which is
+# what actually gets served.
+#
+# timeout -k: without a database the server cannot initialise fully and hangs
+# after SIGTERM, so force-kill it after a grace period (the payload persists
+# in cache even though the server is killed).
 # All /config files are chowned (using the default linuxserver PUID=911,
 # PGID=911) in this same layer so no overlay2 copy-up is triggered at
 # runtime — at runtime these files are already owned by 911:911.
-RUN timeout 120 happier-server --ui > /dev/null 2>&1 || true; \
-    HAPPIER_CACHE_DIR="/config/.cache" && \
-    MIGRATIONS_SRC=$(find "$HAPPIER_CACHE_DIR/happier/server" -path "*/prisma/sqlite/migrations" -type d -print -quit 2>/dev/null || true) && \
+RUN set -eux; \
+    rm -rf /config/.cache/happier/server /config/.cache/happier/ui-web; \
+    cached_bin() { find /config/.cache/happier/server -type f -name happier-server -print -quit 2>/dev/null || true; }; \
+    # Run a download attempt via the runner in the background and stop it as
+    # soon as the payload is fully cached — the spawned server process
+    # (extraction completed) is the success signal, so no artificial wait on
+    # the server itself. Polling caps the download window at 5 minutes.
+    download_payload() { \
+      happier-server "$@" >/dev/null 2>&1 & \
+      RUNNER_PID=$!; \
+      i=0; \
+      while [ "$i" -lt 300 ]; do \
+        pgrep -x happier-server >/dev/null 2>&1 && break; \
+        kill -0 "$RUNNER_PID" 2>/dev/null || break; \
+        sleep 1; i=$((i + 1)); \
+      done; \
+      kill "$RUNNER_PID" 2>/dev/null || true; \
+      pkill -x happier-server 2>/dev/null || true; \
+      wait "$RUNNER_PID" 2>/dev/null || true; \
+    }; \
+    download_payload --without-ui; \
+    if [ -z "$(cached_bin)" ]; then \
+      echo "Rolling channel download failed — falling back to the latest versioned release tag"; \
+      # git/matching-refs returns plain refs (no release descriptions), so the
+      # extraction cannot trip over control characters in release notes.
+      SERVER_TAG=$(curl -fsSL "https://api.github.com/repos/happier-dev/happier/git/matching-refs/tags/server-v" \
+        | grep -oE '"refs/tags/server-v[0-9]+\.[0-9]+\.[0-9]+"' \
+        | sed 's|"refs/tags/||; s|"||g' | sort -V | tail -1); \
+      if [ -z "$SERVER_TAG" ]; then \
+        echo "ERROR: could not resolve a versioned server release tag"; \
+        exit 1; \
+      fi; \
+      echo "Pinned download: $SERVER_TAG"; \
+      download_payload --tag "$SERVER_TAG" --without-ui; \
+    fi; \
+    SERVER_BIN=$(cached_bin); \
+    if [ -z "$SERVER_BIN" ] || [ ! -d "$(dirname "$SERVER_BIN")/prisma" ]; then \
+      echo "ERROR: complete happier-server payload was not cached — the relay server could not start offline"; \
+      exit 1; \
+    fi; \
+    echo "Cached happier-server payload: $(dirname "$SERVER_BIN")"; \
+    HAPPIER_CACHE_DIR="/config/.cache"; \
+    MIGRATIONS_SRC=$(find "$HAPPIER_CACHE_DIR/happier/server" -path "*/prisma/sqlite/migrations" -type d -print -quit 2>/dev/null || true); \
     if [ -n "$MIGRATIONS_SRC" ] && [ -d "$MIGRATIONS_SRC" ]; then \
       mkdir -p /config/.happy/server-light/migrations && \
       cp -r "$MIGRATIONS_SRC" /config/.happy/server-light/migrations/sqlite && \
       echo "Migrations copied from $MIGRATIONS_SRC to /config/.happy/server-light/migrations/sqlite"; \
     else \
       echo "No SQLite migrations found in cache — flyway migration path needed?"; \
-    fi && \
-    rm -f /config/.happy/server-light/happier-server-light.sqlite && \
+    fi; \
+    rm -f /config/.happy/server-light/happier-server-light.sqlite; \
     # Use numeric IDs matching the linuxserver default PUID/PGID (911:911).
     # The base image defines abc with gid=1001, but at runtime the init
     # system sets abc's group to PGID (default 911). Using the runtime ID
     # here avoids overlay2 copy-up when the runtime chown runs.
-    chown -R 911:911 /config && \
+    chown -R 911:911 /config; \
     echo "Pre-download attempt done"
+
+# Install an offline-first happier-server launcher.
+#
+# The npm @happier-dev/relay-server package is a thin runner that contacts the
+# GitHub API on EVERY invocation — even when the server binary is already
+# cached — so it cannot start the relay server in an air-gapped environment
+# and it fails whenever the upstream rolling release renames its assets. This
+# wrapper sits in /usr/local/bin (ahead of the npm shim in /usr/bin on PATH)
+# and runs the newest cached payload directly with zero network access,
+# falling back to the npm runner only when nothing is cached locally (fresh
+# caches download as before). The payload pinned at build time is used until
+# the image is rebuilt.
+RUN printf '%s\n' \
+    '#!/bin/bash' \
+    '# Offline-first happier-server launcher.' \
+    '#' \
+    '# The npm @happier-dev/relay-server package is a thin runner that contacts' \
+    '# the GitHub API on EVERY invocation - even when the server binary is' \
+    '# already cached - so it cannot start the relay server in an air-gapped' \
+    '# environment and it fails whenever the upstream rolling release renames' \
+    '# its assets. This wrapper sits in /usr/local/bin (ahead of the npm shim' \
+    '# in /usr/bin on PATH) and runs the newest cached payload directly with' \
+    '# zero network access, falling back to the npm runner only when nothing' \
+    '# is cached locally (fresh caches download as before). The payload pinned' \
+    '# at build time is used until the image is rebuilt.' \
+    'set -euo pipefail' \
+    '' \
+    'RUNNER=/usr/bin/happier-server' \
+    'CACHE_ROOT="${HAPPIER_CACHE_DIR:-${HOME:-/root}/.cache}"' \
+    '' \
+    '# Payload roots carry the full runtime payload (prisma/, runtime/,' \
+    '# node_modules/) as siblings of the binary; deeper matches would run' \
+    '# without it. Pick the newest cached payload (sort -V).' \
+    'find_cached_bin() {' \
+    '  find "$CACHE_ROOT/happier/server" -type f -name happier-server 2>/dev/null | while read -r f; do' \
+    '    [ -d "$(dirname "$f")/prisma" ] && echo "$f"' \
+    '  done | sort -V | tail -1' \
+    '}' \
+    '' \
+    'CACHED_BIN=$(find_cached_bin || true)' \
+    'if [ -n "$CACHED_BIN" ] && [ -x "$CACHED_BIN" ]; then' \
+    '  exec "$CACHED_BIN" "$@"' \
+    'else' \
+    '  exec "$RUNNER" "$@"' \
+    'fi' \
+    > /usr/local/bin/happier-server \
+    && chmod +x /usr/local/bin/happier-server
 
 # Copy cconx to the container
 COPY cconx /cconx
