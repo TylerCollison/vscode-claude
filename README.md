@@ -849,6 +849,18 @@ cd vscode-claude
 docker build -t tylercollison2089/vscode-claude:latest .
 ```
 
+### Running the Test Suite
+
+The Python test suite runs with [pytest](https://docs.pytest.org/) and covers the `cconx` CLI package (`cconx/tests/`) and the top-level dispatch scripts (`tests/`). No Docker daemon is required — the docker client is mocked in `cconx/conftest.py`.
+
+```bash
+# From the repository root
+pip install pytest pyyaml
+python -m pytest
+```
+
+Some tests in `cconx/tests/` currently fail against the current implementation (test/code contract drift); this is tracked as issue `workspace-658` in the Beads tracker.
+
 ## Troubleshooting
 
 ### Container-Level Debugging
