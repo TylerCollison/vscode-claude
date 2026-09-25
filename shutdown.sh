@@ -55,7 +55,9 @@ console.log('env_' + (h >>> 0).toString(16));
     return 1
   }
 
-  # Get the machine ID from settings (legacy method - may be stale)
+  # Get this instance's machine ID from settings.json (the daemon writes it
+  # here when it registers with the server; may be stale if the registration
+  # did not happen for this server URL)
   get_machine_id_from_settings() {
     local server_url="$1"
     local sid
@@ -132,24 +134,38 @@ PYEOF
     rm -f "$py_script"
   }
 
-  # Find machine ID from server machine list matching current hostname
-  find_machine_id_from_server() {
+  # Look up the state of a machine ID in the server's machine list.
+  # Prints "active", "inactive", "absent", or "unknown".
+  # This can only verify a machine ID we already know: the server's machine
+  # list carries no hostname field (hostname only lives inside the encrypted
+  # metadata blob), so it cannot be used to identify our own machine.
+  # The response body is written to a temp file rather than passed as an
+  # environment variable: it grows with the account's machine count and
+  # overflows the kernel's ~128KB per-string exec limit (E2BIG, "Argument
+  # list too long"), which silently broke this lookup.
+  get_machine_state_from_server() {
     local server_url="$1"
     local access_key="$2"
-    local hostname="$3"
+    local machine_id="$3"
 
-    local response
-    response=$(curl -k -s -w "\n%{http_code}" -X GET \
+    local body_file
+    body_file=$(mktemp)
+    local http_code
+    http_code=$(curl -k -s -o "$body_file" -w "%{http_code}" -X GET \
       -H "Authorization: Bearer $access_key" \
       "$server_url/v1/machines" 2>/dev/null || true)
 
-    local http_code
-    http_code=$(echo "$response" | tail -n1)
-    local body
-    body=$(echo "$response" | head -n-1)
-
-    if [ "$http_code" != "200" ] || [ -z "$body" ]; then
-      return 1
+    if [ "$http_code" != "200" ]; then
+      log "Machine list request failed (HTTP $http_code)"
+      rm -f "$body_file"
+      echo "unknown"
+      return 0
+    fi
+    if [ ! -s "$body_file" ]; then
+      log "Machine list response was empty"
+      rm -f "$body_file"
+      echo "unknown"
+      return 0
     fi
 
     # Use a temporary Python script to parse the machine list
@@ -157,32 +173,36 @@ PYEOF
     py_script=$(mktemp)
     cat > "$py_script" << 'PYEOF'
 import json, sys, os
-body = os.environ.get('BODY', '')
-hostname = os.environ.get('HOSTNAME', '')
+body_file = os.environ.get('BODY_FILE', '')
+machine_id = os.environ.get('MACHINE_ID', '')
 try:
-    data = json.loads(body)
+    with open(body_file) as f:
+        data = json.load(f)
     machines = data.get('machines', data) if isinstance(data, dict) else data
-
-    # First, try to find machine with matching hostname
     for machine in machines:
-        if machine.get('hostname') == hostname and machine.get('active', True):
-            print(machine.get('id', ''))
+        if machine.get('id') == machine_id:
+            # The server deactivates machines via active=false; revokedAt
+            # may stay null even after deactivation.
+            print('active' if machine.get('active', True) else 'inactive')
             sys.exit(0)
-
-    # Fallback: find most recently created active machine for this account
-    active_machines = [m for m in machines if m.get('active', True)]
-    if active_machines:
-        active_machines.sort(key=lambda m: m.get('createdAt', ''), reverse=True)
-        print(active_machines[0].get('id', ''))
-        sys.exit(0)
-except Exception:
-    pass
+    print('absent')
+    sys.exit(0)
+except Exception as e:
+    print('parse-error: %s' % e, file=sys.stderr)
 sys.exit(1)
 PYEOF
-    BODY="$body" HOSTNAME="$hostname" python3 "$py_script" 2>/dev/null || true
-    local result=$?
+    local state
+    state=$(BODY_FILE="$body_file" MACHINE_ID="$machine_id" python3 "$py_script" 2>/dev/null || true)
+
+    if [ -z "$state" ]; then
+      # Parse failed; surface a trimmed body snippet so the failure is
+      # diagnosable (e.g. an HTML fallback page instead of JSON).
+      log "Failed to parse machine list response; body starts with: $(head -c 200 "$body_file" 2>/dev/null || true)"
+      state="unknown"
+    fi
     rm -f "$py_script"
-    return $result
+    rm -f "$body_file"
+    echo "$state"
   }
 
   # Determine the server URL based on HAPPIER_MODE
@@ -191,6 +211,15 @@ PYEOF
   else
     SERVER_URL="${HAPPIER_SERVER_URL:-http://happier-server:3006}"
   fi
+
+  # Strip trailing slashes so API paths don't double up. A trailing slash in
+  # HAPPIER_SERVER_URL otherwise produces //v1/... URLs; the revoke endpoint
+  # is not route-normalized and 404s on the double slash, so the machine was
+  # never actually revoked. (get_server_id below normalizes the same way,
+  # which is why the derived env_* server ID was still correct.)
+  while [ "${SERVER_URL%/}" != "$SERVER_URL" ]; do
+    SERVER_URL="${SERVER_URL%/}"
+  done
 
   log "Server URL: $SERVER_URL"
 
@@ -215,38 +244,32 @@ try {
 }
 " "$ACCESS_KEY_FILE")
 
-    # Get current hostname for matching against server machine list
-    CURRENT_HOSTNAME=$(hostname)
-
-    # Try to find the correct machine ID by querying the server's machine list
-    # This is more reliable than using the potentially stale settings.json
-    MACHINE_ID=""
-
-    log "Querying server for machine list to find current instance..."
-    MATCHED_ID=$(find_machine_id_from_server "$SERVER_URL" "$ACCESS_KEY" "$CURRENT_HOSTNAME" || true)
-
-    if [ -n "$MATCHED_ID" ]; then
-      MACHINE_ID="$MATCHED_ID"
-      log "Found matching machine on server: $MACHINE_ID (hostname: $CURRENT_HOSTNAME)"
-    else
-      log "No matching active machine found on server for hostname: $CURRENT_HOSTNAME"
-    fi
-
-    # Fallback to settings.json if server query didn't find a match
-    if [ -z "$MACHINE_ID" ]; then
-      MACHINE_ID=$(get_machine_id_from_settings "$SERVER_URL" || true)
-      if [ -n "$MACHINE_ID" ]; then
-        log "Using machine ID from settings.json: $MACHINE_ID"
-      fi
-    fi
+    # The daemon writes this instance's machine ID to settings.json when it
+    # registers with the server, so it is the only reliable identity for this
+    # container. The server's machine list carries no hostname field, so
+    # matching by hostname is impossible — and guessing (e.g. "most recently
+    # created machine") risks revoking another running container's machine.
+    MACHINE_ID=$(get_machine_id_from_settings "$SERVER_URL" || true)
 
     if [ -n "$MACHINE_ID" ]; then
-      log "Found machine ID: $MACHINE_ID"
+      log "Machine ID from settings.json: $MACHINE_ID"
+
+      # Check how the server sees this machine so the result is unambiguous
+      STATE=$(get_machine_state_from_server "$SERVER_URL" "$ACCESS_KEY" "$MACHINE_ID")
+      case "$STATE" in
+        active)   log "Server reports this machine as registered and active" ;;
+        inactive) log "Server reports this machine as already revoked" ;;
+        absent)   log "Server machine list does not contain this machine ID (stale)" ;;
+        *)        log "Could not determine machine state from server machine list" ;;
+      esac
 
       # Remove this machine from the server's active machine list.
       # The Happier server has no DELETE /v1/machines/:id endpoint (it returns
       # 404). The correct way to de-register a machine is POST .../revoke,
-      # which marks the machine active=false and sets revokedAt.
+      # which marks the machine active=false (revokedAt may stay null).
+      # Revoke is idempotent: it returns 200 even for an already-revoked
+      # machine, so a 404 here means the ID is genuinely stale (or the URL
+      # was malformed — see the trailing-slash normalization above).
       log "Revoking machine $MACHINE_ID from Happier server..."
       RESPONSE=$(curl -k -s -w "\n%{http_code}" -X POST \
         -H "Authorization: Bearer $ACCESS_KEY" \
@@ -269,7 +292,7 @@ try {
         log "WARNING: Failed to revoke machine (HTTP $HTTP_CODE): $BODY"
       fi
     else
-      log "No machine ID found (neither from server nor settings), skipping machine deletion"
+      log "No machine ID found in settings.json for this server, skipping machine revocation"
     fi
   else
     log "No access key found, skipping machine deletion"
