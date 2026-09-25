@@ -34,6 +34,7 @@ STARTUP_SCRIPTS=(
     "/96-start-lite-llm"
     "/97-configure-claude-permissions"
     "/98-configure-claude-plugins"
+    "/98-configure-skills"
     "/99-mattermost-create-channel"
     "/100-configure-threads-settings"
     "/101-start-claude-threads"

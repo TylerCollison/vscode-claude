@@ -14,11 +14,12 @@ Install skills to your user-wide skill directory so they're available in all pro
 # Clone the marketplace
 git clone https://github.com/TylerCollison/vscode-claude.git /tmp/vscode-claude
 
-# Install a specific skill (e.g., happier)
-cp -r /tmp/vscode-claude/skills/claude-conx-happier ~/.agents/skills/
+# Install a specific skill (e.g., happier) — Claude Code discovers
+# ~/.claude/skills (the .agents path is for other agentskills.io harnesses)
+cp -r /tmp/vscode-claude/skills/claude-conx-happier ~/.claude/skills/
 
 # Or install all skills at once
-cp -r /tmp/vscode-claude/skills/* ~/.agents/skills/
+cp -r /tmp/vscode-claude/skills/* ~/.claude/skills/
 ```
 
 #### For Projects (Project-Specific Installation)
@@ -27,13 +28,13 @@ Install skills to a project's local skill directory:
 
 ```bash
 # In your project root
-mkdir -p .agents/skills
+mkdir -p .claude/skills
 
 # Install a specific skill
-cp -r /path/to/skills/claude-conx-happier .agents/skills/
+cp -r /path/to/skills/claude-conx-happier .claude/skills/
 
 # Or install all skills
-cp -r /path/to/skills/* .agents/skills/
+cp -r /path/to/skills/* .claude/skills/
 ```
 
 #### Via Docker Environment Variables (Container Startup)
@@ -50,6 +51,9 @@ docker run -d \
 **Environment Variables:**
 - `SKILLS_MARKETPLACES` — Comma-separated list of marketplace URLs/paths (Git repos or local paths)
 - `SKILLS` — Comma-separated list of skill directory names to auto-install
+- `SKILLS_SCOPE` — Installation scope: `user` (default, `/config/.claude/skills/` and `/config/.agents/skills/` — the abc home in the container), `project` (`<workspace>/.claude/skills/` and `<workspace>/.agents/skills/`), or `both`
+
+When `SKILLS` is set without `SKILLS_MARKETPLACES`, the marketplace bundled in the container image at `/skills` is used automatically. Each skill is installed from the first marketplace that provides it.
 
 ## Marketplace Structure
 
@@ -79,10 +83,12 @@ This marketplace is designed to work with **any harness** that implements the ag
 
 | Harness | Skill Discovery Paths | Auto-Load | Explicit Load |
 |---------|----------------------|-----------|---------------|
-| Claude Code | `~/.claude/skills/`, `.claude/skills/`, `~/.agents/skills/`, `.agents/skills/` | Pattern matching | `skill` tool |
+| Claude Code | `~/.claude/skills/`, `.claude/skills/` | Pattern matching | `skill` tool |
 | Codex | `~/.codex/skills/`, `.codex/skills/`, `~/.agents/skills/`, `.agents/skills/` | Pattern matching | `skill` tool |
 | OpenCode | `~/.opencode/skills/`, `.opencode/skills/`, `~/.agents/skills/`, `.agents/skills/` | Pattern matching | `skill` tool |
 | Custom | `~/.agents/skills/`, `.agents/skills/` (cross-runtime alias) | Varies | Varies |
+
+> **Note:** Claude Code (verified with 2.1.282) discovers skills from the `.claude` paths only — it does not read the `.agents` cross-runtime alias. The `configure-skills.sh` container installer populates **both** paths for each scope, so skills are discovered by Claude Code and by harnesses following the agentskills.io spec.
 
 ### Discovery Paths (Priority Order)
 

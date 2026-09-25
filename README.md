@@ -127,6 +127,27 @@ This container supports extensive configuration through environment variables.
 | `CLAUDE_MARKETPLACES` | Comma-separated list of plugin marketplaces |
 | `CLAUDE_PLUGINS` | Comma-separated list of plugins to install |
 
+### Skills Marketplace Configuration
+
+Auto-install skills (agent instruction packages) from one or more skills marketplaces on container startup. Skills are installed following the layout described in the [skills README](skills/README.md) and are plain directories readable by any agentskills.io-compatible harness — no Claude CLI needed.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SKILLS_MARKETPLACES` | *(not set)* | Comma-separated list of marketplace git URLs or local paths (e.g. `https://github.com/TylerCollison/vscode-claude.git,/workspace/skills`). GitHub shorthands (`owner/repo`) are expanded to full clone URLs |
+| `SKILLS` | *(not set)* | Comma-separated list of skill directory names to auto-install (e.g. `claude-conx-build-env,claude-conx-happier`) |
+| `SKILLS_SCOPE` | `user` | Installation scope: `user` (`/config/.claude/skills/` and `/config/.agents/skills/`), `project` (`<workspace>/.claude/skills/` and `<workspace>/.agents/skills/`), or `both` (all four) |
+
+When `SKILLS` is set without `SKILLS_MARKETPLACES`, the marketplace bundled with the image at `/skills` is used (falling back to `<workspace>/skills`). Each skill is installed from the first marketplace that provides it. Existing `CLAUDE_MARKETPLACES`/`CLAUDE_PLUGINS` configuration is unaffected and continues to work.
+
+**Usage:**
+
+```yaml
+environment:
+  - SKILLS_MARKETPLACES=https://github.com/TylerCollison/vscode-claude.git # Optional (bundled marketplace used when unset)
+  - SKILLS=claude-conx-build-env,claude-conx-happier,claude-conx-dispatch-beads
+  - SKILLS_SCOPE=user # Optional (user, project, or both)
+```
+
 ### LiteLLM Router Configuration
 | Variable | Description |
 |----------|-------------|
@@ -515,6 +536,9 @@ services:
       # Claude Code Plugins (optional)
       - CLAUDE_MARKETPLACES=anthropics/claude-plugins-official
       - CLAUDE_PLUGINS=ralph-loop,superpowers
+      # Skills Marketplace (optional)
+      - SKILLS_MARKETPLACES=https://github.com/TylerCollison/vscode-claude.git
+      - SKILLS=claude-conx-build-env,claude-conx-happier
       # Git repository setup (optional)
       - GIT_REPO_URL=https://github.com/user/repo.git
       - GIT_BRANCH_NAME=feature-branch
@@ -839,6 +863,7 @@ The builder is created once at startup and persists across container restarts. M
 - Knowledge repository markdown combination
 - LiteLLM routing configuration loaded on startup
 - Claude Code plugin and marketplace setup
+- Skills marketplace installation (`SKILLS_MARKETPLACES` / `SKILLS`)
 - Mattermost channel auto-creation
 
 ## Building Locally
