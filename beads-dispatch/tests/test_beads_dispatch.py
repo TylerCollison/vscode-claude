@@ -319,6 +319,26 @@ def test_configure_credential_helpers_idempotent():
     assert after == before, "second configure duplicated helpers"
 
 
+def test_default_dispatch_prompt_includes_claim_and_push_steps():
+    # The agent must indicate the task is in progress before starting on the
+    # work: claim it (assigns itself and sets it in-progress), then push the
+    # beads DB so the in-progress state syncs to the remote.
+    prompt = bd.default_dispatch_prompt("probe-n5h", "task/probe-n5h-task-a", "https://github.com/o/r.git")
+    assert "bd update <issue-id> --claim" in prompt
+    assert "in progress" in prompt
+    assert "bd dolt push" in prompt
+    # Claiming and pushing come before the implementation step.
+    assert prompt.index("bd update <issue-id> --claim") < prompt.index("implementing the required changes")
+    assert prompt.index("bd dolt push") < prompt.index("implementing the required changes")
+
+
+def test_default_dispatch_prompt_closes_with_bd_close():
+    # 'bd complete' is not a valid bd command; closing uses 'bd close'.
+    prompt = bd.default_dispatch_prompt("probe-n5h", "task/probe-n5h-task-a", "https://github.com/o/r.git")
+    assert "bd close <issue-id>" in prompt
+    assert "bd complete" not in prompt
+
+
 if __name__ == "__main__":
     import traceback
 

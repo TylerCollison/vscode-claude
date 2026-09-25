@@ -78,6 +78,10 @@ This requires the same git credentials as the branch push (configured automatica
   DnsOptions/ExtraHosts}`), so the worker resolves the same names (e.g. compose `dns:`).
 - On startup the worker runs `bd bootstrap` to clone the task DB from the remote, so
   `bd list` shows the dispatched task.
+- The dispatched agent is instructed (via the injected prompt) to **claim the task**
+  (`bd update <issue-id> --claim` — assigns itself and sets it in-progress) and run
+  `bd dolt push` before starting on the work, so the in-progress state is visible on
+  the remote.
 - Code-server (8443) is published on the first free host port ≥ `BEADS_DISPATCH_PORT_BASE`.
 - Restart policy is inherited from the parent (local) / `any` (swarm service).
 

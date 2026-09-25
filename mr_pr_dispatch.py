@@ -65,20 +65,23 @@ def default_mr_pr_prompt(mr_pr_id, title, branch, repo_url, provider):
         "Instructions:\n"
         "1. Use the `%s %s` commands to interact with the %s.\n"
         "2. First, examine the current state of the %s, including its description and any existing comments.\n"
-        "3. **If there are NO comments**:\n"
+        "3. **Before starting on the work**, indicate that the task is in progress by assigning yourself to it:\n"
+        "   - If this %s corresponds to a Beads task (e.g. a Beads issue matching the branch), claim it: run 'bd update <issue-id> --claim' (this assigns the task to you and sets its status to in-progress).\n"
+        "   - Then run 'bd dolt push' to sync the in-progress state with the remote.\n"
+        "4. **If there are NO comments**:\n"
         "   - Review the code changes thoroughly.\n"
         "   - Provide constructive feedback by adding comments directly on the %s.\n"
         "   - Suggest improvements or ask clarifying questions where necessary.\n"
-        "4. **If there ARE existing comments**:\n"
+        "5. **If there ARE existing comments**:\n"
         "   - Address each comment systematically.\n"
         "   - If a comment requires a code change: Implement the fix, commit it, and push to the branch.\n"
         "   - If a comment is a question or doesn't require code: Reply to the comment directly using the CLI.\n"
         "   - Ensure you acknowledge or address every piece of feedback.\n"
-        "5. Your goal is to move the %s toward being ready for merge.\n"
-        "6. After addressing the %s, unassign the %s to indicate you have addressed it.\n"
+        "6. Your goal is to move the %s toward being ready for merge.\n"
+        "7. After addressing the %s, unassign the %s to indicate you have addressed it.\n"
         "\n"
         "Use the appropriate CLI tools as needed."
-    ) % (id_label, id_label, mr_pr_id, title, branch, repo_url, cli, cmd_prefix, id_label, id_label, id_label, id_label, id_label, id_label)
+    ) % (id_label, id_label, mr_pr_id, title, branch, repo_url, cli, cmd_prefix, id_label, id_label, id_label, id_label, id_label, id_label, id_label)
 
 
 def compose_worker_env(parent_env, branch, repo_url, mr_pr_id, dispatch_prompt=None):

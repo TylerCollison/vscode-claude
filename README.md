@@ -364,6 +364,7 @@ When you commit and a task is ready (e.g. `probe-n5h`, "Task A"), the dispatcher
 3. with code-server at `http://localhost:<free-port>` (first free port ≥ `BEADS_DISPATCH_PORT_BASE`),
 4. as a **swarm service** if the node is a swarm manager, else a **local container**.
 5. The worker (via `git-repo-setup.sh`) clones the repo and **automatically creates the branch off the default branch** (typically `main`) if it doesn't exist, or checks it out if it does.
+6. The dispatched agent is instructed (via the injected prompt) to **claim the task** (`bd update <issue-id> --claim` — assigns itself and sets it in-progress) and run `bd dolt push` before starting on the work, so the in-progress state is visible on the remote.
 
 The worker inherits the full environment (API keys, providers) but sets `BEADS_DISPATCH=false`, `BEADS_ENABLED=false`, `ENABLE_SCOTTY=false`, `MR_PR_DISPATCH=false`, so workers never dispatch their own workers, enable Beads, start Scotty, or respond to MRs/PRs. If the parent container has `HAPPIER_MODE` set (to `server` or `agent`), the worker receives `HAPPIER_MODE=agent` to enable web UI access via Happier. Each task is dispatched once — a later commit won't duplicate it (state is tracked in `/config/.beads-dispatch/state.json`).
 
@@ -422,10 +423,11 @@ After initial auth, the daemon runs sync automatically on the interval. On each 
 
 When a Merge Request (GitLab) or Pull Request (GitHub) is assigned to a designated user, the dispatcher creates a **worker container** to review and respond to it. The worker gets a branch checked out, the full environment (API keys, providers), and a prompt instructing it to:
 1. Examine the MR/PR (description, comments, code changes)
-2. Provide constructive feedback or implement fixes
-3. Address all existing comments
-4. Push fixes to the branch
-5. Unassign the MR/PR to indicate response is complete
+2. Before starting on the work, indicate the task is in progress: if the MR/PR corresponds to a Beads task, claim it (`bd update <issue-id> --claim` — assigns itself and sets it in-progress) and run `bd dolt push` to sync the state
+3. Provide constructive feedback or implement fixes
+4. Address all existing comments
+5. Push fixes to the branch
+6. Unassign the MR/PR to indicate response is complete
 
 The feature consists of two components gated by the same switch `MR_PR_DISPATCH=true`:
 - **Dispatcher daemon** (root) — listens on a unix socket, creates worker containers
