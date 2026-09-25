@@ -1,11 +1,8 @@
 def test_cli_includes_volume_config():
     """Test that CLI uses volume config from global settings"""
     from unittest.mock import patch, MagicMock
-    import sys
 
-    # Mock docker module to avoid import errors
-    sys.modules['docker'] = MagicMock()
-    sys.modules['docker.errors'] = MagicMock()
+    # The docker module is mocked by cconx/conftest.py before tests run
 
     # Add parent directory to Python path
     import os
@@ -14,7 +11,7 @@ def test_cli_includes_volume_config():
     from cconx.cconx.cli import start_command
 
     # Mock the config to return custom volumes
-    with patch('cconx.cconx.cconx.config.ConfigManager') as MockConfigManager:
+    with patch('cconx.cconx.config.ConfigManager') as MockConfigManager:
         mock_manager = MockConfigManager.return_value
         mock_manager.load_global_config.return_value = {
             "port_range": {"min": 8000, "max": 9000},
@@ -27,8 +24,8 @@ def test_cli_includes_volume_config():
         mock_manager.format_ide_address.return_value = "http://localhost:8443"
 
         # Test that generate is called with correct volume parameters
-        with patch('cconx.cconx.cconx.compose.generate') as mock_generate:
-            with patch('cconx.cconx.cconx.instances.InstanceManager') as MockInstanceManager:
+        with patch('cconx.cconx.compose.generate') as mock_generate:
+            with patch('cconx.cconx.instances.InstanceManager') as MockInstanceManager:
                 mock_instance_manager = MockInstanceManager.return_value
                 mock_instance_manager.create_instance_config.return_value = {}
 

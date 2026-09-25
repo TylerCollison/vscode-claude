@@ -20,17 +20,8 @@ def test_cli_environment_variable_parsing():
     """Test CLI environment variable parsing"""
     import argparse
     from unittest.mock import Mock
-    import sys
-    import os
 
-    # Mock docker module properly before importing cli
-    mock_docker_module = type('MockDocker', (), {})
-    mock_docker_module.errors = type('MockDockerErrors', (), {})
-    sys.modules['docker'] = mock_docker_module
-    sys.modules['docker.errors'] = mock_docker_module.errors
-
-    # Add the parent directory to Python path to import cli module
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    # The docker module is mocked by cconx/conftest.py before tests run
     from cconx.cconx.cli import start_command
 
     # Mock args with environment variables
@@ -43,11 +34,11 @@ def test_cli_environment_variable_parsing():
     # Mock dependencies to avoid actual Docker operations
     from unittest.mock import patch, MagicMock
 
-    with patch('cconx.cconx.cconx.config.ConfigManager') as MockConfigManager, \
-         patch('cconx.cconx.cconx.ports.PortManager') as MockPortManager, \
-         patch('cconx.cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
-         patch('cconx.cconx.cconx.compose.generate') as mock_generate, \
-         patch('cconx.cconx.cconx.cli.docker.errors') as mock_docker_errors:
+    with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
+         patch('cconx.cconx.ports.PortManager') as MockPortManager, \
+         patch('cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
+         patch('cconx.cconx.compose.generate') as mock_generate, \
+         patch('cconx.cconx.cli.docker.errors') as mock_docker_errors:
 
         # Configure mocks
         mock_config = MagicMock()

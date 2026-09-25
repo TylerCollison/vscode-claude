@@ -10,11 +10,7 @@ def test_env_append_integration():
     """Integration test for env-append feature"""
     import sys
 
-    # Mock docker module before importing cli
-    mock_docker_module = type('MockDocker', (), {})
-    mock_docker_module.errors = type('MockDockerErrors', (), {})
-    sys.modules['docker'] = mock_docker_module
-    sys.modules['docker.errors'] = mock_docker_module.errors
+    # The docker module is mocked by cconx/conftest.py before tests run
 
     # Add parent directory to Python path
     import os
@@ -49,10 +45,10 @@ def test_env_append_integration():
         args.env_append = ["PATH=/custom/bin", "NEW_VAR=new_value"]
 
         # Mock dependencies that require actual operations
-        with patch('cconx.cconx.cconx.config.ConfigManager') as MockConfigManager, \
-             patch('cconx.cconx.cconx.ports.PortManager') as MockPortManager, \
-             patch('cconx.cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
-             patch('cconx.cconx.cconx.compose.generate') as mock_generate:
+        with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
+             patch('cconx.cconx.ports.PortManager') as MockPortManager, \
+             patch('cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
+             patch('cconx.cconx.compose.generate') as mock_generate:
 
             # Configure mock to use our temp config
             mock_config = Mock()
@@ -92,11 +88,7 @@ def test_env_append_fallback_integration():
     """Integration test for env-append fallback behavior"""
     import sys
 
-    # Mock docker module before importing cli
-    mock_docker_module = type('MockDocker', (), {})
-    mock_docker_module.errors = type('MockDockerErrors', (), {})
-    sys.modules['docker'] = mock_docker_module
-    sys.modules['docker.errors'] = mock_docker_module.errors
+    # The docker module is mocked by cconx/conftest.py before tests run
 
     # Add parent directory to Python path
     import os
@@ -130,10 +122,10 @@ def test_env_append_fallback_integration():
         args.env_append = ["NEW_VAR=fallback_value"]
 
         # Mock dependencies that require actual operations
-        with patch('cconx.cconx.cconx.config.ConfigManager') as MockConfigManager, \
-             patch('cconx.cconx.cconx.ports.PortManager') as MockPortManager, \
-             patch('cconx.cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
-             patch('cconx.cconx.cconx.compose.generate') as mock_generate:
+        with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
+             patch('cconx.cconx.ports.PortManager') as MockPortManager, \
+             patch('cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
+             patch('cconx.cconx.compose.generate') as mock_generate:
 
             # Configure mock to use our temp config
             mock_config = Mock()
@@ -171,11 +163,7 @@ def test_env_append_complex_scenario_integration():
     """Integration test for complex env-append scenarios"""
     import sys
 
-    # Mock docker module before importing cli
-    mock_docker_module = type('MockDocker', (), {})
-    mock_docker_module.errors = type('MockDockerErrors', (), {})
-    sys.modules['docker'] = mock_docker_module
-    sys.modules['docker.errors'] = mock_docker_module.errors
+    # The docker module is mocked by cconx/conftest.py before tests run
 
     # Add parent directory to Python path
     import os
@@ -217,10 +205,10 @@ def test_env_append_complex_scenario_integration():
         ]
 
         # Mock dependencies that require actual operations
-        with patch('cconx.cconx.cconx.config.ConfigManager') as MockConfigManager, \
-             patch('cconx.cconx.cconx.ports.PortManager') as MockPortManager, \
-             patch('cconx.cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
-             patch('cconx.cconx.cconx.compose.generate') as mock_generate:
+        with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
+             patch('cconx.cconx.ports.PortManager') as MockPortManager, \
+             patch('cconx.cconx.instances.InstanceManager') as MockInstanceManager, \
+             patch('cconx.cconx.compose.generate') as mock_generate:
 
             # Configure mock to use our temp config
             mock_config = Mock()

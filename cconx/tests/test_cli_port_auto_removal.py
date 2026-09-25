@@ -1,6 +1,4 @@
-import pytest
 import sys
-import os
 from io import StringIO
 from contextlib import redirect_stdout
 
@@ -8,23 +6,9 @@ from contextlib import redirect_stdout
 def test_cli_start_help_does_not_contain_port_auto_flag():
     """Test that CLI start help output does not contain --port-auto flag after removal"""
 
-    # Add cconx directory to Python path
-    sys.path.insert(0, os.path.join(os.getcwd(), 'cconx'))
-
-    # Mock docker first (as done in conftest.py)
-    mock_docker_module = type('MockDocker', (), {})
-    mock_docker_module.errors = type('MockDockerErrors', (), {})
-    sys.modules['docker'] = mock_docker_module
-    sys.modules['docker.errors'] = mock_docker_module.errors
-
-    # Mock specific exception classes that are used in the code
-    mock_docker_module.errors.NotFound = type('NotFound', (Exception,), {})
-    mock_docker_module.errors.APIError = type('APIError', (Exception,), {})
-    mock_docker_module.errors.DockerException = type('DockerException', (Exception,), {})
-
-    # Try importing from the cli module directly
-    import importlib
-    cli_module = importlib.import_module('cli')
+    # The docker module is mocked by cconx/conftest.py before tests run.
+    # Import the cli module via the cconx package
+    import cconx.cconx.cli as cli_module
 
     # Capture help output
     captured_output = StringIO()
@@ -56,4 +40,3 @@ def test_cli_start_help_does_not_contain_port_auto_flag():
     finally:
         # Restore original sys.argv
         sys.argv = original_argv
-        sys.path.remove(os.path.join(os.getcwd(), 'cconx'))

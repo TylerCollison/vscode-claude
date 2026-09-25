@@ -3,29 +3,7 @@
 import pytest
 from unittest.mock import Mock, patch, MagicMock
 
-# Mock docker import at module level to avoid import errors
-import sys
-from unittest.mock import MagicMock
-
-# Create a mock docker module
-docker_mock = MagicMock()
-docker_mock.errors = MagicMock()
-
-# Create exception classes that can be used in tests
-class DockerExceptionMock(Exception):
-    pass
-
-class APIErrorMock(Exception):
-    pass
-
-class NotFoundMock(Exception):
-    pass
-
-docker_mock.errors.DockerException = DockerExceptionMock
-docker_mock.errors.APIError = APIErrorMock
-docker_mock.errors.NotFound = NotFoundMock
-sys.modules['docker'] = docker_mock
-sys.modules['docker.errors'] = docker_mock.errors
+# The docker module is mocked by cconx/conftest.py before tests run
 
 # Import error classes first since they don't depend on docker
 from cconx.cconx.docker import (
@@ -697,3 +675,92 @@ def test_remove_container_success():
     client = MockDockerClient()
     assert client.remove_container("test-container-1") == True
     assert "test-container-1" not in client.mock_containers
+
+
+@patch('docker.from_env')
+def test_network_exists(mock_docker):
+    """Test network existence checking"""
+    # Mock the Docker client and network operations
+    mock_client = Mock()
+    mock_client.ping.return_value = True
+    mock_docker.return_value = mock_client
+
+    from cconx.cconx.docker import DockerClient
+    docker_client = DockerClient()
+
+    # Test with existing network
+    mock_network = Mock()
+    mock_client.networks.get.return_value = mock_network
+    assert docker_client.network_exists("bridge") == True
+
+    # Test with non-existent network
+    import docker.errors
+    mock_client.networks.get.side_effect = docker.errors.NotFound("Network not found")
+    assert docker_client.network_exists("non-existent-network") == False
+
+
+def test_mock_docker_client_network_exists():
+    """Test mock Docker client network existence checking"""
+    from cconx.cconx.docker import MockDockerClient
+    mock_client = MockDockerClient()
+
+    # Test with existing mock networks
+    assert mock_client.network_exists("bridge") == True
+    assert mock_client.network_exists("host") == True
+    assert mock_client.network_exists("none") == True
+
+    # Test with non-existent network
+    assert mock_client.network_exists("non-existent-network") == False
+
+
+@patch('docker.from_env')
+def test_network_exists_api_error(mock_docker):
+    """Test network existence checking with API errors"""
+    # Mock the Docker client and network operations
+    mock_client = Mock()
+    mock_client.ping.return_value = True
+    mock_docker.return_value = mock_client
+
+    import docker.errors
+    from cconx.cconx.docker import DockerClient, DockerConnectionError
+    docker_client = DockerClient()
+
+    # Test API error handling
+    mock_client.networks.get.side_effect = docker.errors.APIError("API error")
+    with pytest.raises(DockerConnectionError):
+        docker_client.network_exists("bridge")
+
+
+@patch('docker.from_env')
+def test_network_exists_docker_connection_error(mock_docker):
+    """Test network existence checking with Docker connection errors"""
+    # Mock the Docker client and network operations
+    mock_client = Mock()
+    mock_client.ping.return_value = True
+    mock_docker.return_value = mock_client
+
+    import docker.errors
+    from cconx.cconx.docker import DockerClient, DockerConnectionError
+    docker_client = DockerClient()
+
+    # Test Docker connection error handling
+    mock_client.networks.get.side_effect = docker.errors.DockerException("Connection failed")
+    with pytest.raises(DockerConnectionError):
+        docker_client.network_exists("bridge")
+
+
+@patch('docker.from_env')
+def test_network_exists_unexpected_error(mock_docker):
+    """Test network existence checking with unexpected errors"""
+    # Mock the Docker client and network operations
+    mock_client = Mock()
+    mock_client.ping.return_value = True
+    mock_docker.return_value = mock_client
+
+    from cconx.cconx.docker import DockerClient, DockerContainerError
+    docker_client = DockerClient()
+
+    # Test unexpected error handling
+    mock_client.networks.get.side_effect = Exception("Unexpected error")
+    with pytest.raises(DockerContainerError):
+        docker_client.network_exists("bridge")
