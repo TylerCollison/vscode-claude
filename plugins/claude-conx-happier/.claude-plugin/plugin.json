@@ -1,0 +1,8 @@
+{
+  "name": "claude-conx-happier",
+  "description": "Use the Happier CLI for agent orchestration",
+  "version": "1.0.0",
+  "author": {
+    "name": "Tyler Collison"
+  }
+}
