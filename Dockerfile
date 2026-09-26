@@ -316,9 +316,12 @@ COPY --from=scotty-builder /scotty/public /opt/bead-me-up-scotty/public
 RUN rm -rf /opt/bead-me-up-scotty/node_modules/@11ty
 COPY --from=scotty-eleventy /eleventy/node_modules /node_modules
 
-# Bundle the skills marketplace (used as the default marketplace when SKILLS
-# is set without SKILLS_MARKETPLACES — see configure-skills.sh)
-COPY skills /skills
+# Bundle the plugins marketplace (used as the default marketplace when PLUGINS
+# is set without PLUGINS_MARKETPLACES — see configure-plugins.sh). The
+# marketplace root is /marketplace: the manifest at .claude-plugin/ plus the
+# plugins it lists.
+COPY .claude-plugin /marketplace/.claude-plugin
+COPY plugins /marketplace/plugins
 
 # Copy startup scripts to root directory
 COPY configure-code-server-theme.sh /92-configure-code-server-theme
@@ -328,7 +331,7 @@ COPY configure-claude-skip-onboarding.sh /95-configure-claude-skip-onboarding
 COPY start-lite-llm.sh /96-start-lite-llm
 COPY configure-claude-permissions.sh /97-configure-claude-permissions
 COPY configure-claude-plugins.sh /98-configure-claude-plugins
-COPY configure-skills.sh /98-configure-skills
+COPY configure-plugins.sh /98-configure-plugins
 COPY mattermost-create-channel.sh /99-mattermost-create-channel
 COPY configure-threads-settings.sh /100-configure-threads-settings
 COPY start-claude-threads.sh /101-start-claude-threads
@@ -374,7 +377,7 @@ RUN chmod +x /92-configure-code-server-theme \
     /96-start-lite-llm \
     /97-configure-claude-permissions \
     /98-configure-claude-plugins \
-    /98-configure-skills \
+    /98-configure-plugins \
     /99-mattermost-create-channel \
     /100-configure-threads-settings \
     /101-start-claude-threads \
