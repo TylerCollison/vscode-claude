@@ -79,6 +79,8 @@ def default_mr_pr_prompt(mr_pr_id, title, branch, repo_url, provider):
         "   - Ensure you acknowledge or address every piece of feedback.\n"
         "6. Your goal is to move the %s toward being ready for merge.\n"
         "7. After addressing the %s, unassign the %s to indicate you have addressed it.\n"
+        "8. Finally, if you claimed a Beads task in step 3, close it: run 'bd close <issue-id>' to mark the task as complete in Beads.\n"
+        "9. Run 'bd dolt push' to sync the closed state with the remote.\n"
         "\n"
         "Use the appropriate CLI tools as needed."
     ) % (id_label, id_label, mr_pr_id, title, branch, repo_url, cli, cmd_prefix, id_label, id_label, id_label, id_label, id_label, id_label, id_label)

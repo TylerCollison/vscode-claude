@@ -92,6 +92,19 @@ def test_default_mr_pr_prompt_includes_in_progress_claim_step():
     assert prompt.index("bd update <issue-id> --claim") < prompt.index("Review the code changes")
 
 
+def test_default_mr_pr_prompt_closes_beads_task_after_addressing():
+    # The Beads task claimed in step 3 must be closed again once the MR/PR has
+    # been addressed, with the closed state synced to the remote afterwards.
+    prompt = md.default_mr_pr_prompt("42", "Update README", "task/probe-n5h-task-a",
+                                     "https://github.com/o/r.git", "github")
+    assert "bd close <issue-id>" in prompt
+    # The close step comes after the unassign step (i.e. after the MR/PR has
+    # been addressed).
+    assert prompt.index("bd close <issue-id>") > prompt.index("unassign the")
+    # A final dolt push syncs the closed state with the remote.
+    assert prompt.rindex("bd dolt push") > prompt.index("bd close <issue-id>")
+
+
 def test_default_mr_pr_prompt_formats_for_both_providers():
     # Guard the positional format args (id_label count) for gh and glab.
     gh_prompt = md.default_mr_pr_prompt("42", "Update README", "feature/x",

@@ -428,6 +428,7 @@ When a Merge Request (GitLab) or Pull Request (GitHub) is assigned to a designat
 4. Address all existing comments
 5. Push fixes to the branch
 6. Unassign the MR/PR to indicate response is complete
+7. Close the Beads task (`bd close <issue-id>`) and run `bd dolt push` to sync the closed state with the remote
 
 The feature consists of two components gated by the same switch `MR_PR_DISPATCH=true`:
 - **Dispatcher daemon** (root) — listens on a unix socket, creates worker containers
