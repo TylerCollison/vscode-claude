@@ -201,11 +201,13 @@ def default_dispatch_prompt(issue_id, branch, repo_url):
 
     The prompt instructs the agent to:
     1. Check beads for the task corresponding to the branch name
-    2. Complete the task
-    3. Commit and push changes
-    4. Create a GitHub or GitLab MR (using gh/glab CLI)
-    5. Update beads to mark the task as complete
-    6. Push the update to beads
+    2. Claim the task (assign it to itself and set it in-progress)
+    3. Push the beads Dolt DB so the in-progress state syncs to the remote
+    4. Complete the task
+    5. Commit and push changes
+    6. Create a GitHub or GitLab MR (using gh/glab CLI)
+    7. Update beads to mark the task as complete
+    8. Push the update to beads
     """
     # Detect if it's a GitHub or GitLab repo from the URL
     is_github = "github.com" in repo_url.lower()
@@ -226,11 +228,13 @@ def default_dispatch_prompt(issue_id, branch, repo_url):
         "\n"
         "Instructions:\n"
         "1. Run 'bd list --json' to see all tasks and find the one matching this branch.\n"
-        "2. Complete the task by implementing the required changes.\n"
-        "3. Commit your changes and push to the branch.\n"
-        "4. %s\n"
-        "5. Run 'bd complete <issue-id>' to mark the task as complete in Beads.\n"
-        "6. Run 'bd dolt push' to sync the Beads database with the remote.\n"
+        "2. Claim the task to indicate it is in progress: run 'bd update <issue-id> --claim' (this assigns the task to you and sets its status to in-progress).\n"
+        "3. Run 'bd dolt push' to sync the in-progress state with the remote before starting on the work.\n"
+        "4. Complete the task by implementing the required changes.\n"
+        "5. Commit your changes and push to the branch.\n"
+        "6. %s\n"
+        "7. Run 'bd close <issue-id>' to mark the task as complete in Beads.\n"
+        "8. Run 'bd dolt push' to sync the Beads database with the remote.\n"
         "\n"
         "Use the appropriate CLI tools (gh for GitHub, glab for GitLab) as needed."
     ) % (issue_id, branch, mr_instruction)
