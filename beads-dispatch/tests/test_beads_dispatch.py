@@ -339,6 +339,111 @@ def test_default_dispatch_prompt_closes_with_bd_close():
     assert "bd complete" not in prompt
 
 
+def _stub_cfg(state_dir):
+    # Minimal Config: dispatch_all only touches workspace (patched away) and state_dir
+    cfg = bd.Config.__new__(bd.Config)
+    cfg.workspace = "/tmp"
+    cfg.state_dir = state_dir
+    return cfg
+
+
+def test_force_requested_defaults():
+    # Default: no daemon --force, no trigger message
+    assert bd.force_requested(b"manual", default=False) is False
+    assert bd.force_requested(b"", default=False) is False
+    # Daemon --force set: every trigger is forced
+    assert bd.force_requested(b"", default=True) is True
+    assert bd.force_requested(b"manual", default=True) is True
+    # Trigger message contains "force" (dispatch-beads --force)
+    assert bd.force_requested(b"manual force", default=False) is True
+    assert bd.force_requested(b"force", default=False) is True
+
+
+def test_dispatch_all_force_redispatches_seen():
+    """force=True ignores the seen-set: already-dispatched issues get a worker."""
+    dispatched = []
+    def fake_dispatch_worker(issue, cfg, self_info):
+        dispatched.append(issue["id"])
+        return True
+
+    orig_ready = bd.get_ready_issues
+    orig_worker = bd.dispatch_worker
+    bd.get_ready_issues = lambda workspace: [
+        {"id": "already-seen-1", "title": "Old task"},
+        {"id": "fresh-task", "title": "New task"},
+    ]
+    bd.dispatch_worker = fake_dispatch_worker
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = _stub_cfg(tmp)
+            seen = {"already-seen-1"}
+            n = bd.dispatch_all(cfg, {}, seen, force=True)
+            assert n == 2
+            assert set(dispatched) == {"already-seen-1", "fresh-task"}
+            # Dispatched IDs are still persisted, so normal dedup resumes afterwards
+            state_file = os.path.join(tmp, "state.json")
+            assert du.load_state(state_file) == {"already-seen-1", "fresh-task"}
+    finally:
+        bd.get_ready_issues = orig_ready
+        bd.dispatch_worker = orig_worker
+
+
+def test_dispatch_all_no_force_skips_seen():
+    """Without force (default), issues in the seen-set are never re-dispatched."""
+    dispatched = []
+    def fake_dispatch_worker(issue, cfg, self_info):
+        dispatched.append(issue["id"])
+        return True
+
+    orig_ready = bd.get_ready_issues
+    orig_worker = bd.dispatch_worker
+    bd.get_ready_issues = lambda workspace: [
+        {"id": "already-seen-1", "title": "Old task"},
+        {"id": "fresh-task", "title": "New task"},
+    ]
+    bd.dispatch_worker = fake_dispatch_worker
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = _stub_cfg(tmp)
+            n = bd.dispatch_all(cfg, {}, {"already-seen-1"})
+            assert n == 1
+            assert dispatched == ["fresh-task"]
+            # Seen-set keeps the skipped ID and gains the newly dispatched one
+            assert du.load_state(os.path.join(tmp, "state.json")) == {"already-seen-1", "fresh-task"}
+    finally:
+        bd.get_ready_issues = orig_ready
+        bd.dispatch_worker = orig_worker
+
+
+def test_dispatch_all_force_still_requires_ready():
+    """Forced dispatch still re-checks readiness: an issue that is no longer
+    ready between snapshots is not dispatched."""
+    dispatched = []
+    def fake_dispatch_worker(issue, cfg, self_info):
+        dispatched.append(issue["id"])
+        return True
+
+    calls = {"n": 0}
+    def flaky_ready(workspace):
+        # First call (initial snapshot): issue ready. Later calls (re-check): gone.
+        calls["n"] += 1
+        return [{"id": "probe-1", "title": "Task one"}] if calls["n"] == 1 else []
+
+    orig_ready = bd.get_ready_issues
+    orig_worker = bd.dispatch_worker
+    bd.get_ready_issues = flaky_ready
+    bd.dispatch_worker = fake_dispatch_worker
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = _stub_cfg(tmp)
+            n = bd.dispatch_all(cfg, {}, set(), force=True)
+            assert n == 0
+            assert dispatched == []
+    finally:
+        bd.get_ready_issues = orig_ready
+        bd.dispatch_worker = orig_worker
+
+
 if __name__ == "__main__":
     import traceback
 
