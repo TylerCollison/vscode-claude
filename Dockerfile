@@ -330,7 +330,6 @@ COPY combine-markdowns.sh /94-combine-markdowns
 COPY configure-claude-skip-onboarding.sh /95-configure-claude-skip-onboarding
 COPY start-lite-llm.sh /96-start-lite-llm
 COPY configure-claude-permissions.sh /97-configure-claude-permissions
-COPY configure-claude-plugins.sh /98-configure-claude-plugins
 COPY configure-plugins.sh /98-configure-plugins
 COPY mattermost-create-channel.sh /99-mattermost-create-channel
 COPY configure-threads-settings.sh /100-configure-threads-settings
@@ -376,7 +375,6 @@ RUN chmod +x /92-configure-code-server-theme \
     /95-configure-claude-skip-onboarding \
     /96-start-lite-llm \
     /97-configure-claude-permissions \
-    /98-configure-claude-plugins \
     /98-configure-plugins \
     /99-mattermost-create-channel \
     /100-configure-threads-settings \

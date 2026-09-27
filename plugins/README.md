@@ -52,12 +52,17 @@ docker run -d \
 **Environment Variables:**
 - `PLUGINS_MARKETPLACES` — Comma-separated list of plugin marketplaces (git URLs, GitHub shorthands, or local paths). Each must contain a `.claude-plugin/marketplace.json` manifest
 - `PLUGINS` — Comma-separated list of plugin names (marketplace entry names) to auto-install
-- `PLUGINS_SCOPE` — Installation scope: `user` (default, `/config/.claude/skills/` and `/config/.agents/skills/` — the abc home in the container), `project` (`<workspace>/.claude/skills/` and `<workspace>/.agents/skills/`), or `both`
-- `OPENCODE_PLUGINS` — Comma-separated list of OpenCode plugin npm packages to register (installed by OpenCode itself via Bun at startup)
+- `PLUGINS_SCOPE` — Installation scope: `user` (default, all projects in the container), `project` (`<workspace>` only), or `both`
+- `OPENCODE_PLUGINS` — Comma-separated list of OpenCode plugin npm packages (registered for OpenCode, Claude Code, and Codex)
 
 When `PLUGINS` is set without `PLUGINS_MARKETPLACES`, the marketplace bundled in the container image at `/marketplace` is used automatically. Each plugin is installed from the first marketplace that lists it.
 
-The container installer (`configure-plugins.sh`) installs plugin skills copy-based into **both** harness discovery directories per scope — `.claude/skills` (read by Claude Code and OpenCode) and `.agents/skills` (read by Codex and OpenCode) — so the skills work across harnesses without needing each harness's CLI. It also resolves the standard plugin source types (`github`, `git-subdir`, and `url` objects with optional `ref` pinning, in addition to relative paths within the marketplace).
+The container installer (`configure-plugins.sh`) uses each harness's native mechanism:
+
+- **Claude Code** — the full plugin (skills, agents, hooks, MCP servers) is installed through the Claude CLI: `claude plugin marketplace add <marketplace>` + `claude plugin install <name>@<marketplace>` at the configured scope. When the Claude CLI is unavailable, it falls back to a copy-based installation into `.claude/skills` instead.
+- **Codex and OpenCode** — the plugin's skills are copied into the cross-runtime `.agents/skills/` path (read by both harnesses) at the configured scope.
+
+It also resolves the standard plugin source types (`github`, `git-subdir`, and `url` objects with optional `ref` pinning, plus `npm` packages and relative paths within the marketplace). For `npm` sources, the package is additionally registered for OpenCode (`plugin` array of `opencode.json`).
 
 ### Manual Installation
 
@@ -81,9 +86,9 @@ The marketplace is designed to work with **any harness** that reads agentskills.
 | OpenCode | `~/.config/opencode/skills/`, `.opencode/skills/`, `~/.claude/skills/`, `.claude/skills/`, `~/.agents/skills/`, `.agents/skills/` | Pattern matching | `skill` tool |
 | Custom | `~/.agents/skills/`, `.agents/skills/` (cross-runtime alias) | Varies | Varies |
 
-> **Note:** Claude Code (verified with 2.1.282) discovers skills from the `.claude` paths only — it does not read the `.agents` cross-runtime alias, so the container installer populates **both** paths for each scope.
+> **Note:** Claude Code (verified with 2.1.282) discovers skills from the `.claude` paths only — it does not read the `.agents` cross-runtime alias. The container installer therefore installs the full plugin through the Claude CLI for Claude Code, and copies skills into the `.agents` path for Codex and OpenCode.
 
-> **Note:** OpenCode *plugins* (as opposed to skills) are JavaScript/TypeScript npm packages registered in the `plugin` array of `opencode.json` and installed by OpenCode itself (via Bun) at startup. This marketplace does not publish anything to npm — use the `OPENCODE_PLUGINS` environment variable to register OpenCode plugin npm packages from the npm registry.
+> **Note:** OpenCode *plugins* (as opposed to skills) are JavaScript/TypeScript npm packages registered in the `plugin` array of `opencode.json` and installed by OpenCode itself (via Bun) at startup. This marketplace does not publish anything to npm — use the `OPENCODE_PLUGINS` environment variable to make OpenCode plugin npm packages available in OpenCode, Claude Code (via a persistent npm-source marketplace), and Codex (bundled skills are extracted).
 
 ### Discovery Paths (Priority Order)
 

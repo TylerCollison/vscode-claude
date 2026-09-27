@@ -33,7 +33,6 @@ STARTUP_SCRIPTS=(
     "/95-configure-claude-skip-onboarding"
     "/96-start-lite-llm"
     "/97-configure-claude-permissions"
-    "/98-configure-claude-plugins"
     "/98-configure-plugins"
     "/99-mattermost-create-channel"
     "/100-configure-threads-settings"
