@@ -522,8 +522,15 @@ class TestInstanceManager:
         assert instance_manager.instance_exists(instance_name) == True
 
         # Test deletion using MockDockerClient
+        # delete_instance creates its own DockerClient, so the mock must be
+        # installed as the class and return a pre-seeded client instance.
         from cconx.cconx.docker import MockDockerClient
-        with patch('cconx.cconx.docker.DockerClient', MockDockerClient):
+        mock_docker = MockDockerClient()
+        mock_docker.mock_containers[f"cconx-{instance_name}"] = {
+            'status': 'running', 'image': 'cconx:latest'
+        }
+        with patch('cconx.cconx.docker.DockerClient') as mock_class:
+            mock_class.return_value = mock_docker
             result = instance_manager.delete_instance(instance_name)
             assert result["container_stopped"] == True
             assert result["container_removed"] == True

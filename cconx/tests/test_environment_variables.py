@@ -30,6 +30,8 @@ def test_cli_environment_variable_parsing():
     args.port = None
     args.env = ["CUSTOM_VAR=custom_value", "ANOTHER_VAR=another_value", "PASSWORD=overridden"]
     args.env_append = []
+    args.image = None  # No --image flag
+    args.dns = None  # No --dns flag
 
     # Mock dependencies to avoid actual Docker operations
     from unittest.mock import patch, MagicMock
@@ -45,6 +47,7 @@ def test_cli_environment_variable_parsing():
         mock_config.load_global_config.return_value = {
             "port_range": {"min": 8080, "max": 9000}
         }
+        mock_config.get_default_image.return_value = "tylercollison2089/vscode-claude:latest"
         MockConfigManager.return_value = mock_config
 
         mock_port_manager = MagicMock()
