@@ -43,6 +43,8 @@ def test_env_append_integration():
         args.port = 8080
         args.env = ["GLOBAL_VAR=overridden"]
         args.env_append = ["PATH=/custom/bin", "NEW_VAR=new_value"]
+        args.image = None  # No --image flag
+        args.dns = None  # No --dns flag
 
         # Mock dependencies that require actual operations
         with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
@@ -57,6 +59,7 @@ def test_env_append_integration():
             mock_config.get_global_environment.return_value = global_config["environment"]
             mock_config.get_enabled_volumes.return_value = []
             mock_config.get_include_docker_sock.return_value = False
+            mock_config.get_default_image.return_value = "tylercollison2089/vscode-claude:latest"
             mock_config.format_ide_address.return_value = "http://localhost:8080"
             MockConfigManager.return_value = mock_config
 
@@ -120,6 +123,8 @@ def test_env_append_fallback_integration():
         args.port = 8080
         args.env = []
         args.env_append = ["NEW_VAR=fallback_value"]
+        args.image = None  # No --image flag
+        args.dns = None  # No --dns flag
 
         # Mock dependencies that require actual operations
         with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
@@ -134,6 +139,7 @@ def test_env_append_fallback_integration():
             mock_config.get_global_environment.return_value = global_config["environment"]
             mock_config.get_enabled_volumes.return_value = []
             mock_config.get_include_docker_sock.return_value = False
+            mock_config.get_default_image.return_value = "tylercollison2089/vscode-claude:latest"
             mock_config.format_ide_address.return_value = "http://localhost:8080"
             MockConfigManager.return_value = mock_config
 
@@ -203,6 +209,8 @@ def test_env_append_complex_scenario_integration():
             "NEW_VAR=new_value",            # New variable fallback
             "DEFAULT_VAR=/appended"         # Append to existing that will be overridden
         ]
+        args.image = None  # No --image flag
+        args.dns = None  # No --dns flag
 
         # Mock dependencies that require actual operations
         with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
@@ -217,6 +225,7 @@ def test_env_append_complex_scenario_integration():
             mock_config.get_global_environment.return_value = global_config["environment"]
             mock_config.get_enabled_volumes.return_value = []
             mock_config.get_include_docker_sock.return_value = False
+            mock_config.get_default_image.return_value = "tylercollison2089/vscode-claude:latest"
             mock_config.format_ide_address.return_value = "http://localhost:8080"
             MockConfigManager.return_value = mock_config
 

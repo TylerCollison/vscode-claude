@@ -6,7 +6,7 @@ security validation, error handling, transactional safety, and edge cases.
 """
 
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, Mock
 from pathlib import Path
 from cconx.cconx.instances import InstanceManager
 from cconx.cconx.docker import MockDockerClient
@@ -36,7 +36,14 @@ class TestDeleteIntegration:
         assert instance_manager.instance_exists(instance_name) is True
 
         # Mock Docker client to simulate running container
-        with patch('cconx.cconx.docker.DockerClient', MockDockerClient):
+        # delete_instance creates its own DockerClient, so the mock must be
+        # installed as the class and return a pre-seeded client instance.
+        mock_docker = MockDockerClient()
+        mock_docker.mock_containers[f"cconx-{instance_name}"] = {
+            'status': 'running', 'image': 'cconx:latest'
+        }
+        with patch('cconx.cconx.docker.DockerClient') as mock_class:
+            mock_class.return_value = mock_docker
             result = instance_manager.delete_instance(instance_name)
 
         assert result["config_deleted"] is True
@@ -46,7 +53,10 @@ class TestDeleteIntegration:
 
     def test_delete_missing_instance(self, instance_manager):
         """Test deleting non-existent instance."""
-        result = instance_manager.delete_instance("non-existent-instance")
+        # Mock Docker client: the container does not exist in the mock registry,
+        # so no container operations are reported.
+        with patch('cconx.cconx.docker.DockerClient', MockDockerClient):
+            result = instance_manager.delete_instance("non-existent-instance")
 
         assert result["config_deleted"] is False
         assert result["container_removed"] is False
@@ -64,7 +74,10 @@ class TestDeleteIntegration:
         # Mock Docker client that simulates existing container
         with patch('cconx.cconx.docker.DockerClient') as mock_class:
             mock_instance = MockDockerClient()
-            # Simulate existing container by ensuring is_container_running returns True
+            # Simulate existing container by seeding it as running
+            mock_instance.mock_containers[f"cconx-{instance_name}"] = {
+                'status': 'running', 'image': 'cconx:latest'
+            }
             mock_class.return_value = mock_instance
 
             # Delete instance (no config exists, only container)
@@ -94,10 +107,10 @@ class TestDeleteIntegration:
 
         # Should succeed with config deletion
         assert result["config_deleted"] is True
-        # Since MockDockerClient creates containers on is_container_running call,
-        # both container_stopped and container_removed will be True
-        assert result["container_stopped"] is True
-        assert result["container_removed"] is True
+        # The container is not in MockDockerClient's registry, so no container
+        # operation occurs: only configuration deletion is reported.
+        assert result["container_stopped"] is False
+        assert result["container_removed"] is False
 
     def test_delete_instance_partial_success_docker_failure(self, instance_manager):
         """Test delete operation when Docker client fails but config deletion succeeds.
@@ -193,13 +206,30 @@ class TestDeleteIntegration:
         instance_manager.create_instance_config(instance_name, 9090)
         assert instance_manager.instance_exists(instance_name) is True
 
-        with patch('cconx.cconx.docker.DockerClient', MockDockerClient) as mock_class:
+        # delete_instance creates its own DockerClient, so the mock must be
+        # installed as the class and return a pre-seeded client instance.
+        mock_docker = MockDockerClient()
+        mock_docker.mock_containers[f"cconx-{instance_name}"] = {
+            'status': 'running', 'image': 'cconx:latest'
+        }
+        # Wrap the mock's methods so their real behavior is kept but calls
+        # can be asserted.
+        mock_docker.is_container_running = Mock(wraps=mock_docker.is_container_running)
+        mock_docker.stop_container = Mock(wraps=mock_docker.stop_container)
+        mock_docker.remove_container = Mock(wraps=mock_docker.remove_container)
+        with patch('cconx.cconx.docker.DockerClient') as mock_class:
+            mock_class.return_value = mock_docker
             result = instance_manager.delete_instance(instance_name)
 
             # Verify Docker client was called appropriately
             assert result["config_deleted"] is True
             assert result["container_stopped"] is True
             assert result["container_removed"] is True
+
+            # All container operations go through the single client instance
+            mock_docker.is_container_running.assert_called_once_with(f"cconx-{instance_name}")
+            mock_docker.stop_container.assert_called_once_with(f"cconx-{instance_name}")
+            mock_docker.remove_container.assert_called_once_with(f"cconx-{instance_name}")
 
     def test_delete_instance_docker_client_initialization_failure(self, instance_manager):
         """Test delete operation when Docker client initialization fails.
@@ -259,7 +289,14 @@ class TestDeleteIntegration:
         instance_manager.create_instance_config(instance_name, port)
         assert instance_manager.instance_exists(instance_name) is True
 
-        with patch('cconx.cconx.docker.DockerClient', MockDockerClient):
+        # delete_instance creates its own DockerClient, so the mock must be
+        # installed as the class and return a pre-seeded client instance.
+        mock_docker = MockDockerClient()
+        mock_docker.mock_containers[f"cconx-{instance_name}"] = {
+            'status': 'running', 'image': 'cconx:latest'
+        }
+        with patch('cconx.cconx.docker.DockerClient') as mock_class:
+            mock_class.return_value = mock_docker
             result = instance_manager.delete_instance(instance_name)
 
             assert result["config_deleted"] == expected_success

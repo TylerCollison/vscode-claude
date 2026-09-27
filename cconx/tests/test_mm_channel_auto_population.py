@@ -19,6 +19,8 @@ class TestMMChannelAutoPopulation(unittest.TestCase):
         args.port = None
         args.env = []  # No MM_CHANNEL override
         args.env_append = []  # Add env_append attribute
+        args.image = None  # No --image flag
+        args.dns = None  # No --dns flag
 
         with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
              patch('cconx.cconx.ports.PortManager') as MockPortManager, \
@@ -30,6 +32,7 @@ class TestMMChannelAutoPopulation(unittest.TestCase):
             mock_config.load_global_config.return_value = {
                 "port_range": {"min": 8080, "max": 9000}
             }
+            mock_config.get_default_image.return_value = "tylercollison2089/vscode-claude:latest"
             mock_config.get_global_environment.return_value = {}  # No global MM_CHANNEL
             MockConfigManager.return_value = mock_config
 
@@ -63,6 +66,8 @@ class TestMMChannelAutoPopulation(unittest.TestCase):
         args.port = None
         args.env = ["MM_CHANNEL=custom-channel"]  # CLI override
         args.env_append = []
+        args.image = None  # No --image flag
+        args.dns = None  # No --dns flag
 
         with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
              patch('cconx.cconx.ports.PortManager') as MockPortManager, \
@@ -74,6 +79,7 @@ class TestMMChannelAutoPopulation(unittest.TestCase):
             mock_config.load_global_config.return_value = {
                 "port_range": {"min": 8080, "max": 9000}
             }
+            mock_config.get_default_image.return_value = "tylercollison2089/vscode-claude:latest"
             mock_config.get_global_environment.return_value = {}  # No global MM_CHANNEL
             MockConfigManager.return_value = mock_config
 
@@ -106,6 +112,8 @@ class TestMMChannelAutoPopulation(unittest.TestCase):
         args.port = None
         args.env = []  # No CLI override
         args.env_append = []
+        args.image = None  # No --image flag
+        args.dns = None  # No --dns flag
 
         with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
              patch('cconx.cconx.ports.PortManager') as MockPortManager, \
@@ -117,6 +125,7 @@ class TestMMChannelAutoPopulation(unittest.TestCase):
             mock_config.load_global_config.return_value = {
                 "port_range": {"min": 8080, "max": 9000}
             }
+            mock_config.get_default_image.return_value = "tylercollison2089/vscode-claude:latest"
             mock_config.get_global_environment.return_value = {
                 "MM_CHANNEL": "global-channel"  # Global config has MM_CHANNEL
             }
@@ -151,6 +160,8 @@ class TestMMChannelAutoPopulation(unittest.TestCase):
         args.port = None
         args.env = ["MM_CHANNEL=cli-channel"]  # CLI override
         args.env_append = []
+        args.image = None  # No --image flag
+        args.dns = None  # No --dns flag
 
         with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
              patch('cconx.cconx.ports.PortManager') as MockPortManager, \
@@ -162,6 +173,7 @@ class TestMMChannelAutoPopulation(unittest.TestCase):
             mock_config.load_global_config.return_value = {
                 "port_range": {"min": 8080, "max": 9000}
             }
+            mock_config.get_default_image.return_value = "tylercollison2089/vscode-claude:latest"
             mock_config.get_global_environment.return_value = {
                 "MM_CHANNEL": "global-channel"  # Global config has MM_CHANNEL
             }
