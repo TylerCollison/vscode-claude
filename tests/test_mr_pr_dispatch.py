@@ -120,6 +120,24 @@ def test_default_mr_pr_prompt_formats_for_both_providers():
     assert "bd update <issue-id> --claim" in glab_prompt
 
 
+def test_compose_worker_env_sets_beads_remote_for_dolt_sync():
+    # Workers run with BEADS_ENABLED=false, so configure-beads.sh only runs its
+    # Dolt sync block when BEADS_REMOTE is set. MR/PR workers must get it too
+    # (like beads-dispatch workers), or they never see the beads task matching
+    # the branch (the DB is gitignored, so a plain clone never contains it).
+    env = md.compose_worker_env([], "feature/x", "https://github.com/o/r.git", "42")
+    assert any(e == "BEADS_REMOTE=https://github.com/o/r.git" for e in env), env
+
+
+def test_compose_worker_env_overrides_inherited_beads_remote():
+    # An inherited BEADS_REMOTE from the parent env must be replaced with the
+    # MR/PR's own repo URL, never duplicated.
+    env = md.compose_worker_env(["BEADS_REMOTE=https://old.example.com/repo.git"],
+                                "feature/x", "https://github.com/o/r.git", "42")
+    remotes = [e for e in env if e.startswith("BEADS_REMOTE=")]
+    assert remotes == ["BEADS_REMOTE=https://github.com/o/r.git"], remotes
+
+
 def test_dispatch_mr_pr_worker_dispatches_every_time_no_dedup():
     captured = []
 

@@ -111,6 +111,15 @@ def compose_worker_env(parent_env, branch, repo_url, mr_pr_id, dispatch_prompt=N
         env = [e for e in env if not e.startswith("HAPPIER_MODE=")]
         env.append("HAPPIER_MODE=agent")
 
+    # BEADS_REMOTE tells the worker where to clone/pull the beads Dolt DB from.
+    # Workers run with BEADS_ENABLED=false, so configure-beads.sh only runs its
+    # Dolt sync block when BEADS_REMOTE is set — without it the worker would
+    # never see the beads task matching the branch (the DB is gitignored, so a
+    # plain clone never contains it).
+    if repo_url:
+        env = [e for e in env if not e.startswith("BEADS_REMOTE=")]
+        env.append("BEADS_REMOTE=%s" % repo_url)
+
     # Inject the prompt if provided (or default)
     if dispatch_prompt:
         env = [e for e in env if not e.startswith("PROMPT=")]

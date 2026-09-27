@@ -61,8 +61,10 @@ This requires the same git credentials as the branch push (configured automatica
 - A git repo in the workspace (`GIT_REPO_URL` set, or a mounted/checked-out repo), and the parent
   must be able to **push** to its origin (credential helper / token configured) — the Dolt
   push uses the same origin.
-- Beads is initialized automatically (`configure-beads.sh` runs `bd init` / `bd bootstrap` on
-  startup; no `BEADS_ENABLED` gate needed) and tolerates a missing `bd` binary.
+- Beads setup runs automatically for workers: the dispatcher sets `BEADS_REMOTE`, so
+  `configure-beads.sh` bootstraps the Dolt task DB on startup regardless of `BEADS_ENABLED`
+  (workers get `BEADS_ENABLED=false`; `bd init` itself still requires `BEADS_ENABLED=true`).
+  The script tolerates a missing `bd` binary.
 
 ## Worker behavior
 
