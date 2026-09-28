@@ -230,7 +230,7 @@ This pairs the container's Happier CLI with the cloud relay, enabling you to app
 |----------|---------|-------------|
 | `BEADS_ENABLED` | *(not set)* | Set to `true` to automatically initialize Beads (`bd init`) in the workspace on container startup. Without it, no beads setup runs (no `.beads/`, no Dolt remote). Dispatcher workers set this to `false` and bootstrap the task DB from `BEADS_REMOTE` instead |
 | `BEADS_DIR` | *(not set)* | Enables **stealth mode**: stores the Beads database at this path (outside the workspace) and initializes with `bd init --quiet --stealth`, keeping beads files out of the workspace. Setting it implies opt-in for init (no `BEADS_ENABLED` needed) |
-| `BEADS_REMOTE` | *(set on workers)* | Git URL the worker syncs the Beads Dolt task DB from on startup (set automatically by the dispatchers) |
+| `BEADS_REMOTE` | *(set on workers)* | Git URL all Beads task-DB operations sync through. Set automatically by the dispatchers on workers; setting it yourself makes the dispatcher target it for `dolt remote add` / `dolt push` and workers inherit it as their sync source. Unset: the workspace git repo is used |
 | `DOLT_USERNAME` | *(not set)* | Git/Dolt username for remote sync (configures `git config --global user.name`) |
 | `DOLT_EMAIL` | *(not set)* | Git/Dolt email for remote sync (configures `git config --global user.email`) |
 
@@ -371,9 +371,9 @@ When you commit and a task is ready (e.g. `probe-n5h`, "Task A"), the dispatcher
 5. The worker (via `git-repo-setup.sh`) clones the repo and **automatically creates the branch off the default branch** (typically `main`) if it doesn't exist, or checks it out if it does.
 6. The dispatched agent is instructed (via the injected prompt) to **claim the task** (`bd update <issue-id> --claim` — assigns itself and sets it in-progress) and run `bd dolt push` before starting on the work, so the in-progress state is visible on the remote.
 
-The worker inherits the full environment (API keys, providers) but sets `BEADS_DISPATCH=false`, `BEADS_ENABLED=false`, `ENABLE_SCOTTY=false`, `MR_PR_DISPATCH=false`, so workers never dispatch their own workers, enable Beads, start Scotty, or respond to MRs/PRs. Workers do get `BEADS_REMOTE` (the repo URL) and bootstrap the Beads task DB from it on startup — the gate carve-out described in the Beads Configuration section — so `bd list` shows the parent's dispatched task. If the parent container has `HAPPIER_MODE` set (to `server` or `agent`), the worker receives `HAPPIER_MODE=agent` to enable web UI access via Happier. Each task is dispatched once — a later commit won't duplicate it (state is tracked in `/config/.beads-dispatch/state.json`).
+The worker inherits the full environment (API keys, providers) but sets `BEADS_DISPATCH=false`, `BEADS_ENABLED=false`, `ENABLE_SCOTTY=false`, `MR_PR_DISPATCH=false`, so workers never dispatch their own workers, enable Beads, start Scotty, or respond to MRs/PRs. Workers do get `BEADS_REMOTE` (the parent's `BEADS_REMOTE` when set, else the repo URL) and bootstrap the Beads task DB from it on startup — the gate carve-out described in the Beads Configuration section — so `bd list` shows the parent's dispatched task. If the parent container has `HAPPIER_MODE` set (to `server` or `agent`), the worker receives `HAPPIER_MODE=agent` to enable web UI access via Happier. Each task is dispatched once — a later commit won't duplicate it (state is tracked in `/config/.beads-dispatch/state.json`).
 
-> **Prerequisite:** the parent container must be able to sync the Dolt DB to its origin (a credential helper / token), or the dispatcher logs a clear error and skips the task.
+> **Prerequisite:** the parent container must be able to sync the Dolt DB to its origin (a credential helper / token), or to `BEADS_REMOTE` when set — otherwise the dispatcher logs a clear error and skips the task.
 
 ### Beads Sync (sync tasks from external providers)
 

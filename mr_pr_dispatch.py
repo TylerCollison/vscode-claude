@@ -115,10 +115,12 @@ def compose_worker_env(parent_env, branch, repo_url, mr_pr_id, dispatch_prompt=N
     # Workers run with BEADS_ENABLED=false, so configure-beads.sh only runs its
     # Dolt sync block when BEADS_REMOTE is set — without it the worker would
     # never see the beads task matching the branch (the DB is gitignored, so a
-    # plain clone never contains it).
-    if repo_url:
+    # plain clone never contains it). An explicitly configured parent
+    # BEADS_REMOTE is respected; otherwise the repo URL is used.
+    remote = du.env_value(parent_env, "BEADS_REMOTE") or repo_url
+    if remote:
         env = [e for e in env if not e.startswith("BEADS_REMOTE=")]
-        env.append("BEADS_REMOTE=%s" % repo_url)
+        env.append("BEADS_REMOTE=%s" % remote)
 
     # Inject the prompt if provided (or default)
     if dispatch_prompt:

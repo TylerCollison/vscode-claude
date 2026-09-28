@@ -9,15 +9,19 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# Load dispatch_utils FIRST and register it in sys.modules, so the module-level
+# `import dispatch_utils as du` inside beads_dispatch.py (exec'd below) gets
+# THIS copy — not a stale installed one — and attribute patches on `du` affect
+# dispatch_worker.
+UTIL_SPEC = importlib.util.spec_from_file_location("dispatch_utils", os.path.join(HERE, "..", "dispatch_utils.py"))
+du = importlib.util.module_from_spec(UTIL_SPEC)
+sys.modules["dispatch_utils"] = du
+UTIL_SPEC.loader.exec_module(du)
+
 # Load beads_dispatch module
 SPEC = importlib.util.spec_from_file_location("beads_dispatch", os.path.join(HERE, "..", "beads_dispatch.py"))
 bd = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(bd)
-
-# Load dispatch_utils module for utility functions
-UTIL_SPEC = importlib.util.spec_from_file_location("dispatch_utils", os.path.join(HERE, "..", "dispatch_utils.py"))
-du = importlib.util.module_from_spec(UTIL_SPEC)
-UTIL_SPEC.loader.exec_module(du)
 
 
 def test_worker_name_includes_timestamp():
@@ -224,6 +228,144 @@ def test_dispatch_swarm_copies_dns_config():
 def test_derive_git_repo_url_from_env():
     env = ["OTHER=1", "GIT_REPO_URL=https://env.git"]
     assert du.derive_git_repo_url(env, "/tmp") == "https://env.git"
+
+
+def test_env_value_extracts_from_parent_env_list():
+    assert du.env_value(["A=1", "BEADS_REMOTE=https://beads.git"], "BEADS_REMOTE") == "https://beads.git"
+    assert du.env_value(["A=1"], "BEADS_REMOTE") is None
+    assert du.env_value(["BEADS_REMOTE="], "BEADS_REMOTE") is None  # empty -> None
+    assert du.env_value([], "BEADS_REMOTE") is None
+    assert du.env_value(None, "BEADS_REMOTE") is None
+
+
+def test_dispatch_worker_respects_parent_beads_remote():
+    """When the parent sets BEADS_REMOTE, it is used for the task-DB sync end to
+    end: the dispatcher's dolt_remote_add targets it and workers receive it as
+    their BEADS_REMOTE (the workspace git repo is not substituted)."""
+    captured = {}
+
+    def fake_dolt_remote_add(workspace, remote, user):
+        captured["dolt_remote"] = remote
+        return True
+
+    def fake_dispatch_local(worker, image, env, port, worker_port, issue_id,
+                            net=None, labels=None):
+        captured["env"] = env
+        return 0, "created", ""
+
+    orig = {
+        "is_swarm": du.is_swarm_manager,
+        "dispatch_local": du.dispatch_local,
+        "find_port": du.find_free_host_port,
+        "repo": du.derive_git_repo_url,
+        "owner": du.get_workspace_owner,
+        "remote_add": bd.dolt_remote_add,
+        "push": bd.dolt_push,
+        "worker_exists": du.worker_exists,
+        "log": du.log,
+        "env": du.env,
+    }
+    du.is_swarm_manager = lambda: False
+    du.dispatch_local = fake_dispatch_local
+    du.find_free_host_port = lambda base: 8000
+    du.derive_git_repo_url = lambda env, ws, user=None: "https://workspace.example.com/repo.git"
+    du.get_workspace_owner = lambda ws: "abc"
+    bd.dolt_remote_add = fake_dolt_remote_add
+    bd.dolt_push = lambda ws, user: True
+    du.worker_exists = lambda name, swarm: False
+    du.log = lambda msg: None
+    du.env = lambda name, default=None: None
+    try:
+        cfg = bd.Config.__new__(bd.Config)
+        cfg.workspace = "/tmp"
+        cfg.state_dir = "/tmp"
+        cfg.branch_prefix = "task"
+        cfg.port_base = 8000
+        cfg.worker_port = 8443
+        cfg.dispatch_prompt = None
+        self_info = {"name": "parent", "image": "img",
+                     "env": ["BEADS_REMOTE=https://beads.example.com/repo.git"]}
+        assert bd.dispatch_worker({"id": "probe-n5h", "title": "Task A"}, cfg, self_info) is True
+
+        assert captured["dolt_remote"] == "https://beads.example.com/repo.git"
+        env_dict = dict(e.split("=", 1) for e in captured["env"])
+        assert env_dict["BEADS_REMOTE"] == "https://beads.example.com/repo.git"
+        # Git (code) operations stay on the workspace repo
+        assert env_dict["GIT_REPO_URL"] == "https://workspace.example.com/repo.git"
+    finally:
+        du.is_swarm_manager = orig["is_swarm"]
+        du.dispatch_local = orig["dispatch_local"]
+        du.find_free_host_port = orig["find_port"]
+        du.derive_git_repo_url = orig["repo"]
+        du.get_workspace_owner = orig["owner"]
+        bd.dolt_remote_add = orig["remote_add"]
+        bd.dolt_push = orig["push"]
+        du.worker_exists = orig["worker_exists"]
+        du.log = orig["log"]
+        du.env = orig["env"]
+
+
+def test_dispatch_worker_falls_back_to_repo_url_without_beads_remote():
+    """Without BEADS_REMOTE (default), the workspace git repo is used for the
+    Dolt remote and as the worker's sync source — current behavior."""
+    captured = {}
+
+    def fake_dolt_remote_add(workspace, remote, user):
+        captured["dolt_remote"] = remote
+        return True
+
+    def fake_dispatch_local(worker, image, env, port, worker_port, issue_id,
+                            net=None, labels=None):
+        captured["env"] = env
+        return 0, "created", ""
+
+    orig = {
+        "is_swarm": du.is_swarm_manager,
+        "dispatch_local": du.dispatch_local,
+        "find_port": du.find_free_host_port,
+        "repo": du.derive_git_repo_url,
+        "owner": du.get_workspace_owner,
+        "remote_add": bd.dolt_remote_add,
+        "push": bd.dolt_push,
+        "worker_exists": du.worker_exists,
+        "log": du.log,
+        "env": du.env,
+    }
+    du.is_swarm_manager = lambda: False
+    du.dispatch_local = fake_dispatch_local
+    du.find_free_host_port = lambda base: 8000
+    du.derive_git_repo_url = lambda env, ws, user=None: "https://workspace.example.com/repo.git"
+    du.get_workspace_owner = lambda ws: "abc"
+    bd.dolt_remote_add = fake_dolt_remote_add
+    bd.dolt_push = lambda ws, user: True
+    du.worker_exists = lambda name, swarm: False
+    du.log = lambda msg: None
+    du.env = lambda name, default=None: None
+    try:
+        cfg = bd.Config.__new__(bd.Config)
+        cfg.workspace = "/tmp"
+        cfg.state_dir = "/tmp"
+        cfg.branch_prefix = "task"
+        cfg.port_base = 8000
+        cfg.worker_port = 8443
+        cfg.dispatch_prompt = None
+        self_info = {"name": "parent", "image": "img", "env": []}
+        assert bd.dispatch_worker({"id": "probe-n5h", "title": "Task A"}, cfg, self_info) is True
+
+        assert captured["dolt_remote"] == "https://workspace.example.com/repo.git"
+        env_dict = dict(e.split("=", 1) for e in captured["env"])
+        assert env_dict["BEADS_REMOTE"] == "https://workspace.example.com/repo.git"
+    finally:
+        du.is_swarm_manager = orig["is_swarm"]
+        du.dispatch_local = orig["dispatch_local"]
+        du.find_free_host_port = orig["find_port"]
+        du.derive_git_repo_url = orig["repo"]
+        du.get_workspace_owner = orig["owner"]
+        bd.dolt_remote_add = orig["remote_add"]
+        bd.dolt_push = orig["push"]
+        du.worker_exists = orig["worker_exists"]
+        du.log = orig["log"]
+        du.env = orig["env"]
 
 
 def test_derive_git_repo_url_none_when_missing():
