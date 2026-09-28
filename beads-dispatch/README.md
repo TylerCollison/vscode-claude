@@ -33,7 +33,7 @@ clones the repo and creates/checks out the branch on boot).
 | `BEADS_DISPATCH_PORT_BASE` | `8000` | Lowest host port considered for the worker's code-server (8443) mapping |
 | `BEADS_DISPATCH_WORKER_PORT` | `8443` | Internal port published on the worker (code-server) |
 | `BEADS_DISPATCH_STATE_DIR` | `/config/.beads-dispatch` | Where the seen-set state file lives |
-| `BEADS_REMOTE` | *(set on workers)* | Git URL the worker syncs the beads Dolt DB from (defaults to `GIT_REPO_URL`) |
+| `BEADS_REMOTE` | *(set on workers)* | Git URL all bd (task-DB) operations sync through. When set in the parent env, the dispatcher targets it (`dolt remote add` / `dolt push`) and workers inherit it as their sync source; when unset, the workspace git repo (`GIT_REPO_URL` / git origin) is used |
 
 ## Task sync (Dolt)
 
@@ -43,14 +43,16 @@ replicated workers, the dispatcher and the startup script sync the Dolt DB throu
 remote:
 
 - **On dispatch** (`beads_dispatch.py`): before creating the worker, the dispatcher runs
-  `bd dolt remote add origin <repo>` (idempotent) and `bd dolt push`, so the task data
-  (including the just-created task) is on the remote.
+  `bd dolt remote add origin <remote>` (idempotent) and `bd dolt push`, so the task data
+  (including the just-created task) is on the remote. The remote is **`BEADS_REMOTE` when
+  set** in the parent env, else the workspace git repo.
 - **On worker startup** (`configure-beads.sh`): the worker runs `bd bootstrap --yes`, which
   auto-detects the Dolt DB on the remote and clones it (creating the local DB from the
   remote — recommended over `init` + `dolt pull`, which risks divergent histories). If the
-  remote has nothing yet, `bd dolt pull` runs as a fallback and `bd init` creates a fresh DB.
+  remote has nothing yet, `bd dolt pull` runs as a fallback; workers do not run `bd init`
+  (it requires `BEADS_ENABLED=true`).
 - The worker knows where to sync from via **`BEADS_REMOTE`** (set by the dispatcher's
-  `compose_worker_env`, defaulting to the repo URL).
+  `compose_worker_env`: the parent's `BEADS_REMOTE` when set, defaulting to the repo URL).
 
 This requires the same git credentials as the branch push (configured automatically via the
 `gh` / `glab` credential helpers on startup).
@@ -59,10 +61,12 @@ This requires the same git credentials as the branch push (configured automatica
 
 - The container must be started with `/var/run/docker.sock` mounted (standard config).
 - A git repo in the workspace (`GIT_REPO_URL` set, or a mounted/checked-out repo), and the parent
-  must be able to **push** to its origin (credential helper / token configured) — the Dolt
-  push uses the same origin.
-- Beads is initialized automatically (`configure-beads.sh` runs `bd init` / `bd bootstrap` on
-  startup; no `BEADS_ENABLED` gate needed) and tolerates a missing `bd` binary.
+  must be able to **push** to its origin (credential helper / token configured) — or to
+  `BEADS_REMOTE` when set, which the Dolt push uses instead.
+- Beads setup runs automatically for workers: the dispatcher sets `BEADS_REMOTE`, so
+  `configure-beads.sh` bootstraps the Dolt task DB on startup regardless of `BEADS_ENABLED`
+  (workers get `BEADS_ENABLED=false`; `bd init` itself still requires `BEADS_ENABLED=true`).
+  The script tolerates a missing `bd` binary.
 
 ## Worker behavior
 

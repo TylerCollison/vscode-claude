@@ -322,9 +322,15 @@ def dispatch_worker(issue, cfg, self_info):
             % (cfg.workspace, issue_id))
         return False
 
+    # Respect an explicitly configured BEADS_REMOTE for the task-DB (bd) sync:
+    # when set, it is the Dolt remote pushed to here and is passed to workers as
+    # their sync source; otherwise the workspace git repo is used (current
+    # behavior). Git (code/branch) operations stay on the workspace repo.
+    beads_remote = du.env_value(self_info["env"], "BEADS_REMOTE") or repo_url
+
     # Sync the beads Dolt database (which is gitignored and NOT in the branch) so
     # the worker can see the tasks. Non-fatal: the worker still gets the repo.
-    if dolt_remote_add(cfg.workspace, repo_url, git_user):
+    if dolt_remote_add(cfg.workspace, beads_remote, git_user):
         dolt_push(cfg.workspace, git_user)
     else:
         du.log("WARNING: dolt remote could not be configured for %s — tasks may not sync." % issue_id)
@@ -337,7 +343,7 @@ def dispatch_worker(issue, cfg, self_info):
     # Build the dispatch prompt: use override from config, or generate default
     dispatch_prompt = cfg.dispatch_prompt or default_dispatch_prompt(issue_id, branch, repo_url)
 
-    env_vars = compose_worker_env(self_info["env"], branch, repo_url, beads_remote=repo_url,
+    env_vars = compose_worker_env(self_info["env"], branch, repo_url, beads_remote=beads_remote,
                                   dispatch_prompt=dispatch_prompt)
 
     swarm = du.is_swarm_manager()

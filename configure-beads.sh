@@ -1,18 +1,21 @@
 #!/usr/bin/with-contenv bash
 # Configure Beads on container startup
-# Initializes Beads (bd init) in the workspace and optionally configures Dolt
-# credentials for remote syncing.
+# Initializes Beads (bd init) in the workspace when BEADS_ENABLED=true and
+# optionally configures Dolt credentials for remote syncing.
 #
 # Task sync for replicated (worker) containers:
 #   - The dispatcher pushes the beads Dolt DB (gitignored) to the git remote
-#     via `bd dolt push` before spawning a worker.
-#   - On startup, this script syncs the DB from the git remote: `bd bootstrap`
-#     clones it when the remote has Dolt data (creating the local DB), with
-#     `bd init` as the fallback when no remote/DB exists.
+#     via `bd dolt push` before spawning a worker, and sets BEADS_REMOTE on
+#     the worker.
+#   - On startup, workers sync the DB from BEADS_REMOTE: `bd bootstrap` clones
+#     it when the remote has Dolt data (creating the local DB). Workers run
+#     with BEADS_ENABLED=false, so this sync block is the only beads setup
+#     they get — it intentionally bypasses the BEADS_ENABLED gate.
 #
 # Stealth mode: when BEADS_DIR is set, the Beads database is stored at
 # $BEADS_DIR instead of the workspace and initialized with
 # `bd init --quiet --stealth` so no beads files clutter the workspace.
+# BEADS_DIR implies opt-in for init (no BEADS_ENABLED needed).
 
 set -euo pipefail
 
@@ -23,12 +26,6 @@ log() {
 log_success() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - SUCCESS: $1"
 }
-
-# Beads initialization and task sync (dolt push/pull) is now always attempted so
-# that replicated (worker) containers pick up tasks on startup. BEADS_ENABLED no
-# longer gates init/sync (only the *full* setup + credentials are gated); it is
-# kept here for backward compatibility of logs.
-BEADS_ENABLED_ONLY="${BEADS_ENABLED:-}"
 
 DEFAULT_WORKSPACE="${DEFAULT_WORKSPACE:-/workspace}"
 
@@ -61,11 +58,18 @@ fi
 # .beads Dolt DB, so on startup we sync the DB from the git remote the same way
 # the dispatcher pushes it. Both the parent (which pushes) and workers (which
 # pull) run this; it is idempotent and non-fatal.
-#   - BEADS_REMOTE (set by the dispatcher on workers) is the Dolt remote URL.
-#   - Fall back to GIT_REPO_URL or the workspace git origin.
-BEADS_REMOTE_URL="${BEADS_REMOTE:-${GIT_REPO_URL:-}}"
-if [ -z "$BEADS_REMOTE_URL" ] && [ -d "$DEFAULT_WORKSPACE/.git" ]; then
-    BEADS_REMOTE_URL="$(git -C "$DEFAULT_WORKSPACE" remote get-url origin 2>/dev/null || true)"
+#   - BEADS_REMOTE (set by the dispatcher on workers) is the Dolt remote URL;
+#     it always applies so workers bootstrap the task DB regardless of
+#     BEADS_ENABLED (workers run with BEADS_ENABLED=false).
+#   - The GIT_REPO_URL / workspace git origin fallback only applies when the
+#     user opted in via BEADS_ENABLED=true — a container that never opted in
+#     gets no beads setup at all.
+BEADS_REMOTE_URL="${BEADS_REMOTE:-}"
+if [ -z "$BEADS_REMOTE_URL" ] && [ "${BEADS_ENABLED:-}" = "true" ]; then
+    BEADS_REMOTE_URL="${GIT_REPO_URL:-}"
+    if [ -z "$BEADS_REMOTE_URL" ] && [ -d "$DEFAULT_WORKSPACE/.git" ]; then
+        BEADS_REMOTE_URL="$(git -C "$DEFAULT_WORKSPACE" remote get-url origin 2>/dev/null || true)"
+    fi
 fi
 
 # DOLT_SYNC_DONE: set when the sync block cloned the DB from a remote; in that
@@ -103,8 +107,14 @@ if [ -n "$BEADS_REMOTE_URL" ]; then
 fi
 
 # Initialize Beads if not already initialized (and not cloned from a remote).
+# Opt-in gate: bd init only runs when the user opted in via BEADS_ENABLED=true,
+# or in stealth mode (BEADS_DIR set implies opt-in). Workers (BEADS_REMOTE set,
+# BEADS_ENABLED=false) rely on the bootstrap above and never run bd init — a
+# fresh init here would create an empty DB without the parent's tasks.
 if [ "$DOLT_SYNC_DONE" != "1" ]; then
-    if [ -f "$BEADS_DATA_DIR/metadata.json" ]; then
+    if [[ "${BEADS_ENABLED:-}" != "true" && "$STEALTH_MODE" != "1" ]]; then
+        log "Beads not enabled (BEADS_ENABLED is not 'true'). Skipping bd init."
+    elif [ -f "$BEADS_DATA_DIR/metadata.json" ]; then
         if [ "$STEALTH_MODE" = "1" ]; then
             log "Beads already initialized at $BEADS_DIR (stealth mode). Skipping bd init."
         else

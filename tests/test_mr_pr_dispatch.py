@@ -12,8 +12,10 @@ from unittest import mock
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Make dispatch_utils importable (mr_pr_dispatch.py does `import dispatch_utils`).
-sys.path.insert(0, os.path.join(HERE, "..", "beads-dispatch"))
+# The repo copy is inserted last so it wins over a possibly stale installed copy
+# in /usr/local/bin — the tests must exercise the repo code, not the install.
 sys.path.insert(0, "/usr/local/bin")
+sys.path.insert(0, os.path.join(HERE, "..", "beads-dispatch"))
 
 SPEC = importlib.util.spec_from_file_location(
     "mr_pr_dispatch", os.path.join(HERE, "..", "mr_pr_dispatch.py"))
@@ -118,6 +120,25 @@ def test_default_mr_pr_prompt_formats_for_both_providers():
     assert "glab mr" in glab_prompt
     assert "Merge Request" in glab_prompt
     assert "bd update <issue-id> --claim" in glab_prompt
+
+
+def test_compose_worker_env_sets_beads_remote_for_dolt_sync():
+    # Workers run with BEADS_ENABLED=false, so configure-beads.sh only runs its
+    # Dolt sync block when BEADS_REMOTE is set. MR/PR workers must get it too
+    # (like beads-dispatch workers), or they never see the beads task matching
+    # the branch (the DB is gitignored, so a plain clone never contains it).
+    env = md.compose_worker_env([], "feature/x", "https://github.com/o/r.git", "42")
+    assert any(e == "BEADS_REMOTE=https://github.com/o/r.git" for e in env), env
+
+
+def test_compose_worker_env_respects_inherited_beads_remote():
+    # An explicitly configured parent BEADS_REMOTE is respected: workers use it
+    # as their Dolt sync source (kept, never replaced with the repo URL, and
+    # never duplicated).
+    env = md.compose_worker_env(["BEADS_REMOTE=https://beads.example.com/repo.git"],
+                                "feature/x", "https://github.com/o/r.git", "42")
+    remotes = [e for e in env if e.startswith("BEADS_REMOTE=")]
+    assert remotes == ["BEADS_REMOTE=https://beads.example.com/repo.git"], remotes
 
 
 def test_dispatch_mr_pr_worker_dispatches_every_time_no_dedup():
