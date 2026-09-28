@@ -1,0 +1,8 @@
+{
+  "name": "claude-conx-dispatch-beads",
+  "description": "Manually trigger the Beads Dispatch daemon",
+  "version": "1.0.0",
+  "author": {
+    "name": "Tyler Collison"
+  }
+}

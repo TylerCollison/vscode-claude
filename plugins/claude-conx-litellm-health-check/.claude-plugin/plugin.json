@@ -1,0 +1,8 @@
+{
+  "name": "claude-conx-litellm-health-check",
+  "description": "Run the LiteLLM health check to verify the router and providers",
+  "version": "1.0.0",
+  "author": {
+    "name": "Tyler Collison"
+  }
+}

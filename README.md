@@ -124,8 +124,29 @@ This container supports extensive configuration through environment variables.
 | Variable | Description |
 |----------|-------------|
 | `CLAUDE_CODE_PERMISSION_MODE` | Permission mode (`acceptEdits`, `bypassPermissions`, `default`, `plan`, `dontAsk`) |
-| `CLAUDE_MARKETPLACES` | Comma-separated list of plugin marketplaces |
-| `CLAUDE_PLUGINS` | Comma-separated list of plugins to install |
+
+### Plugins Marketplace Configuration
+
+One set of variables makes full plugins available across **all agent harnesses** on container startup. The installer (`configure-plugins.sh`, replacing `configure-claude-plugins.sh`) uses each harness's native mechanism: Claude Code gets the full plugin (skills, agents, hooks, MCP servers) installed through the Claude CLI (`claude plugin marketplace add` + `claude plugin install name@marketplace`), while Codex and OpenCode get the plugin's skills copied into the cross-runtime `.agents/skills/` discovery path that both harnesses read. OpenCode plugin npm packages are registered for OpenCode and additionally made available to Claude Code (via a persistent npm-source marketplace) and Codex (skills bundled in the package are extracted).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PLUGINS_MARKETPLACES` | *(not set)* | Comma-separated list of plugin marketplaces: git URLs, GitHub shorthands (`owner/repo`), or local paths (e.g. `https://github.com/TylerCollison/vscode-claude.git,anthropics/claude-plugins-official`). Each must contain a `.claude-plugin/marketplace.json` manifest |
+| `PLUGINS` | *(not set)* | Comma-separated list of plugin names (marketplace entry names) to auto-install (e.g. `claude-conx-build-env,claude-conx-happier`) |
+| `PLUGINS_SCOPE` | `user` | Installation scope: `user` (default — all projects in the container), `project` (`<workspace>` only), or `both` |
+| `OPENCODE_PLUGINS` | *(not set)* | Comma-separated list of OpenCode plugin npm packages (e.g. `opencode-helicone-session`). OpenCode installs npm plugins itself (via Bun) at startup — nothing from this repo is published to npm |
+
+When `PLUGINS` is set without `PLUGINS_MARKETPLACES`, the marketplace bundled with the image at `/marketplace` is used (falling back to the workspace checkout when it is a marketplace). Each plugin is installed from the first marketplace that lists it. Standard plugin source types are supported — relative paths plus `github`/`git-subdir`/`url` objects with optional `ref` pinning, and `npm` packages.
+
+**Usage:**
+
+```yaml
+environment:
+  - PLUGINS_MARKETPLACES=https://github.com/TylerCollison/vscode-claude.git,anthropics/claude-plugins-official # Optional (bundled marketplace used when unset)
+  - PLUGINS=claude-conx-build-env,claude-conx-happier,claude-conx-dispatch-beads
+  - PLUGINS_SCOPE=user # Optional (user, project, or both)
+  - OPENCODE_PLUGINS=opencode-helicone-session # Optional (OpenCode plugin npm packages)
+```
 
 ### LiteLLM Router Configuration
 | Variable | Description |
@@ -515,9 +536,10 @@ services:
       - CEREBRAS_API_KEY=your-cerebras-api-key # Required to use Cerebras models
       - OPENCODE_ZEN_API_KEY=your-opencode-zen-api-key # Required to use OpenCode Zen models
       - EXA_API_KEY=your-exa-api-key # Required for EXA AI websearch
-      # Claude Code Plugins (optional)
-      - CLAUDE_MARKETPLACES=anthropics/claude-plugins-official
-      - CLAUDE_PLUGINS=ralph-loop,superpowers
+      # Plugins Marketplace (optional)
+      - PLUGINS_MARKETPLACES=https://github.com/TylerCollison/vscode-claude.git,anthropics/claude-plugins-official
+      - PLUGINS=claude-conx-build-env,claude-conx-happier,ralph-loop,superpowers
+      - OPENCODE_PLUGINS=opencode-helicone-session
       # Git repository setup (optional)
       - GIT_REPO_URL=https://github.com/user/repo.git
       - GIT_BRANCH_NAME=feature-branch
@@ -841,7 +863,7 @@ The builder is created once at startup and persists across container restarts. M
 - Git repository cloning and branch setup
 - Knowledge repository markdown combination
 - LiteLLM routing configuration loaded on startup
-- Claude Code plugin and marketplace setup
+- Plugins marketplace installation across all agent harnesses (`PLUGINS_MARKETPLACES` / `PLUGINS` / `OPENCODE_PLUGINS`)
 - Mattermost channel auto-creation
 
 ## Building Locally

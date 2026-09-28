@@ -1,0 +1,8 @@
+{
+  "name": "claude-conx-cconx",
+  "description": "Manage ClaudeConX Docker instances with the cconx CLI",
+  "version": "1.0.0",
+  "author": {
+    "name": "Tyler Collison"
+  }
+}

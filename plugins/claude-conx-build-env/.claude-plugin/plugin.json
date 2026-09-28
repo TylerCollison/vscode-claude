@@ -1,0 +1,8 @@
+{
+  "name": "claude-conx-build-env",
+  "description": "Create persistent Docker build environments with bidirectional file synchronization",
+  "version": "1.0.0",
+  "author": {
+    "name": "Tyler Collison"
+  }
+}
