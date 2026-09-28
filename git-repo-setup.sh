@@ -108,9 +108,10 @@ if [ -n "$GIT_CHECKOUT_BASE_BRANCH" ]; then
 fi
 log "  Target: $TARGET_DIR"
 
-# Clone repository
+# Clone repository (with submodules to reduce fetches; the post-checkout
+# submodule update below is the authoritative sync point)
 log "Cloning repository..."
-if ! git clone "$GIT_REPO_URL" "$TARGET_DIR"; then
+if ! git clone --recurse-submodules "$GIT_REPO_URL" "$TARGET_DIR"; then
     error_exit "Failed to clone git repository: $GIT_REPO_URL"
 fi
 
@@ -150,6 +151,15 @@ else
 fi
 
 log "Branch '$GIT_BRANCH_NAME' is now active"
+
+# Initialize submodules recursively. Runs after the branch checkout so
+# submodules match the checked-out branch (the checkout can point submodules
+# at different commits than the default-branch clone would have initialized).
+# Unconditional: a fast no-op for repos without submodules.
+log "Initializing submodules recursively..."
+if ! git submodule update --init --recursive; then
+    error_exit "Failed to initialize submodules recursively (private or unreachable submodule?): $GIT_REPO_URL"
+fi
 
 # Output success information
 log_success "Git repository setup completed successfully"

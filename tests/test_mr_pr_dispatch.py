@@ -79,6 +79,47 @@ def test_worker_name_unique_for_same_mr_pr():
     assert second.endswith(second_stamp)
 
 
+def test_default_mr_pr_prompt_includes_in_progress_claim_step():
+    # The agent must indicate the task is in progress before starting on the
+    # work: claim the corresponding Beads task (assigns itself and sets it
+    # in-progress), then push the beads DB so the state syncs to the remote.
+    prompt = md.default_mr_pr_prompt("42", "Update README", "task/probe-n5h-task-a",
+                                     "https://github.com/o/r.git", "github")
+    assert "bd update <issue-id> --claim" in prompt
+    assert "in progress" in prompt
+    assert "bd dolt push" in prompt
+    # The claim step comes before the review/fix work begins.
+    assert prompt.index("bd update <issue-id> --claim") < prompt.index("Review the code changes")
+
+
+def test_default_mr_pr_prompt_closes_beads_task_after_addressing():
+    # The Beads task claimed in step 3 must be closed again once the MR/PR has
+    # been addressed, with the closed state synced to the remote afterwards.
+    prompt = md.default_mr_pr_prompt("42", "Update README", "task/probe-n5h-task-a",
+                                     "https://github.com/o/r.git", "github")
+    assert "bd close <issue-id>" in prompt
+    # The close step comes after the unassign step (i.e. after the MR/PR has
+    # been addressed).
+    assert prompt.index("bd close <issue-id>") > prompt.index("unassign the")
+    # A final dolt push syncs the closed state with the remote.
+    assert prompt.rindex("bd dolt push") > prompt.index("bd close <issue-id>")
+
+
+def test_default_mr_pr_prompt_formats_for_both_providers():
+    # Guard the positional format args (id_label count) for gh and glab.
+    gh_prompt = md.default_mr_pr_prompt("42", "Update README", "feature/x",
+                                        "https://github.com/o/r.git", "github")
+    assert "gh pr" in gh_prompt
+    assert "Pull Request" in gh_prompt
+    assert "bd update <issue-id> --claim" in gh_prompt
+
+    glab_prompt = md.default_mr_pr_prompt("7", "Fix bug", "fix/bug",
+                                          "https://gitlab.com/o/r.git", "gitlab")
+    assert "glab mr" in glab_prompt
+    assert "Merge Request" in glab_prompt
+    assert "bd update <issue-id> --claim" in glab_prompt
+
+
 def test_dispatch_mr_pr_worker_dispatches_every_time_no_dedup():
     captured = []
 

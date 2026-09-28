@@ -3,12 +3,37 @@
 # Connects to the unix socket /run/beads-dispatch.sock and sends a trigger
 # to make the dispatcher check for ready tasks and spawn workers.
 #
-# Usage: dispatch-beads
+# Usage: dispatch-beads [--force]
+#   --force  Re-dispatch ALL ready tasks, even ones dispatched before
+#            (ignores the daemon's seen-set for this trigger).
 
 set -euo pipefail
 
 SOCKET_PATH="/run/beads-dispatch.sock"
 TRIGGER="manual"
+
+# Parse arguments
+for arg in "$@"; do
+    case "$arg" in
+        --force)
+            TRIGGER="manual force"
+            ;;
+        -h|--help)
+            echo "Usage: dispatch-beads [--force]"
+            echo ""
+            echo "  (no flags)  Trigger the daemon to check for ready tasks and"
+            echo "              spawn workers for tasks not yet dispatched."
+            echo "  --force     Also re-dispatch tasks dispatched previously"
+            echo "              (ignores the seen-set for this trigger)."
+            exit 0
+            ;;
+        *)
+            echo "ERROR: unknown argument: $arg" >&2
+            echo "Usage: dispatch-beads [--force]" >&2
+            exit 1
+            ;;
+    esac
+done
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
@@ -23,13 +48,18 @@ if [ ! -S "$SOCKET_PATH" ]; then
 fi
 
 # Send trigger to the socket
-log "Sending manual trigger to beads dispatch daemon..."
-python3 - <<'PY'
+if [ "$TRIGGER" = "manual force" ]; then
+    log "Sending forced trigger to beads dispatch daemon..."
+else
+    log "Sending manual trigger to beads dispatch daemon..."
+fi
+TRIGGER="$TRIGGER" python3 - <<'PY'
+import os
 import socket
 import sys
 
 sock_path = "/run/beads-dispatch.sock"
-trigger = "manual"
+trigger = os.environ.get("TRIGGER", "manual")
 
 try:
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

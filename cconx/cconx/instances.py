@@ -501,7 +501,7 @@ class InstanceManager:
 
         try:
             # Use real DockerClient for production operations
-            from cconx.docker import DockerClient
+            from .docker import DockerClient
             docker_client = DockerClient()
             container_name = f"cconx-{name}"
 

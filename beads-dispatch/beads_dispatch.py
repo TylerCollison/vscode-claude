@@ -7,6 +7,11 @@ Dispatch is triggered by a git **post-commit** hook, not a poll loop. Every comm
 workspace repo causes the dispatcher to re-check `bd list --ready --json` and create a worker
 for each currently-ready task that hasn't been dispatched yet.
 
+Forced re-dispatch: `--force` (daemon startup) or a trigger message containing "force"
+(`dispatch-beads --force`) makes the dispatcher ignore the seen-set and create a worker for
+every currently-ready task, even one dispatched before (e.g. after a crashed or deleted
+worker). Dispatched IDs are still recorded, so normal dedup resumes on later triggers.
+
 Privilege bridge
 ----------------
 Git hooks run as the committer (the `abc` user), but docker (via the mounted host socket) needs
@@ -201,11 +206,13 @@ def default_dispatch_prompt(issue_id, branch, repo_url):
 
     The prompt instructs the agent to:
     1. Check beads for the task corresponding to the branch name
-    2. Complete the task
-    3. Commit and push changes
-    4. Create a GitHub or GitLab MR (using gh/glab CLI)
-    5. Update beads to mark the task as complete
-    6. Push the update to beads
+    2. Claim the task (assign it to itself and set it in-progress)
+    3. Push the beads Dolt DB so the in-progress state syncs to the remote
+    4. Complete the task
+    5. Commit and push changes
+    6. Create a GitHub or GitLab MR (using gh/glab CLI)
+    7. Update beads to mark the task as complete
+    8. Push the update to beads
     """
     # Detect if it's a GitHub or GitLab repo from the URL
     is_github = "github.com" in repo_url.lower()
@@ -226,11 +233,13 @@ def default_dispatch_prompt(issue_id, branch, repo_url):
         "\n"
         "Instructions:\n"
         "1. Run 'bd list --json' to see all tasks and find the one matching this branch.\n"
-        "2. Complete the task by implementing the required changes.\n"
-        "3. Commit your changes and push to the branch.\n"
-        "4. %s\n"
-        "5. Run 'bd complete <issue-id>' to mark the task as complete in Beads.\n"
-        "6. Run 'bd dolt push' to sync the Beads database with the remote.\n"
+        "2. Claim the task to indicate it is in progress: run 'bd update <issue-id> --claim' (this assigns the task to you and sets its status to in-progress).\n"
+        "3. Run 'bd dolt push' to sync the in-progress state with the remote before starting on the work.\n"
+        "4. Complete the task by implementing the required changes.\n"
+        "5. Commit your changes and push to the branch.\n"
+        "6. %s\n"
+        "7. Run 'bd close <issue-id>' to mark the task as complete in Beads.\n"
+        "8. Run 'bd dolt push' to sync the Beads database with the remote.\n"
         "\n"
         "Use the appropriate CLI tools (gh for GitHub, glab for GitLab) as needed."
     ) % (issue_id, branch, mr_instruction)
@@ -357,8 +366,23 @@ def dispatch_worker(issue, cfg, self_info):
 
 # --------------------------------------------------------------------------- engine
 
-def dispatch_all(cfg, self_info, seen):
-    """Dispatch a worker for every ready issue not yet seen. Returns number dispatched."""
+def force_requested(msg, default=False):
+    """True when a trigger asks for forced re-dispatch.
+
+    `default` is the daemon's own --force setting; `msg` is the raw bytes read
+    from the socket trigger (b"manual force" from dispatch-beads --force).
+    """
+    return bool(default) or b"force" in (msg or b"")
+
+
+def dispatch_all(cfg, self_info, seen, force=False):
+    """Dispatch a worker for every ready issue not yet seen. Returns number dispatched.
+
+    With force=True the seen-set is ignored: every currently-ready issue gets a
+    worker even if one was dispatched before (e.g. after a crashed or deleted
+    worker). Dispatched IDs are still added to `seen`, so normal dedup resumes
+    on subsequent triggers.
+    """
     ready = get_ready_issues(cfg.workspace)
     if ready is None:
         du.log("bd is not ready yet (no beads database?) — skipping this trigger.")
@@ -366,7 +390,7 @@ def dispatch_all(cfg, self_info, seen):
     dispatched = 0
     for issue in ready:
         iid = issue["id"]
-        if iid in seen:
+        if not force and iid in seen:
             continue
         # Re-check: the issue may have been re-blocked since the snapshot.
         fresh = {i["id"] for i in (get_ready_issues(cfg.workspace) or [])}
@@ -380,8 +404,13 @@ def dispatch_all(cfg, self_info, seen):
     return dispatched
 
 
-def run_daemon(cfg, self_info, seen):
-    """Listen on the unix socket; on each trigger, dispatch ready tasks."""
+def run_daemon(cfg, self_info, seen, force=False):
+    """Listen on the unix socket; on each trigger, dispatch ready tasks.
+
+    `force` is the daemon-level --force default: every trigger dispatches all
+    ready tasks, ignoring the seen-set. Triggers can also request a one-shot
+    forced dispatch by sending a message containing "force" (dispatch-beads --force).
+    """
     try:
         os.unlink(SOCKET_PATH)
     except OSError:
@@ -403,6 +432,8 @@ def run_daemon(cfg, self_info, seen):
 
     du.log("Beads dispatch daemon listening on %s (workspace=%s, image=%s)"
         % (SOCKET_PATH, cfg.workspace, self_info["image"]))
+    if force:
+        du.log("Forced re-dispatch enabled (--force): every trigger dispatches all ready tasks, ignoring the seen-set.")
     srv.settimeout(1.0)
     while not stop.is_set():
         try:
@@ -413,14 +444,16 @@ def run_daemon(cfg, self_info, seen):
             if stop.is_set():
                 break
             continue
+        msg = b""
         with conn:
             try:
-                conn.recv(64)
+                msg = conn.recv(64)
             except Exception:
                 pass
-        du.log("Commit trigger received — checking ready tasks.")
+        forced = force_requested(msg, force)
+        du.log("Commit trigger received%s — checking ready tasks." % (" (forced)" if forced else ""))
         try:
-            dispatch_all(cfg, self_info, seen)
+            dispatch_all(cfg, self_info, seen, force=forced)
         except Exception as e:
             du.log("ERROR: unexpected error during dispatch: %s" % e)
 
@@ -480,18 +513,19 @@ def main(argv):
         return 0
 
     seen = du.load_state(state_path(cfg))
+    force = "--force" in argv
 
     du.ensure_safe_directory(cfg.workspace)
     du.copy_abc_git_credentials(cfg.workspace)
     du.configure_credential_helpers()
 
     if "--once" in argv:
-        n = dispatch_all(cfg, self_info, seen)
+        n = dispatch_all(cfg, self_info, seen, force=force)
         du.save_state(state_path(cfg), seen)
         du.log("One-shot dispatch complete (%d dispatched)." % n)
         return 0
 
-    return run_daemon(cfg, self_info, seen)
+    return run_daemon(cfg, self_info, seen, force=force)
 
 
 if __name__ == "__main__":

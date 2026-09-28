@@ -16,8 +16,12 @@ Manually trigger the Beads Dispatch daemon to check for ready tasks and spawn wo
 ## Command
 
 ```bash
-dispatch-beads
+dispatch-beads [--force]
 ```
+
+**`--force`** re-dispatches ALL ready tasks, even ones the daemon has dispatched before
+(it ignores the seen-set for this trigger). Useful after a worker crashed or was deleted
+and its task needs a fresh worker.
 
 **Location:** `/workspace/dispatch-beads` (symlinked to `/usr/local/bin/dispatch-beads` in container)
 
@@ -26,7 +30,7 @@ dispatch-beads
 1. Reads `BEADS_DISPATCH_SOCKET_PATH` environment variable (default: `/run/beads-dispatch/trigger.sock`)
 2. Connects to the Unix domain socket
 3. Sends a "manual" trigger message to the Beads Dispatch daemon
-4. Daemon wakes up, checks for ready tasks, spawns workers
+4. Daemon wakes up, checks for ready tasks, spawns workers (with `--force`, it re-dispatches all ready tasks, ignoring the seen-set)
 5. Returns success/failure with log location
 
 ## Prerequisites
@@ -72,6 +76,13 @@ dispatch-beads
 
 # 3. Check worker status
 bd list --status=in_progress
+```
+
+**Force re-dispatch** (worker crashed/deleted, task needs a fresh worker):
+
+```bash
+# Re-dispatch ALL ready tasks, even ones dispatched before
+dispatch-beads --force
 ```
 
 ## Troubleshooting

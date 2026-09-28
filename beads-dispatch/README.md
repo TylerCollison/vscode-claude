@@ -18,7 +18,9 @@ clones the repo and creates/checks out the branch on boot).
    - passes the branch name via `GIT_BRANCH_NAME` environment variable to the worker,
    - **swarm manager node** → `docker service create` (a swarm service),
    - **otherwise** → `docker run -d` (a local container).
-4. The task is recorded in the seen-set so a later commit never re-dispatches it.
+4. The task is recorded in the seen-set so a later commit never re-dispatches it. To
+   re-dispatch anyway (e.g. after a crashed or deleted worker), run `dispatch-beads --force`
+   (one-shot), or start the daemon with `--force` to force every trigger.
 5. The worker (via `git-repo-setup.sh`) clones the repository and **automatically creates
    the branch off the default branch** (typically `main`) if it doesn't exist, or checks it out if it does.
 
@@ -78,6 +80,10 @@ This requires the same git credentials as the branch push (configured automatica
   DnsOptions/ExtraHosts}`), so the worker resolves the same names (e.g. compose `dns:`).
 - On startup the worker runs `bd bootstrap` to clone the task DB from the remote, so
   `bd list` shows the dispatched task.
+- The dispatched agent is instructed (via the injected prompt) to **claim the task**
+  (`bd update <issue-id> --claim` — assigns itself and sets it in-progress) and run
+  `bd dolt push` before starting on the work, so the in-progress state is visible on
+  the remote.
 - Code-server (8443) is published on the first free host port ≥ `BEADS_DISPATCH_PORT_BASE`.
 - Restart policy is inherited from the parent (local) / `any` (swarm service).
 
@@ -92,6 +98,9 @@ BEADS_DISPATCH=true /usr/local/bin/beads-dispatch --once
 
 # Manual trigger (if daemon is already running)
 dispatch-beads
+
+# Forced re-dispatch: also dispatch tasks dispatched previously (one-shot)
+dispatch-beads --force
 
 # Watch the daemon log
 tail -f /tmp/beads-dispatch.log
