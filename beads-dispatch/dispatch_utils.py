@@ -124,7 +124,10 @@ def self_container_id():
 
     Tries multiple methods in order of reliability:
     1. /proc/self/cgroup (works without docker CLI, works with custom hostnames)
-    2. /etc/hostname + docker inspect (fallback if cgroup parsing fails)
+    2. /proc/self/mountinfo (works when cgroups are namespaced and with swarm
+       service tasks, where the hostname is the service name)
+    3. /etc/hostname + docker inspect (fallback if cgroup/mountinfo parsing fails)
+    4. swarm task lookup via docker ps label filter
     """
     # Method 1: Parse container ID from cgroup (works with custom hostnames, no docker CLI needed)
     try:
@@ -135,23 +138,66 @@ def self_container_id():
                 # cgroups v2: 0::/docker/<64-char-id> or 0::/system.slice/docker-<64-char-id>.scope
                 m = re.search(r"[0-9a-f]{64}", line)
                 if m:
-                    return m.group(1)
+                    return m.group(0)
     except OSError:
         pass
 
-    # Method 2: Use hostname + docker inspect (fallback)
+    # Method 2: Parse container ID from /proc/self/mountinfo. The container's
+    # /etc/hostname, /etc/hosts and /etc/resolv.conf are bind-mounted from
+    # /var/lib/docker/containers/<64-char-id>/..., which stays visible in the
+    # container's own mount namespace even when cgroups are namespaced (cgroups
+    # v2 with a private cgroupns shows "0::/" and no container ID). This also
+    # works when deployed as a Docker Swarm service task: dispatch_swarm() sets
+    # the hostname to the service name, and task containers are named
+    # <service>.<slot>.<task-id>, so no object answers to the bare hostname.
+    try:
+        with open("/proc/self/mountinfo") as fh:
+            for line in fh:
+                # Field 5 of mountinfo is the mount point; only bind mounts of
+                # per-container config files carry the container ID in their
+                # source path (field 4).
+                parts = line.split()
+                if len(parts) < 5:
+                    continue
+                if parts[4] not in ("/etc/hostname", "/etc/hosts", "/etc/resolv.conf"):
+                    continue
+                m = re.search(r"[0-9a-f]{64}", line)
+                if m:
+                    return m.group(0)
+    except OSError:
+        pass
+
+    # Method 3: Use hostname + docker inspect (fallback)
     try:
         with open("/etc/hostname") as fh:
             host = fh.read().strip()
     except OSError:
         host = ""
     if host:
-        rc, out, err = run(["docker", "inspect", host, "--format", "{{.Id}}"])
+        rc, out, err = run(["docker", "inspect", "--type", "container", host,
+                            "--format", "{{.Id}}"])
         if rc == 0 and out:
             # docker inspect --format "{{.Id}}" returns the full 64-char ID
             return out.strip()
+        # --type container keeps a swarm *service* sharing the hostname's name
+        # from being inspected by mistake (its .Id is a service ID, not a
+        # container ID). "no such object" is the expected result here when
+        # deployed as a swarm service task: no container carries the bare
+        # service name, so fall through to the swarm task lookup.
+        if "no such object" in (err or "").lower():
+            log("DEBUG: no docker object named '%s' (expected when deployed as a swarm service) — trying swarm task lookup" % host)
         else:
             log("DEBUG: docker inspect %s failed (rc=%d): %s" % (host, rc, err or out))
+
+        # Method 4: Swarm task lookup. Task containers carry the
+        # com.docker.swarm.service.name label; co-located replicas of the same
+        # service share identical image/env/DNS settings, so any match clones
+        # the right configuration.
+        rc, out, _ = run(["docker", "ps", "--filter",
+                          "label=com.docker.swarm.service.name=%s" % host,
+                          "--format", "{{.ID}}"])
+        if rc == 0 and out:
+            return out.splitlines()[0].strip()
     return None
 
 
