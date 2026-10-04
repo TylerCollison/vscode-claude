@@ -11,6 +11,12 @@ log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
 }
 
+# Strip userinfo (user:token@) from a URL. Used to sanitize GIT_REPO_URL
+# before provider/repo parsing and to keep embedded credentials out of logs.
+strip_userinfo() {
+    sed -E 's#^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@]*@#\1#' <<< "$1"
+}
+
 # Skip unless explicitly enabled. The dispatch switch gates the whole MR/PR
 # responder feature (dispatcher + sync).
 if [[ "${MR_PR_DISPATCH:-}" != "true" ]]; then
@@ -41,26 +47,63 @@ if [ -z "$GIT_REPO_URL" ]; then
     exit 0
 fi
 
-# Determine provider from GIT_REPO_URL
+# Provider override: MR_PR_PROVIDER forces the provider for self-hosted
+# instances whose hostname is neither github.com nor gitlab.com (e.g.
+# gitlab.home.com). Valid values: "github", "gitlab". Unset = auto-detect
+# from the GIT_REPO_URL host.
+MR_PR_PROVIDER="${MR_PR_PROVIDER:-}"
+
+# Strip userinfo (user:token@) from GIT_REPO_URL before parsing so embedded
+# credentials never influence matching and never reach the logs.
+SANITIZED_REPO_URL="$(strip_userinfo "$GIT_REPO_URL")"
+
+# Parse host and path from the sanitized URL
+REPO_HOST=""
+REPO_PATH=""
+if [[ "$SANITIZED_REPO_URL" == *"://"* ]]; then
+    REST="${SANITIZED_REPO_URL#*://}"
+    REPO_HOST="${REST%%/*}"
+    REPO_PATH="${REST#*/}"
+fi
+REPO_HOST="${REPO_HOST%%:*}" # drop :port if present
+
+# Determine provider: MR_PR_PROVIDER override wins, else auto-detect from host
 PROVIDER=""
-# Extract owner/repo from GIT_REPO_URL for --repo flag
-REPO_OWNER_REPO=""
-if [[ "$GIT_REPO_URL" == *"github.com"* ]]; then
+if [ -n "$MR_PR_PROVIDER" ]; then
+    case "$MR_PR_PROVIDER" in
+        github|gitlab)
+            PROVIDER="$MR_PR_PROVIDER"
+            ;;
+        *)
+            log "ERROR: Invalid MR_PR_PROVIDER '$MR_PR_PROVIDER'. Valid values are 'github' and 'gitlab'. Unset it to auto-detect the provider from GIT_REPO_URL."
+            exit 0
+            ;;
+    esac
+elif [ "$REPO_HOST" = "github.com" ]; then
     PROVIDER="github"
-    REPO_OWNER_REPO="${GIT_REPO_URL#*github.com/}"
-    REPO_OWNER_REPO="${REPO_OWNER_REPO%.git}"
-elif [[ "$GIT_REPO_URL" == *"gitlab.com"* ]]; then
+elif [ "$REPO_HOST" = "gitlab.com" ]; then
     PROVIDER="gitlab"
-    REPO_OWNER_REPO="${GIT_REPO_URL#*gitlab.com/}"
-    REPO_OWNER_REPO="${REPO_OWNER_REPO%.git}"
 else
-    log "ERROR: Could not determine provider from GIT_REPO_URL ($GIT_REPO_URL). Only github.com and gitlab.com are supported."
+    log "ERROR: Could not determine provider from GIT_REPO_URL ($SANITIZED_REPO_URL). Only github.com and gitlab.com hosts are auto-detected. Set MR_PR_PROVIDER to 'github' or 'gitlab' for self-hosted instances (e.g. gitlab.home.com)."
     exit 0
 fi
 
-if [ -z "$REPO_OWNER_REPO" ]; then
-    log "ERROR: Could not extract owner/repo from GIT_REPO_URL ($GIT_REPO_URL)"
+# Extract owner/repo from GIT_REPO_URL for --repo flag. Works for arbitrary
+# hosts: strip scheme and userinfo, drop the host, take the path minus .git.
+REPO_OWNER_REPO="${REPO_PATH%.git}"
+
+if [[ -z "$REPO_OWNER_REPO" || "$REPO_OWNER_REPO" != */* ]]; then
+    log "ERROR: Could not extract owner/repo from GIT_REPO_URL ($SANITIZED_REPO_URL). Expected https://<host>/<owner>/<repo>.git"
     exit 0
+fi
+
+# Point the provider CLI at the self-hosted instance when the repo host is
+# neither github.com nor gitlab.com (both CLIs default to the public hosts).
+# An explicitly set GITLAB_HOST/GH_HOST wins.
+if [[ "$PROVIDER" == "gitlab" && -n "$REPO_HOST" && "$REPO_HOST" != "gitlab.com" && -z "${GITLAB_HOST:-}" ]]; then
+    export GITLAB_HOST="$REPO_HOST"
+elif [[ "$PROVIDER" == "github" && -n "$REPO_HOST" && "$REPO_HOST" != "github.com" && -z "${GH_HOST:-}" ]]; then
+    export GH_HOST="$REPO_HOST"
 fi
 
 log "MR/PR sync enabled for $PROVIDER (user: $RESPONDER_USER, repo: $REPO_OWNER_REPO)"
