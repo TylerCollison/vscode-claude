@@ -239,6 +239,20 @@ def slugify(text):
     return slug
 
 
+def env_value(parent_env, name):
+    """Extract <name>'s value from a parent env list of KEY=VALUE strings.
+
+    Returns None when the variable is absent or set to an empty string.
+    """
+    for e in parent_env or []:
+        if e.startswith(name + "="):
+            val = e.split("=", 1)[1]
+            if val:
+                return val
+            break
+    return None
+
+
 def derive_git_repo_url(parent_env, workspace, user=None):
     # First check the environment variable
     env_url = None
