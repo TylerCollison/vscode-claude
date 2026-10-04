@@ -323,6 +323,7 @@ In stealth mode (when `BEADS_DIR` is set), data lives at `$BEADS_DIR` instead â€
 |----------|---------|-------------|
 | `MR_PR_DISPATCH` | *(not set)* | Set to `true` to enable the MR/PR responder feature (dispatcher + sync) |
 | `MR_PR_USER` | *(not set)* | **Required.** GitHub/GitLab username to watch for MR/PR assignments |
+| `MR_PR_PROVIDER` | *(not set)* | Force the provider for self-hosted instances: `github` or `gitlab`. Unset = auto-detect from `GIT_REPO_URL` (only `github.com`/`gitlab.com`) |
 | `MR_PR_DISPATCH_PORT_BASE` | `8100` | Lowest host port for worker code-server (8443) mapping |
 | `MR_PR_DISPATCH_WORKER_PORT` | `8443` | Internal port published on the worker |
 | `MR_PR_DISPATCH_STATE_DIR` | `/config/.mr-pr-dispatch` | Where the seen-set state file lives |
@@ -459,6 +460,7 @@ The feature consists of two components gated by the same switch `MR_PR_DISPATCH=
 |----------|---------|-------------|
 | `MR_PR_DISPATCH` | *(unset)* | Set to `true` to enable the entire MR/PR responder feature (dispatcher + sync) |
 | `MR_PR_USER` | *(unset)* | **Required.** GitHub/GitLab username to watch for assignments |
+| `MR_PR_PROVIDER` | *(unset)* | Force the provider for self-hosted instances: `github` or `gitlab`. Unset = auto-detect from `GIT_REPO_URL` (only `github.com`/`gitlab.com`) |
 | `MR_PR_DISPATCH_PORT_BASE` | `8100` | Lowest host port for worker code-server (8443) mapping |
 | `MR_PR_DISPATCH_WORKER_PORT` | `8443` | Internal port published on the worker |
 | `MR_PR_DISPATCH_STATE_DIR` | `/config/.mr-pr-dispatch` | Where the seen-set state file lives |
@@ -479,6 +481,21 @@ environment:
   - GIT_REPO_URL=https://github.com/user/repo.git # Required
   - GH_TOKEN=your-github-token             # Required for GitHub (or GITLAB_TOKEN for GitLab)
 ```
+
+**Self-hosted GitLab/GitHub:**
+
+Provider detection auto-detects only `github.com` and `gitlab.com` hosts. For a self-hosted instance (e.g. `gitlab.home.com`), set `MR_PR_PROVIDER` to force the provider, and embed the credentials in `GIT_REPO_URL` (they are stripped before parsing and never written to logs):
+
+```yaml
+environment:
+  - MR_PR_DISPATCH=true
+  - MR_PR_USER=your-gitlab-username
+  - MR_PR_PROVIDER=gitlab
+  - GIT_REPO_URL=https://user:token@gitlab.home.com/owner/repo.git
+  - GITLAB_TOKEN=your-gitlab-token
+```
+
+When the provider is forced on a non-`gitlab.com`/non-`github.com` host, the sync daemon exports `GITLAB_HOST`/`GH_HOST` from `GIT_REPO_URL` for the provider CLI (an explicitly set `GITLAB_HOST`/`GH_HOST` wins).
 
 **How it works:**
 1. The sync daemon (configured via `MR_PR_SYNC_INTERVAL`) polls GitHub (`gh pr list --assignee`) or GitLab (`glab mr list --assignee`) for open MRs/PRs assigned to `MR_PR_USER`.
@@ -983,6 +1000,7 @@ docker exec claude-dev curl -I http://localhost:3000
 - Test sync manually: `docker exec -u abc claude-dev gh pr list --assignee "$MR_PR_USER" --state open --json number,title,headRefName,url --repo "owner/repo"`
 - Ensure `MR_PR_DISPATCH=true`, `MR_PR_USER` is set, docker socket is mounted, and `GIT_REPO_URL` is set
 - For GitHub: ensure `GH_TOKEN` is set; for GitLab: ensure `GITLAB_TOKEN` is set
+- For self-hosted GitLab/GitHub (e.g. `gitlab.home.com`): set `MR_PR_PROVIDER=gitlab` (or `github`) â€” only `github.com`/`gitlab.com` hosts are auto-detected
 
 **Auto Start Prompt Issues:**
 - Verify `PROMPT` environment variable is set and non-empty

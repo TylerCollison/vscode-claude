@@ -21,6 +21,12 @@ error_exit() {
     exit 1
 }
 
+# Strip userinfo (user:token@) from a URL so embedded credentials in
+# GIT_REPO_URL never reach log or error output.
+strip_userinfo() {
+    sed -E 's#^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@]*@#\1#' <<< "$1"
+}
+
 # Success logging function
 log_success() {
     if [[ "${LOGGING:-}" == "verbose" ]]; then
@@ -73,7 +79,7 @@ fi
 
 # Validate repository URL format
 if [[ ! "$GIT_REPO_URL" =~ ^https?:// ]]; then
-    error_exit "Repository URL must start with http:// or https://: $GIT_REPO_URL"
+    error_exit "Repository URL must start with http:// or https://: $(strip_userinfo "$GIT_REPO_URL")"
 fi
 
 # Optional environment variables with defaults
@@ -101,7 +107,7 @@ if [ -d "$TARGET_DIR" ]; then
 fi
 
 log "Preparing to clone repository:"
-log "  URL: $GIT_REPO_URL"
+log "  URL: $(strip_userinfo "$GIT_REPO_URL")"
 log "  Branch: $GIT_BRANCH_NAME"
 if [ -n "$GIT_CHECKOUT_BASE_BRANCH" ]; then
     log "  Base branch (for new branch creation): $GIT_CHECKOUT_BASE_BRANCH"
@@ -112,7 +118,7 @@ log "  Target: $TARGET_DIR"
 # submodule update below is the authoritative sync point)
 log "Cloning repository..."
 if ! git clone --recurse-submodules "$GIT_REPO_URL" "$TARGET_DIR"; then
-    error_exit "Failed to clone git repository: $GIT_REPO_URL"
+    error_exit "Failed to clone git repository: $(strip_userinfo "$GIT_REPO_URL")"
 fi
 
 log "Successfully cloned repository"
@@ -158,14 +164,14 @@ log "Branch '$GIT_BRANCH_NAME' is now active"
 # Unconditional: a fast no-op for repos without submodules.
 log "Initializing submodules recursively..."
 if ! git submodule update --init --recursive; then
-    error_exit "Failed to initialize submodules recursively (private or unreachable submodule?): $GIT_REPO_URL"
+    error_exit "Failed to initialize submodules recursively (private or unreachable submodule?): $(strip_userinfo "$GIT_REPO_URL")"
 fi
 
 # Output success information
 log_success "Git repository setup completed successfully"
 log "Repository location: $TARGET_DIR"
 log "Active branch: $GIT_BRANCH_NAME"
-log "Remote URL: $GIT_REPO_URL"
+log "Remote URL: $(strip_userinfo "$GIT_REPO_URL")"
 
 # Cleanup will happen automatically via trap
 exit 0
