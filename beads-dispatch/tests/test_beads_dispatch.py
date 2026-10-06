@@ -4,6 +4,7 @@ Run with: python3 -m pytest beads-dispatch/tests/  (or run directly: python3 bea
 """
 
 import importlib.util
+import json
 import os
 import sys
 import tempfile
@@ -584,6 +585,74 @@ def test_dispatch_all_force_still_requires_ready():
     finally:
         bd.get_ready_issues = orig_ready
         bd.dispatch_worker = orig_worker
+
+
+def _fake_bd_run(payload):
+    """Stub du.run for `bd list --ready --json` calls, returning the given payload."""
+    return lambda cmd, **kwargs: (0, json.dumps(payload), "")
+
+
+def test_get_ready_issues_filters_epics():
+    """Epics are containers, not actionable work — they never reach the ready set."""
+    orig = du.run
+    du.run = _fake_bd_run([
+        {"id": "epic-1", "title": "Epic container", "issue_type": "epic"},
+        {"id": "task-1", "title": "Real task", "issue_type": "task"},
+    ])
+    try:
+        issues = bd.get_ready_issues("/tmp")
+    finally:
+        du.run = orig
+    assert issues == [{"id": "task-1", "title": "Real task"}]
+
+
+def test_get_ready_issues_keeps_items_without_issue_type():
+    # Older bd versions may not emit issue_type — nothing is filtered then.
+    orig = du.run
+    du.run = _fake_bd_run([{"id": "task-1", "title": "Legacy task"}])
+    try:
+        issues = bd.get_ready_issues("/tmp")
+    finally:
+        du.run = orig
+    assert issues == [{"id": "task-1", "title": "Legacy task"}]
+
+
+def _assert_dispatch_all_skips_epic(force):
+    """Shared body: dispatch_all must never dispatch an epic, force or not."""
+    dispatched = []
+    def fake_dispatch_worker(issue, cfg, self_info):
+        dispatched.append(issue["id"])
+        return True
+
+    fake_run = _fake_bd_run([
+        {"id": "epic-1", "title": "Epic container", "issue_type": "epic"},
+        {"id": "task-1", "title": "Real task", "issue_type": "task"},
+    ])
+    orig_run = du.run
+    orig_worker = bd.dispatch_worker
+    du.run = fake_run
+    bd.dispatch_worker = fake_dispatch_worker
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = _stub_cfg(tmp)
+            n = bd.dispatch_all(cfg, {}, set(), force=force)
+            assert n == 1
+            assert dispatched == ["task-1"]
+            # Only the dispatched task lands in the seen-set (epics are not recorded)
+            assert du.load_state(os.path.join(tmp, "state.json")) == {"task-1"}
+    finally:
+        du.run = orig_run
+        bd.dispatch_worker = orig_worker
+
+
+def test_dispatch_all_skips_epics():
+    """The dispatch loop never creates workers for epics."""
+    _assert_dispatch_all_skips_epic(force=False)
+
+
+def test_dispatch_all_force_skips_epics():
+    """Forced re-dispatch (--force) also skips epics."""
+    _assert_dispatch_all_skips_epic(force=True)
 
 
 if __name__ == "__main__":
