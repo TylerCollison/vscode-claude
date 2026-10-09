@@ -18,12 +18,24 @@ issue workspace-5dr:
 Also covers the matching redaction in git-repo-setup.sh, which echoes
 GIT_REPO_URL in its log/error output (tokens would land in container boot
 logs when the URL carries embedded credentials).
+
+And guards the glab mr list invocation flags against the installed glab
+(beads issue workspace-4zz): the Dockerfile pins glab, and its mr list
+flags drift between releases (--state and --json vanished in v1.110.0),
+so the script's flags are checked against the real binary, and the
+-F json output shape is verified end-to-end against a mock GitLab API.
 """
 
+import json
 import os
+import shlex
+import shutil
+import ssl
 import subprocess
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -229,6 +241,203 @@ class MrPrSyncProviderTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("github.com", result.stdout.splitlines()[-1])
+
+
+def _glab_mlist_invocation(test):
+    """Extract the glab_cmd block from start-mr-pr-sync.sh.
+
+    Returns (env, args): the env assignments the sync daemon hands to glab
+    and the `glab mr list ...` args, with the shell substitutions applied,
+    so the real glab binary can be run against the same invocation. Unknown
+    shell substitutions are left literal (glab ignores unrelated vars).
+    """
+    script = SYNC_SH.read_text()
+    lines = script.splitlines()
+    start = next((i for i, ln in enumerate(lines) if "local glab_cmd=(" in ln),
+                 None)
+    test.assertIsNotNone(start, "glab_cmd block not found in start-mr-pr-sync.sh")
+    block = []
+    for ln in lines[start + 1:]:
+        if ln.strip() == ")":
+            break
+        block.append(ln.strip().rstrip("\\").strip())
+    test.assertEqual(len(block), 3,
+                     "unexpected glab_cmd block shape: %r" % block)
+    test.assertTrue(block[0].startswith("setpriv"), block)
+    test.assertTrue(block[1].startswith("env "), block)
+    test.assertTrue(block[2].startswith("glab mr list"), block)
+
+    env_line = block[1][len("env "):]
+    env_line = env_line.replace('"$SYNC_HOME"', '"/tmp/sync-home"')
+    env_line = env_line.replace('"${GITLAB_TOKEN:-}"', '"test-token"')
+    env_line = env_line.replace('"${GLAB_SEND_TELEMETRY:-false}"', '"false"')
+    env = {}
+    for assignment in shlex.split(env_line):
+        key, _, value = assignment.partition("=")
+        env[key] = value
+
+    args_line = block[2]
+    args_line = args_line.replace('"$RESPONDER_USER"', '"testuser"')
+    args_line = args_line.replace('"$REPO_OWNER_REPO"', '"o/r"')
+    return env, shlex.split(args_line[len("glab "):])  # ["mr", "list", ...]
+
+
+@unittest.skipUnless(shutil.which("glab"), "glab not installed")
+class GlabFlagsRegressionTest(unittest.TestCase):
+    """glab mr list flags in start-mr-pr-sync.sh vs the installed glab.
+
+    Regression for beads issue workspace-4zz: the Dockerfile pins glab, but
+    mr list flags drift between releases (--state and --json are unknown in
+    v1.110.0, where JSON output is -F json). An unknown flag fails before
+    any API call, so running the script's exact invocation against a dead
+    endpoint proves the installed glab parses it.
+    """
+
+    def test_flags_accepted_by_installed_glab(self):
+        invocation_env, args = _glab_mlist_invocation(self)
+
+        env = dict(os.environ)
+        env.update(invocation_env)
+        # Dead local port: with valid flags glab gets past flag parsing and
+        # fails fast at the API layer; with an unknown flag it errors with
+        # "Unknown flag" without touching the network.
+        env["GITLAB_HOST"] = "127.0.0.1:1"
+        result = subprocess.run(
+            ["glab"] + args,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        combined = result.stdout + result.stderr
+        self.assertNotIn(
+            "Unknown flag", combined,
+            "installed glab rejected flags from start-mr-pr-sync.sh "
+            "(%s): %s" % (" ".join(args), combined))
+
+    def test_glab_invocation_disables_telemetry(self):
+        """Regression: glab 1.110's telemetry goroutine panics on a failed
+        send (exit 2) — a successful fetch would print the MR list and then
+        crash, and the sync's retry loop discards it. The sync must hand
+        glab a telemetry opt-out (GLAB_SEND_TELEMETRY, default false)."""
+        invocation_env, _ = _glab_mlist_invocation(self)
+
+        self.assertIn("GLAB_SEND_TELEMETRY", invocation_env,
+                      "glab_cmd env must set GLAB_SEND_TELEMETRY")
+        self.assertEqual(invocation_env["GLAB_SEND_TELEMETRY"], "false",
+                         "GLAB_SEND_TELEMETRY must default to false")
+
+
+# Minimal GitLab API v4 responses for the output-shape test. The sync
+# script's Python parser reads iid/title/source_branch/web_url from the
+# merge_requests array; the assignee lookup happens first (glab resolves
+# the --assignee username to an ID before listing).
+MOCK_USER = {
+    "id": 42, "username": "testuser", "name": "Test User", "state": "active",
+}
+MOCK_MR = {
+    "id": 9001, "iid": 33, "project_id": 7, "title": "Add feature X",
+    "state": "opened", "target_branch": "main", "source_branch": "feature-x",
+    "assignee": dict(MOCK_USER),
+    "web_url": "https://gitlab.test/o/r/-/merge_requests/33",
+}
+
+
+class _MockGitLabHandler(BaseHTTPRequestHandler):
+    """Serves the endpoints glab hits for `mr list --assignee ... -F json`."""
+
+    def _send(self, payload, code=200):
+        body = json.dumps(payload).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        if path == "/api/v4/users":
+            self._send([dict(MOCK_USER)])
+        elif path.startswith("/api/v4/projects/") and path.endswith("/merge_requests"):
+            self._send([dict(MOCK_MR)])
+        elif path.startswith("/api/v4/projects/"):
+            # Some glab versions resolve the project before listing
+            self._send({"id": 7, "path": "r", "path_with_namespace": "o/r"})
+        elif path == "/api/v4/version":
+            self._send({"version": "17.0.0", "revision": "mock"})
+        else:
+            self._send({"message": "404 not found"}, 404)
+
+    def log_message(self, *args):
+        pass
+
+
+@unittest.skipUnless(shutil.which("glab"), "glab not installed")
+class GlabJsonOutputShapeTest(unittest.TestCase):
+    """End-to-end: glab -F json output matches the script's parser (workspace-4zz).
+
+    Runs the script's exact glab invocation against a TLS mock GitLab API
+    (glab forces HTTPS; SSL_CERT_FILE trusts the mock's self-signed cert)
+    and asserts the JSON output is an array whose objects carry the
+    iid/title/source_branch/web_url fields the parser reads.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+
+        # Mint a self-signed cert for the mock and trust it via SSL_CERT_FILE
+        cert = Path(self.temp_dir.name) / "mock_cert.pem"
+        key = Path(self.temp_dir.name) / "mock_key.pem"
+        subprocess.run(
+            ["openssl", "req", "-x509", "-newkey", "rsa:2048",
+             "-keyout", str(key), "-out", str(cert), "-days", "2",
+             "-nodes", "-subj", "/CN=127.0.0.1",
+             "-addext", "subjectAltName=IP:127.0.0.1"],
+            capture_output=True, text=True, timeout=60, check=True)
+
+        self.httpd = HTTPServer(("127.0.0.1", 0), _MockGitLabHandler)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(str(cert), str(key))
+        self.httpd.socket = ctx.wrap_socket(self.httpd.socket, server_side=True)
+        self.port = self.httpd.server_address[1]
+        thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(self.httpd.server_close)
+        self.addCleanup(self.httpd.shutdown)
+
+    def _run_glab(self):
+        invocation_env, args = _glab_mlist_invocation(self)
+        env = dict(os.environ)
+        env.update(invocation_env)
+        env["GITLAB_HOST"] = "127.0.0.1:%d" % self.port
+        env["SSL_CERT_FILE"] = str(Path(self.temp_dir.name) / "mock_cert.pem")
+        return subprocess.run(
+            ["glab"] + args,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+    def test_json_output_is_parser_compatible(self):
+        result = self._run_glab()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("Unknown flag", result.stdout + result.stderr)
+
+        # The script's parser slices from the first '[' then json.loads
+        start = result.stdout.find("[")
+        self.assertNotEqual(start, -1,
+                            "no JSON array in glab output: %r" % result.stdout[:200])
+        data = json.loads(result.stdout[start:])
+        self.assertIsInstance(data, list)
+        self.assertTrue(data, "glab returned an empty MR list from the mock")
+        for item in data:
+            for field in ("iid", "title", "source_branch", "web_url"):
+                self.assertIn(field, item,
+                              "glab output object missing %r: %r" % (field, item))
 
 
 class GitRepoSetupRedactionTest(unittest.TestCase):

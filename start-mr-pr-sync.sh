@@ -238,10 +238,19 @@ PYTHON_EOF
         rc=0
         for attempt in 1 2 3; do
             log "Attempting to fetch GitLab MRs (attempt $attempt/3) for user: $RESPONDER_USER, repo: $REPO_OWNER_REPO"
+            # glab 1.110 (pinned in the Dockerfile) has no --state flag on
+            # `mr list` (it defaults to open MRs) and no --json flag: JSON
+            # output is -F json, printing the API's merge_requests array
+            # (iid/title/source_branch/web_url included).
+            #
+            # Telemetry is disabled by default: glab 1.110's telemetry
+            # goroutine panics (nil deref in sendTelemetryData) when the
+            # send fails, crashing the fetch with exit 2 after the MR list
+            # is printed — the retry loop then discards a successful fetch.
             local glab_cmd=(
                 setpriv --reuid="$RUN_USER" --regid="$RUN_USER" --init-groups \
-                env HOME="$SYNC_HOME" GITLAB_TOKEN="${GITLAB_TOKEN:-}" \
-                glab mr list --assignee "$RESPONDER_USER" --state opened --json iid,title,source_branch,web_url --repo "$REPO_OWNER_REPO"
+                env HOME="$SYNC_HOME" GITLAB_TOKEN="${GITLAB_TOKEN:-}" GLAB_SEND_TELEMETRY="${GLAB_SEND_TELEMETRY:-false}" \
+                glab mr list --assignee "$RESPONDER_USER" -F json --repo "$REPO_OWNER_REPO"
             )
             rc=0
             output=$( "${glab_cmd[@]}" 2>"$STATE_DIR/glab_error.log" ) || rc=$?
