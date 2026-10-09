@@ -5,7 +5,9 @@ Trigger model
 -------------
 Dispatch is triggered by a git **post-commit** hook, not a poll loop. Every commit in the
 workspace repo causes the dispatcher to re-check `bd list --ready --json` and create a worker
-for each currently-ready task that hasn't been dispatched yet.
+for each currently-ready task that hasn't been dispatched yet. Epics are containers for
+other issues, not actionable work — they are skipped (workers are only dispatched for
+real tasks, including under `--force`).
 
 Forced re-dispatch: `--force` (daemon startup) or a trigger message containing "force"
 (`dispatch-beads --force`) makes the dispatcher ignore the seen-set and create a worker for
@@ -95,7 +97,12 @@ def state_path(cfg):
 # --------------------------------------------------------------------------- beads
 
 def get_ready_issues(workspace):
-    """Return [{id, title}] for the current ready set, or None if bd is not ready."""
+    """Return [{id, title}] for the current ready set, or None if bd is not ready.
+
+    Epics are containers for other issues, not actionable work — they are
+    filtered out so workers are only dispatched for real tasks. Items without
+    an issue_type field (older bd versions) are kept.
+    """
     rc, out, err = du.run(["bd", "list", "--ready", "--json"], cwd=workspace)
     if rc != 0:
         return None
@@ -106,7 +113,7 @@ def get_ready_issues(workspace):
     return [
         {"id": item.get("id", ""), "title": item.get("title", "")}
         for item in data
-        if item.get("id")
+        if item.get("id") and item.get("issue_type") != "epic"
     ]
 
 
