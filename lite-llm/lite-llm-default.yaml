@@ -5,10 +5,74 @@ model_list:
 
   # --- Pollination Models ---
   # These models are all generally quite fast (<2sec of latency in healthcheck)
-
-  - model_name: community/vendouple/laguna-s-2.1:free
+  - model_name: community/NamanSoni78/Glm-5.3-Thinking-Max
     litellm_params:
-      model: openai/community/vendouple/laguna-s-2.1:free
+      model: openai/community/NamanSoni78/Glm-5.3-Thinking-Max
+      api_base: https://gen.pollinations.ai/v1
+      api_key: os.environ/POLLINATION_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  - model_name: community/YoannDev90/kilocode-laguna-s-2.1:free
+    litellm_params:
+      model: openai/community/YoannDev90/kilocode-laguna-s-2.1:free
+      api_base: https://gen.pollinations.ai/v1
+      api_key: os.environ/POLLINATION_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  - model_name: community/NamanSoni78/nemotron-3-ultra-550b-a55b
+    litellm_params:
+      model: openai/community/NamanSoni78/nemotron-3-ultra-550b-a55b
+      api_base: https://gen.pollinations.ai/v1
+      api_key: os.environ/POLLINATION_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  - model_name: community/NamanSoni78/gpt-5.4-nano
+    litellm_params:
+      model: openai/community/NamanSoni78/gpt-5.4-nano
+      api_base: https://gen.pollinations.ai/v1
+      api_key: os.environ/POLLINATION_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  - model_name: community/NamanSoni78/opus-5-max
+    litellm_params:
+      model: openai/community/NamanSoni78/opus-5-max
+      api_base: https://gen.pollinations.ai/v1
+      api_key: os.environ/POLLINATION_API_KEY
+      stream_timeout: 600.0
+      timeout: 600.0
+
+  # This model seems to stop Claude Code sessions immediately; disabling until a solution is found
+  - model_name: community/scriptsnsenses-sys/muse-spark-1.2-contributor-free
+    litellm_params:
+      model: openai/community/scriptsnsenses-sys/muse-spark-1.2-contributor-free
+      api_base: https://gen.pollinations.ai/v1
+      api_key: os.environ/POLLINATION_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  - model_name: community/scriptsnsenses-sys/glm-5.3-flash-free
+    litellm_params:
+      model: openai/community/scriptsnsenses-sys/glm-5.3-flash-free
+      api_base: https://gen.pollinations.ai/v1
+      api_key: os.environ/POLLINATION_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  - model_name: community/scriptsnsenses-sys/gpt-5.6-luna
+    litellm_params:
+      model: openai/community/scriptsnsenses-sys/gpt-5.6-luna
+      api_base: https://gen.pollinations.ai/v1
+      api_key: os.environ/POLLINATION_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  - model_name: community/iotserver24/deepseek-v4f
+    litellm_params:
+      model: openai/community/iotserver24/deepseek-v4f
       api_base: https://gen.pollinations.ai/v1
       api_key: os.environ/POLLINATION_API_KEY
       stream_timeout: 30.0
@@ -185,7 +249,7 @@ model_list:
     litellm_params:
       # The callback (router_callback.py) intercepts every request and
       # rewrites the model
-      model: openai/community/vendouple/laguna-s-2.1:free
+      model: openai/community/NamanSoni78/Glm-5.3-Thinking-Max
       api_base: https://gen.pollinations.ai/v1
       api_key: os.environ/POLLINATION_API_KEY
       stream_timeout: 30.0
@@ -210,7 +274,7 @@ model_list:
 
   - model_name: lite-llm/default
     litellm_params:
-      model: openai/community/vendouple/laguna-s-2.1:free
+      model: openai/community/NamanSoni78/Glm-5.3-Thinking-Max
       api_base: https://gen.pollinations.ai/v1
       api_key: os.environ/POLLINATION_API_KEY
       stream_timeout: 30.0
@@ -218,7 +282,7 @@ model_list:
 
   - model_name: lite-llm/think
     litellm_params:
-      model: openai/community/vendouple/laguna-s-2.1:free
+      model: openai/community/NamanSoni78/Glm-5.3-Thinking-Max
       api_base: https://gen.pollinations.ai/v1
       api_key: os.environ/POLLINATION_API_KEY
       stream_timeout: 30.0
@@ -226,7 +290,7 @@ model_list:
 
   - model_name: lite-llm/ultra-think
     litellm_params:
-      model: openai/community/vendouple/laguna-s-2.1:free
+      model: openai/community/NamanSoni78/opus-5-max
       api_base: https://gen.pollinations.ai/v1
       api_key: os.environ/POLLINATION_API_KEY
       stream_timeout: 600.0
@@ -234,7 +298,7 @@ model_list:
 
   - model_name: lite-llm/longContext
     litellm_params:
-      model: openai/community/vendouple/laguna-s-2.1:free
+      model: openai/community/NamanSoni78/Glm-5.3-Thinking-Max
       api_base: https://gen.pollinations.ai/v1
       api_key: os.environ/POLLINATION_API_KEY
       stream_timeout: 30.0
@@ -264,7 +328,7 @@ litellm_settings:
   #sanitize_input_messages: true 
   #remove_empty_system_messages: true
 
-  callbacks: ["router_callback.router_handler", "opencode_headers.opencode_headers_handler", "websearch_interception"]
+  callbacks: ["router_callback.router_handler", "websearch_interception"]
   websearch_interception_params:
     enabled_providers:
       - openai
@@ -291,4 +355,4 @@ router_settings:
 
   allowed_fails: 1
   num_retries: 0
-  fallbacks: [{"lite-llm/router": ["minimax-m2.7", "z-ai/glm-5.3-flash", "nemotron-3-super:cloud", "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3", "default", "fast"]}, {"lite-llm/default": ["minimax-m2.7", "z-ai/glm-5.3-flash", "nemotron-3-super:cloud", "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3", "default", "fast"]}, {"lite-llm/think": ["nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "minimax-m2.7", "nemotron-3-super:cloud", "default", "fast"]}, {"lite-llm/ultra-think": ["z-ai/glm-5.3", "z-ai/glm-5.3-flash", "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "minimax-m2.7", "nemotron-3-super:cloud", "default", "fast"]}, {"lite-llm/longContext": ["z-ai/glm-5.3", "z-ai/glm-5.3-flash", ]}, {"lite-llm/webSearch": ["gemini-3.1-flash-lite", "minimax-m2.7", "z-ai/glm-5.3-flash", "nemotron-3-super:cloud", "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3", "default", "fast"]}, {"lite-llm/image": ["gemini-3.1-flash-lite", "z-ai/glm-5.3-flash"]}, {"lite-llm/complexity": ["minimax-m2.7", "z-ai/glm-5.3-flash", "nemotron-3-super:cloud", "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3", "default", "fast"]}]
+  fallbacks: [{"lite-llm/router": ["community/scriptsnsenses-sys/gpt-5.6-luna", "community/scriptsnsenses-sys/glm-5.3-flash-free", "community/iotserver24/deepseek-v4f", "community/YoannDev90/kilocode-laguna-s-2.1:free", "community/NamanSoni78/nemotron-3-ultra-550b-a55b", "minimax-m2.7", "z-ai/glm-5.3-flash", "nemotron-3-super:cloud", "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3", "community/NamanSoni78/gpt-5.4-nano", "default", "fast"]}, {"lite-llm/default": ["community/scriptsnsenses-sys/gpt-5.6-luna", "community/scriptsnsenses-sys/glm-5.3-flash-free", "community/iotserver24/deepseek-v4f", "community/YoannDev90/kilocode-laguna-s-2.1:free", "community/NamanSoni78/nemotron-3-ultra-550b-a55b", "minimax-m2.7", "z-ai/glm-5.3-flash", "nemotron-3-super:cloud", "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3", "community/NamanSoni78/gpt-5.4-nano", "default", "fast"]}, {"lite-llm/think": ["community/scriptsnsenses-sys/gpt-5.6-luna", "community/scriptsnsenses-sys/glm-5.3-flash-free", "community/iotserver24/deepseek-v4f", "z-ai/glm-5.3", "z-ai/glm-5.3-flash", "community/YoannDev90/kilocode-laguna-s-2.1:free", "community/NamanSoni78/nemotron-3-ultra-550b-a55b", "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "minimax-m2.7", "nemotron-3-super:cloud", "community/NamanSoni78/gpt-5.4-nano", "default", "fast"]}, {"lite-llm/ultra-think": ["community/NamanSoni78/Glm-5.3-Thinking-Max", "community/scriptsnsenses-sys/gpt-5.6-luna", "community/scriptsnsenses-sys/glm-5.3-flash-free", "community/iotserver24/deepseek-v4f", "z-ai/glm-5.3", "z-ai/glm-5.3-flash", "community/YoannDev90/kilocode-laguna-s-2.1:free", "community/NamanSoni78/nemotron-3-ultra-550b-a55b", "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "minimax-m2.7", "nemotron-3-super:cloud", "community/NamanSoni78/gpt-5.4-nano", "default", "fast"]}, {"lite-llm/longContext": ["community/scriptsnsenses-sys/gpt-5.6-luna", "community/scriptsnsenses-sys/glm-5.3-flash-free", "community/iotserver24/deepseek-v4f", "z-ai/glm-5.3", "z-ai/glm-5.3-flash", "community/YoannDev90/kilocode-laguna-s-2.1:free", "community/NamanSoni78/opus-5-max"]}, {"lite-llm/webSearch": ["gemini-3.1-flash-lite", "community/NamanSoni78/Glm-5.3-Thinking-Max", "community/scriptsnsenses-sys/gpt-5.6-luna", "community/scriptsnsenses-sys/glm-5.3-flash-free", "community/iotserver24/deepseek-v4f", "community/YoannDev90/kilocode-laguna-s-2.1:free", "community/NamanSoni78/nemotron-3-ultra-550b-a55b", "minimax-m2.7", "z-ai/glm-5.3-flash", "nemotron-3-super:cloud", "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3", "community/NamanSoni78/gpt-5.4-nano", "default", "fast"]}, {"lite-llm/image": ["gemini-3.1-flash-lite", "z-ai/glm-5.3-flash"]}, {"lite-llm/complexity": ["community/scriptsnsenses-sys/gpt-5.6-luna", "community/scriptsnsenses-sys/glm-5.3-flash-free", "community/iotserver24/deepseek-v4f", "community/YoannDev90/kilocode-laguna-s-2.1:free", "community/NamanSoni78/nemotron-3-ultra-550b-a55b", "minimax-m2.7", "z-ai/glm-5.3-flash", "nemotron-3-super:cloud", "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3", "community/NamanSoni78/gpt-5.4-nano", "default", "fast"]}]
