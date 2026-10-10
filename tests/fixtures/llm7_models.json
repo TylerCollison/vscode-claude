@@ -1,0 +1,219 @@
+{
+ "object": "list",
+ "data": [
+  {
+   "id": "DeepSeek-V4-Flash-0731",
+   "object": "model",
+   "created": 1791654779,
+   "owned_by": "",
+   "model_type": "chat",
+   "schema_endpoints": [
+    "openai"
+   ],
+   "tier": "turbo",
+   "pricing_mode": "token",
+   "pricing": {
+    "input": 0.02,
+    "output": 0.04,
+    "currency": "USD",
+    "unit": "1M tokens"
+   },
+   "modalities": {
+    "input": [
+     "text"
+    ],
+    "output": [
+     "text"
+    ]
+   },
+   "context_window": {
+    "tokens": 400000,
+    "chars": null
+   },
+   "usage_based_only": false,
+   "stream": true,
+   "json_mode": true,
+   "reasoning": true,
+   "tools_calling": true,
+   "capabilities": {
+    "vision": false,
+    "tools": true,
+    "reasoning": true,
+    "json_mode": true,
+    "stream": true,
+    "supported_seconds": [],
+    "supported_sizes": [],
+    "supported_image_mime_types": [],
+    "requires_reference_image": false,
+    "atlascloud_routes": []
+   },
+   "availability_last_hour_percent": 94.47,
+   "availability": {
+    "old": 98.25,
+    "mid": 96.72,
+    "recent": 90.12
+   }
+  },
+  {
+   "id": "GLM-5.3-Flash",
+   "object": "model",
+   "created": 1791654779,
+   "owned_by": "",
+   "model_type": "chat",
+   "schema_endpoints": [
+    "openai"
+   ],
+   "tier": "turbo",
+   "pricing_mode": "token",
+   "pricing": {
+    "input": 0.02,
+    "output": 0.04,
+    "currency": "USD",
+    "unit": "1M tokens"
+   },
+   "modalities": {
+    "input": [
+     "text"
+    ],
+    "output": [
+     "text"
+    ]
+   },
+   "context_window": {
+    "tokens": 400000,
+    "chars": null
+   },
+   "usage_based_only": false,
+   "stream": true,
+   "json_mode": false,
+   "reasoning": true,
+   "tools_calling": true,
+   "capabilities": {
+    "vision": false,
+    "tools": true,
+    "reasoning": true,
+    "json_mode": false,
+    "stream": true,
+    "supported_seconds": [],
+    "supported_sizes": [],
+    "supported_image_mime_types": [],
+    "requires_reference_image": false,
+    "atlascloud_routes": []
+   },
+   "availability_last_hour_percent": 88.32,
+   "availability": {
+    "old": 100.0,
+    "mid": 93.88,
+    "recent": 63.89
+   }
+  },
+  {
+   "id": "claude-sonnet-5",
+   "object": "model",
+   "created": 1791654714,
+   "owned_by": "",
+   "model_type": "chat",
+   "schema_endpoints": [
+    "anthropic",
+    "openai"
+   ],
+   "tier": "pro",
+   "pricing_mode": "token",
+   "pricing": {
+    "input": 0.45,
+    "output": 2.25,
+    "cached_input": 0.25,
+    "currency": "USD",
+    "unit": "1M tokens",
+    "minimum_request_price_usd": "0.000784"
+   },
+   "modalities": {
+    "input": [
+     "text"
+    ],
+    "output": [
+     "text"
+    ]
+   },
+   "context_window": {
+    "tokens": 1000000,
+    "chars": null
+   },
+   "usage_based_only": true,
+   "stream": true,
+   "json_mode": true,
+   "reasoning": true,
+   "tools_calling": true,
+   "capabilities": {
+    "vision": false,
+    "tools": true,
+    "reasoning": true,
+    "json_mode": true,
+    "stream": true,
+    "supported_seconds": [],
+    "supported_sizes": [],
+    "supported_image_mime_types": [],
+    "requires_reference_image": false,
+    "atlascloud_routes": []
+   },
+   "availability_last_hour_percent": 94.07,
+   "availability": {
+    "old": 98.48,
+    "mid": 97.62,
+    "recent": 50.0
+   }
+  },
+  {
+   "id": "whisper-large-v3",
+   "object": "model",
+   "created": 1791654717,
+   "owned_by": "",
+   "model_type": "audio_to_text",
+   "schema_endpoints": [
+    "audio"
+   ],
+   "tier": "pro",
+   "pricing_mode": "second",
+   "pricing": {
+    "price": 7.5e-06,
+    "currency": "USD",
+    "unit": "second"
+   },
+   "modalities": {
+    "input": [
+     "audio"
+    ],
+    "output": [
+     "text"
+    ]
+   },
+   "context_window": {
+    "tokens": null,
+    "chars": null
+   },
+   "usage_based_only": true,
+   "stream": false,
+   "json_mode": false,
+   "reasoning": false,
+   "tools_calling": false,
+   "capabilities": {
+    "vision": true,
+    "tools": true,
+    "reasoning": true,
+    "json_mode": true,
+    "stream": true,
+    "supported_seconds": [],
+    "supported_sizes": [],
+    "supported_image_mime_types": [],
+    "requires_reference_image": false,
+    "atlascloud_routes": []
+   },
+   "availability_last_hour_percent": 100.0,
+   "availability": {
+    "old": 100.0,
+    "mid": 100.0,
+    "recent": 100.0
+   }
+  }
+ ]
+}

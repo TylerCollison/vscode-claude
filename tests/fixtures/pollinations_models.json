@@ -1,0 +1,1066 @@
+{
+ "object": "list",
+ "data": [
+  {
+   "id": "openai/gpt-5.4-nano",
+   "object": "model",
+   "created": 1759795200,
+   "owned_by": "OpenAI",
+   "aliases": [
+    "gpt-5.4-nano",
+    "openai"
+   ],
+   "category": "text",
+   "community": false,
+   "tags": [
+    {
+     "name": "text"
+    }
+   ],
+   "title": "GPT-5.4 Nano",
+   "description": "Fast, affordable all-rounder for everyday chat and image questions",
+   "input_modalities": [
+    "text",
+    "image"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "supported_endpoints": [
+    "/v1/chat/completions",
+    "/text",
+    "/text/{prompt}",
+    "/v1/responses",
+    "/v1/messages"
+   ],
+   "paid_only": false,
+   "pricing": {
+    "currency": "pollen",
+    "promptTextTokens": "0.00000015",
+    "promptCachedTokens": "0.000000015",
+    "completionTextTokens": "0.0000009375"
+   },
+   "capabilities": [
+    "tool_calling",
+    "reasoning"
+   ],
+   "supported_parameters": [
+    "max_tokens",
+    "max_completion_tokens",
+    "stream",
+    "tools",
+    "tool_choice",
+    "response_format",
+    "reasoning_effort",
+    "parallel_tool_calls",
+    "verbosity"
+   ],
+   "tools": true,
+   "reasoning": true,
+   "context_length": 400000,
+   "health": {
+    "status": "healthy",
+    "success_rate": 99.97041588439438,
+    "requests": 87885
+   }
+  },
+  {
+   "id": "stepfun/step-5-preview",
+   "object": "model",
+   "created": 1791417600,
+   "owned_by": "StepFun",
+   "aliases": [],
+   "category": "text",
+   "community": false,
+   "tags": [
+    {
+     "name": "text"
+    }
+   ],
+   "title": "StepFun Step 5 Preview",
+   "description": "Agentic coding and long-document analysis with tool calling and image input",
+   "input_modalities": [
+    "text",
+    "image"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "supported_endpoints": [
+    "/v1/chat/completions",
+    "/text",
+    "/text/{prompt}",
+    "/v1/responses",
+    "/v1/messages"
+   ],
+   "paid_only": true,
+   "pricing": {
+    "currency": "pollen",
+    "promptTextTokens": "0.000001055",
+    "promptCachedTokens": "0.00000005275",
+    "completionTextTokens": "0.0000028485"
+   },
+   "capabilities": [
+    "tool_calling",
+    "reasoning"
+   ],
+   "supported_parameters": [
+    "max_tokens",
+    "max_completion_tokens",
+    "stream",
+    "temperature",
+    "top_p",
+    "tools",
+    "stop",
+    "frequency_penalty",
+    "logprobs",
+    "top_logprobs",
+    "reasoning",
+    "include_reasoning",
+    "response_format",
+    "structured_outputs",
+    "reasoning_effort"
+   ],
+   "tools": true,
+   "reasoning": true,
+   "context_length": 1000000,
+   "health": {
+    "status": "healthy",
+    "success_rate": 100,
+    "requests": 1
+   }
+  },
+  {
+   "id": "inclusionai/ling-3.1-flash",
+   "object": "model",
+   "created": 1790899200,
+   "owned_by": "inclusionAI",
+   "aliases": [],
+   "category": "text",
+   "community": false,
+   "tags": [
+    {
+     "name": "text"
+    }
+   ],
+   "title": "Ling 3.1 Flash",
+   "description": "Hybrid reasoning mixture-of-experts for agentic workflows with tool use and long context",
+   "input_modalities": [
+    "text"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "supported_endpoints": [
+    "/v1/chat/completions",
+    "/text",
+    "/text/{prompt}",
+    "/v1/responses",
+    "/v1/messages"
+   ],
+   "paid_only": false,
+   "pricing": {
+    "currency": "pollen"
+   },
+   "capabilities": [
+    "tool_calling",
+    "reasoning"
+   ],
+   "supported_parameters": [
+    "max_tokens",
+    "stream",
+    "tools",
+    "tool_choice",
+    "temperature",
+    "top_p",
+    "top_k",
+    "frequency_penalty",
+    "presence_penalty",
+    "repetition_penalty",
+    "stop",
+    "seed",
+    "reasoning",
+    "include_reasoning",
+    "reasoning_effort"
+   ],
+   "tools": true,
+   "reasoning": true,
+   "context_length": 262144,
+   "per_user_rpm": 8,
+   "health": {
+    "status": "down",
+    "success_rate": 51.650273224043715,
+    "requests": 4575
+   }
+  },
+  {
+   "id": "jaredpalmer/kev-4b",
+   "object": "model",
+   "created": 1790726400,
+   "owned_by": "Jared Palmer",
+   "aliases": [],
+   "category": "text",
+   "community": false,
+   "tags": [
+    {
+     "name": "text"
+    }
+   ],
+   "title": "Kev 4B",
+   "description": "Small open-weight decision model that returns typed choices, scores and probabilities with no prompt retention; post state and questions to /alpha/decisions, or send the same JSON in the last user message on /v1/chat/completions",
+   "input_modalities": [
+    "text"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "supported_endpoints": [
+    "/alpha/decisions",
+    "/v1/chat/completions",
+    "/v1/responses",
+    "/v1/messages"
+   ],
+   "paid_only": false,
+   "pricing": {
+    "currency": "pollen",
+    "promptTextTokens": "0.00000004431"
+   },
+   "capabilities": [],
+   "supported_parameters": [
+    "stream"
+   ],
+   "context_length": 8192,
+   "health": {
+    "status": "unknown",
+    "success_rate": null,
+    "requests": 0
+   }
+  },
+  {
+   "id": "openai/gpt-6-luna",
+   "object": "model",
+   "created": 1790035200,
+   "owned_by": "OpenAI",
+   "aliases": [],
+   "category": "text",
+   "community": false,
+   "tags": [
+    {
+     "name": "text"
+    }
+   ],
+   "title": "GPT-6 Luna",
+   "description": "Efficient reasoning for focused, high-volume tasks",
+   "input_modalities": [
+    "text",
+    "image"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "supported_endpoints": [
+    "/v1/chat/completions",
+    "/text",
+    "/text/{prompt}",
+    "/v1/responses",
+    "/v1/messages"
+   ],
+   "paid_only": false,
+   "pricing": {
+    "currency": "pollen",
+    "promptTextTokens": "0.0000001",
+    "promptCachedTokens": "0.00000001",
+    "promptCacheWriteTokens": "0.000000125",
+    "promptImageTokens": "0.0000001",
+    "completionTextTokens": "0.0000005"
+   },
+   "capabilities": [
+    "tool_calling",
+    "reasoning"
+   ],
+   "supported_parameters": [
+    "max_tokens",
+    "max_completion_tokens",
+    "stream",
+    "tools",
+    "tool_choice",
+    "response_format",
+    "reasoning_effort",
+    "parallel_tool_calls"
+   ],
+   "tools": true,
+   "reasoning": true,
+   "context_length": 1050000,
+   "health": {
+    "status": "healthy",
+    "success_rate": 99.6319018404908,
+    "requests": 1630
+   }
+  },
+  {
+   "id": "z-ai/glm-5.3",
+   "object": "model",
+   "created": 1787097600,
+   "owned_by": "Z.ai",
+   "aliases": [
+    "glm-5.3"
+   ],
+   "category": "text",
+   "community": false,
+   "tags": [
+    {
+     "name": "text"
+    }
+   ],
+   "title": "Z.ai GLM-5.3",
+   "description": "Mandatory-reasoning model for complex software engineering and long-horizon agent workflows",
+   "input_modalities": [
+    "text"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "supported_endpoints": [
+    "/v1/chat/completions",
+    "/text",
+    "/text/{prompt}",
+    "/v1/responses",
+    "/v1/messages"
+   ],
+   "paid_only": false,
+   "pricing": {
+    "currency": "pollen",
+    "promptTextTokens": "0.0000014",
+    "promptCachedTokens": "0.00000026",
+    "completionTextTokens": "0.0000044"
+   },
+   "capabilities": [
+    "tool_calling",
+    "reasoning"
+   ],
+   "supported_parameters": [
+    "max_tokens",
+    "max_completion_tokens",
+    "stream",
+    "tools",
+    "tool_choice",
+    "response_format",
+    "temperature",
+    "top_p",
+    "stop",
+    "frequency_penalty",
+    "presence_penalty",
+    "logprobs",
+    "top_logprobs",
+    "seed",
+    "top_k",
+    "reasoning_effort",
+    "parallel_tool_calls",
+    "logit_bias",
+    "n",
+    "prediction"
+   ],
+   "tools": true,
+   "reasoning": true,
+   "context_length": 1048576,
+   "health": {
+    "status": "healthy",
+    "success_rate": 100,
+    "requests": 145
+   }
+  },
+  {
+   "id": "cohere/command-a-plus",
+   "object": "model",
+   "created": 1785369600,
+   "owned_by": "Cohere",
+   "aliases": [
+    "cohere-command-a-plus",
+    "command-a-plus-05-2026",
+    "cohere-command-a-plus-05-2026",
+    "command-a-plus"
+   ],
+   "category": "text",
+   "community": false,
+   "tags": [
+    {
+     "name": "text"
+    }
+   ],
+   "title": "Cohere Command A+",
+   "description": "Multilingual agentic reasoning with tools and long context",
+   "input_modalities": [
+    "text",
+    "image"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "supported_endpoints": [
+    "/v1/chat/completions",
+    "/text",
+    "/text/{prompt}",
+    "/v1/responses",
+    "/v1/messages"
+   ],
+   "paid_only": false,
+   "pricing": {
+    "currency": "pollen",
+    "promptTextTokens": "0.0000006",
+    "completionTextTokens": "0.0000024"
+   },
+   "capabilities": [
+    "tool_calling",
+    "reasoning"
+   ],
+   "supported_parameters": [
+    "max_tokens",
+    "max_completion_tokens",
+    "stream",
+    "temperature",
+    "top_p",
+    "frequency_penalty",
+    "presence_penalty",
+    "seed",
+    "stop"
+   ],
+   "tools": true,
+   "reasoning": true,
+   "context_length": 128000,
+   "health": {
+    "status": "degraded",
+    "success_rate": 92.85714285714286,
+    "requests": 14
+   }
+  },
+  {
+   "id": "poolside/laguna-s-2.1",
+   "object": "model",
+   "created": 1784678400,
+   "owned_by": "Poolside",
+   "aliases": [
+    "laguna-s-2.1",
+    "laguna-s2.1",
+    "poolside-laguna-s-2.1",
+    "laguna"
+   ],
+   "category": "text",
+   "community": false,
+   "tags": [
+    {
+     "name": "text"
+    }
+   ],
+   "title": "Laguna S 2.1",
+   "description": "Long-context reasoning for coding agents and complex software tasks",
+   "input_modalities": [
+    "text"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "supported_endpoints": [
+    "/v1/chat/completions",
+    "/text",
+    "/text/{prompt}",
+    "/v1/responses",
+    "/v1/messages"
+   ],
+   "paid_only": true,
+   "pricing": {
+    "currency": "pollen",
+    "promptTextTokens": "0.00000009495",
+    "promptCachedTokens": "0.000000009495",
+    "completionTextTokens": "0.0000001899"
+   },
+   "capabilities": [
+    "tool_calling",
+    "reasoning"
+   ],
+   "supported_parameters": [
+    "max_tokens",
+    "max_completion_tokens",
+    "stream",
+    "tools",
+    "tool_choice",
+    "reasoning",
+    "include_reasoning",
+    "temperature"
+   ],
+   "tools": true,
+   "reasoning": true,
+   "context_length": 1048576,
+   "health": {
+    "status": "unknown",
+    "success_rate": null,
+    "requests": 0
+   }
+  },
+  {
+   "id": "openai/gpt-oss-20b",
+   "object": "model",
+   "created": 1784332800,
+   "owned_by": "OpenAI",
+   "aliases": [
+    "gpt-oss-20b",
+    "ovh-reasoning",
+    "gpt-oss"
+   ],
+   "category": "text",
+   "community": false,
+   "tags": [
+    {
+     "name": "text"
+    }
+   ],
+   "title": "GPT-OSS 20B",
+   "description": "Compact open-weight reasoner; solid logic on a budget, limited world knowledge",
+   "input_modalities": [
+    "text"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "supported_endpoints": [
+    "/v1/chat/completions",
+    "/text",
+    "/text/{prompt}",
+    "/v1/responses",
+    "/v1/messages"
+   ],
+   "paid_only": false,
+   "pricing": {
+    "currency": "pollen",
+    "promptTextTokens": "0.00000005",
+    "completionTextTokens": "0.00000018"
+   },
+   "capabilities": [
+    "tool_calling",
+    "reasoning"
+   ],
+   "supported_parameters": [
+    "max_tokens",
+    "max_completion_tokens",
+    "stream",
+    "tools",
+    "tool_choice",
+    "response_format",
+    "temperature",
+    "top_p",
+    "stop",
+    "frequency_penalty",
+    "presence_penalty",
+    "logprobs",
+    "top_logprobs",
+    "seed",
+    "reasoning_effort",
+    "parallel_tool_calls",
+    "logit_bias",
+    "n"
+   ],
+   "tools": true,
+   "reasoning": true,
+   "context_length": 131072,
+   "health": {
+    "status": "healthy",
+    "success_rate": 99.76328136309063,
+    "requests": 117439
+   }
+  },
+  {
+   "id": "openai/gpt-audio-1.5",
+   "object": "model",
+   "created": 1775088000,
+   "owned_by": "OpenAI",
+   "aliases": [
+    "gpt-audio",
+    "gpt-audio-1.5",
+    "gpt-audio-2025-12-15",
+    "openai-audio-large"
+   ],
+   "category": "text",
+   "community": false,
+   "tags": [
+    {
+     "name": "text"
+    }
+   ],
+   "title": "GPT Audio 1.5",
+   "description": "Rich, natural voice conversations; premium quality at a higher price",
+   "input_modalities": [
+    "text",
+    "audio"
+   ],
+   "output_modalities": [
+    "audio",
+    "text"
+   ],
+   "supported_endpoints": [
+    "/v1/chat/completions",
+    "/text",
+    "/text/{prompt}",
+    "/v1/responses",
+    "/v1/messages"
+   ],
+   "paid_only": false,
+   "pricing": {
+    "currency": "pollen",
+    "promptTextTokens": "0.000001875",
+    "completionTextTokens": "0.0000075",
+    "promptAudioTokens": "0.000024",
+    "completionAudioTokens": "0.000048"
+   },
+   "capabilities": [
+    "tool_calling"
+   ],
+   "supported_parameters": [
+    "max_tokens",
+    "max_completion_tokens",
+    "stream",
+    "tools",
+    "audio",
+    "modalities"
+   ],
+   "tools": true,
+   "context_length": 128000,
+   "health": {
+    "status": "healthy",
+    "success_rate": 100,
+    "requests": 19
+   }
+  },
+  {
+   "id": "qwen/qwen3guard-gen-8b",
+   "object": "model",
+   "created": 1771113600,
+   "owned_by": "Qwen",
+   "aliases": [
+    "qwen3guard-gen-8b",
+    "qwen-safety"
+   ],
+   "category": "text",
+   "community": false,
+   "tags": [
+    {
+     "name": "text"
+    }
+   ],
+   "title": "Qwen3Guard 8B",
+   "description": "Flags unsafe content \u2014 a moderation filter, not a chat companion",
+   "input_modalities": [
+    "text"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "supported_endpoints": [
+    "/v1/chat/completions",
+    "/text",
+    "/text/{prompt}",
+    "/v1/responses",
+    "/v1/messages"
+   ],
+   "paid_only": false,
+   "pricing": {
+    "currency": "pollen",
+    "promptTextTokens": "0.00000001",
+    "completionTextTokens": "0.00000001"
+   },
+   "capabilities": [],
+   "supported_parameters": [
+    "max_tokens",
+    "max_completion_tokens",
+    "stream",
+    "temperature",
+    "top_p",
+    "logprobs",
+    "top_logprobs",
+    "seed"
+   ],
+   "health": {
+    "status": "healthy",
+    "success_rate": 100,
+    "requests": 308
+   }
+  },
+  {
+   "id": "deepseek/deepseek-v4-flash",
+   "object": "model",
+   "created": 1760054400,
+   "owned_by": "DeepSeek",
+   "aliases": [
+    "deepseek-v4",
+    "deepseek-v4-flash",
+    "deepseek-v4-lite",
+    "deepseek-lite",
+    "deepseek-flash",
+    "deepseek"
+   ],
+   "category": "text",
+   "community": false,
+   "tags": [
+    {
+     "name": "text"
+    }
+   ],
+   "title": "DeepSeek V4 Flash 0731",
+   "description": "Fast reasoning and coding at bargain prices",
+   "input_modalities": [
+    "text"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "supported_endpoints": [
+    "/v1/chat/completions",
+    "/text",
+    "/text/{prompt}",
+    "/v1/responses",
+    "/v1/messages"
+   ],
+   "paid_only": false,
+   "pricing": {
+    "currency": "pollen",
+    "promptTextTokens": "0.00000033",
+    "promptCachedTokens": "0.0000000105",
+    "completionTextTokens": "0.00000099"
+   },
+   "capabilities": [
+    "tool_calling",
+    "reasoning"
+   ],
+   "supported_parameters": [
+    "max_tokens",
+    "max_completion_tokens",
+    "stream",
+    "tools",
+    "tool_choice",
+    "response_format",
+    "temperature",
+    "top_p",
+    "stop",
+    "reasoning_effort"
+   ],
+   "tools": true,
+   "reasoning": true,
+   "context_length": 1048576,
+   "per_user_rpm": 60,
+   "health": {
+    "status": "healthy",
+    "success_rate": 99.3485342019544,
+    "requests": 1228
+   }
+  },
+  {
+   "id": "openai/whisper-large-v3",
+   "object": "model",
+   "created": 1770508800,
+   "owned_by": "OpenAI",
+   "aliases": [
+    "whisper-1",
+    "whisper-large-v3",
+    "whisper"
+   ],
+   "category": "audio",
+   "community": false,
+   "tags": [
+    {
+     "name": "audio"
+    }
+   ],
+   "title": "Whisper Large V3",
+   "description": "Accurate, affordable speech-to-text transcription",
+   "input_modalities": [
+    "audio"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "supported_endpoints": [
+    "/v1/audio/transcriptions"
+   ],
+   "paid_only": false,
+   "pricing": {
+    "currency": "pollen",
+    "promptAudioSeconds": "0.000045277778"
+   },
+   "capabilities": [],
+   "health": {
+    "status": "healthy",
+    "success_rate": 100,
+    "requests": 104
+   }
+  },
+  {
+   "id": "openai/gpt-realtime-2.1",
+   "object": "model",
+   "created": 1784160000,
+   "owned_by": "OpenAI",
+   "aliases": [
+    "gpt-realtime-2.1",
+    "gpt-realtime-2"
+   ],
+   "category": "realtime",
+   "community": false,
+   "tags": [
+    {
+     "name": "realtime"
+    }
+   ],
+   "title": "GPT Realtime 2.1",
+   "description": "Live voice conversations with instant replies and solid noise handling",
+   "input_modalities": [
+    "text",
+    "audio",
+    "image"
+   ],
+   "output_modalities": [
+    "text",
+    "audio"
+   ],
+   "supported_endpoints": [
+    "/realtime",
+    "/v1/realtime"
+   ],
+   "paid_only": false,
+   "pricing": {
+    "currency": "pollen",
+    "promptTextTokens": "0.000003",
+    "promptCachedTokens": "0.0000003",
+    "promptAudioTokens": "0.000024",
+    "promptImageTokens": "0.00000375",
+    "completionTextTokens": "0.000018",
+    "completionAudioTokens": "0.000048"
+   },
+   "capabilities": [
+    "tool_calling",
+    "reasoning"
+   ],
+   "tools": true,
+   "reasoning": true,
+   "context_length": 32000,
+   "health": {
+    "status": "unknown",
+    "success_rate": null,
+    "requests": 0
+   }
+  },
+  {
+   "id": "community/samueltargino0567-ux/Gt3",
+   "object": "model",
+   "created": 1791301691,
+   "owned_by": "Community",
+   "aliases": [
+    "samueltargino0567-ux/Gt3"
+   ],
+   "category": "text",
+   "community": true,
+   "tags": [
+    {
+     "name": "text"
+    },
+    {
+     "name": "community"
+    },
+    {
+     "name": "agent"
+    }
+   ],
+   "title": "ESC BUS SIMULATOR SKIN",
+   "input_modalities": [
+    "text",
+    "image"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "supported_endpoints": [
+    "/v1/chat/completions",
+    "/text",
+    "/text/{prompt}",
+    "/v1/responses",
+    "/v1/messages"
+   ],
+   "agent": true,
+   "base_model": "community/JustScriptzz/qwen-3.8-max",
+   "paid_only": false,
+   "pricing": {
+    "currency": "pollen",
+    "promptTextTokens": "0.0000005",
+    "completionTextTokens": "0.000002"
+   },
+   "capabilities": [
+    "tool_calling",
+    "reasoning"
+   ],
+   "tools": true,
+   "reasoning": true,
+   "context_length": 1000000,
+   "per_user_rpm": null,
+   "health": {
+    "status": "down",
+    "success_rate": 0,
+    "requests": 14
+   }
+  },
+  {
+   "id": "community/vendouple/glm-5.3-flash",
+   "object": "model",
+   "created": 1789575335,
+   "owned_by": "OrchidLLM Proxy",
+   "aliases": [
+    "vendouple/glm-5.3-flash"
+   ],
+   "category": "text",
+   "community": true,
+   "tags": [
+    {
+     "name": "text"
+    },
+    {
+     "name": "community"
+    }
+   ],
+   "title": "GLM 5.3 Flash",
+   "input_modalities": [
+    "text",
+    "image"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "supported_endpoints": [
+    "/v1/chat/completions",
+    "/text",
+    "/text/{prompt}",
+    "/v1/responses",
+    "/v1/messages"
+   ],
+   "paid_only": false,
+   "pricing": {
+    "currency": "pollen",
+    "promptTextTokens": "0.00000005",
+    "completionTextTokens": "0.000001"
+   },
+   "capabilities": [
+    "tool_calling",
+    "reasoning"
+   ],
+   "tools": true,
+   "reasoning": true,
+   "context_length": 1000000,
+   "per_user_rpm": null,
+   "health": {
+    "status": "healthy",
+    "success_rate": 98,
+    "requests": 50
+   }
+  },
+  {
+   "id": "community/sharktide/inferenceport-ai-lightning-text-v2",
+   "object": "model",
+   "created": 1784349589,
+   "owned_by": "InferencePort AI, InferencePort LLC.",
+   "aliases": [
+    "sharktide/inferenceport-ai-lightning-text-v2"
+   ],
+   "category": "text",
+   "community": true,
+   "tags": [
+    {
+     "name": "text"
+    },
+    {
+     "name": "community"
+    }
+   ],
+   "title": "Lightning Text V2 (Router)",
+   "description": "InferencePort AI Lightning Text v2 (Router)",
+   "input_modalities": [
+    "text",
+    "image"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "supported_endpoints": [
+    "/v1/chat/completions",
+    "/text",
+    "/text/{prompt}",
+    "/v1/responses",
+    "/v1/messages"
+   ],
+   "paid_only": false,
+   "pricing": {
+    "currency": "pollen",
+    "promptTextTokens": "0.00000075",
+    "completionTextTokens": "0.00000075"
+   },
+   "capabilities": [
+    "tool_calling",
+    "reasoning"
+   ],
+   "tools": true,
+   "reasoning": true,
+   "per_user_rpm": null,
+   "health": {
+    "status": "degraded",
+    "success_rate": 90,
+    "requests": 50
+   }
+  },
+  {
+   "id": "community/vendouple/deepseek-v4-pro",
+   "object": "model",
+   "created": 1783916168,
+   "owned_by": "OrchidLLM Proxy",
+   "aliases": [
+    "vendouple/deepseek-v4-pro"
+   ],
+   "category": "text",
+   "community": true,
+   "tags": [
+    {
+     "name": "text"
+    },
+    {
+     "name": "community"
+    }
+   ],
+   "title": "DeepSeek V4 Pro",
+   "description": "ITS BACK!",
+   "input_modalities": [
+    "text"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "supported_endpoints": [
+    "/v1/chat/completions",
+    "/text",
+    "/text/{prompt}",
+    "/v1/responses",
+    "/v1/messages"
+   ],
+   "paid_only": false,
+   "pricing": {
+    "currency": "pollen",
+    "promptTextTokens": "0.0000001",
+    "completionTextTokens": "0.0000005"
+   },
+   "capabilities": [
+    "tool_calling",
+    "reasoning"
+   ],
+   "tools": true,
+   "reasoning": true,
+   "context_length": 1000000,
+   "per_user_rpm": null,
+   "health": {
+    "status": "healthy",
+    "success_rate": 100,
+    "requests": 50
+   }
+  }
+ ]
+}

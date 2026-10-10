@@ -1,0 +1,665 @@
+"""Tests for the model picker (beads workspace-c8o).
+
+Loads the plugin modules the same way litellm's get_instance_fn does
+(spec_from_file_location next to the config), so the sys.modules-guarded
+sibling loader is exercised too.
+"""
+
+import asyncio
+import importlib.util
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+import pytest
+import yaml
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+LITE_LLM_DIR = REPO_ROOT / "lite-llm"
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+
+def _load_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
+def mp():
+    """The model_picker library + plugin module pair, loaded production-style."""
+    plugin = _load_module("model_picker_plugin_test", LITE_LLM_DIR / "model_picker_plugin.py")
+    lib = sys.modules["model_picker"]
+    return lib, plugin
+
+
+@pytest.fixture()
+def env_enabled(monkeypatch):
+    monkeypatch.setenv("MODEL_PICKER_ENABLED", "true")
+
+
+@pytest.fixture()
+def fresh(mp):
+    """Fresh config/stats/manager + a plugin wired to them (test isolation)."""
+    lib, plugin = mp
+    cfg = lib.PickerConfig()
+    cfg.ttl_seconds = 300.0
+    stats = lib.StatsRegistry()
+    manager = lib.CatalogManager(cfg)
+    test_plugin = plugin.ModelPickerPlugin(manager=manager, stats=stats, config=cfg)
+    return lib, test_plugin, cfg, stats, manager
+
+
+def pollinations_fixture() -> dict:
+    return json.loads((FIXTURES / "pollinations_models.json").read_text())
+
+
+def make_context(lib, candidate_models, metadata=None, messages=None):
+    from litellm.types.router import RoutingContext
+
+    msgs = messages if messages is not None else [{"role": "user", "content": "hello"}]
+    return RoutingContext(
+        raw_messages=msgs,
+        structured_messages=msgs,
+        candidate_models=list(candidate_models),
+        metadata=metadata if metadata is not None else {},
+    )
+
+
+def snapshot_with(lib, candidates, stale=False):
+    return lib.CatalogSnapshot(candidates=list(candidates), stale=stale)
+
+
+def candidates_from_fixture(lib):
+    return lib.parse_pollinations_models(pollinations_fixture())
+
+
+def metric_candidate(lib, name, success, requests, ctx=100000):
+    return lib.ModelCandidate(
+        name=name,
+        provider="pollinations",
+        context_length=ctx,
+        metricless=False,
+        success_rate=success,
+        requests=requests,
+        source="pollinations_api",
+    )
+
+
+def favored_candidate(lib, name, provider="nvidia_nim", ctx=0):
+    return lib.ModelCandidate(name=name, provider=provider, context_length=ctx, metricless=True)
+
+
+# ---------------------------------------------------------------------------
+# Catalog parsing / filtering
+# ---------------------------------------------------------------------------
+
+
+class TestCatalogParsing:
+    def test_free_chat_models_kept(self, mp):
+        lib, _ = mp
+        candidates = candidates_from_fixture(lib)
+        names = {c.name for c in candidates}
+        assert "pollinations/openai/gpt-5.4-nano" in names
+        assert "pollinations/community/vendouple/deepseek-v4-pro" in names
+
+    def test_paid_only_excluded(self, mp):
+        lib, _ = mp
+        names = {c.name for c in candidates_from_fixture(lib)}
+        assert "pollinations/poolside/laguna-s-2.1" not in names
+        assert "pollinations/stepfun/step-5-preview" not in names
+
+    def test_audio_only_models_excluded(self, mp):
+        lib, _ = mp
+        names = {c.name for c in candidates_from_fixture(lib)}
+        # whisper is audio->text (no text input): not a chat model
+        assert "pollinations/openai/whisper-large-v3" not in names
+        # gpt-audio-1.5 accepts text in/out alongside audio: chat-capable, kept
+        assert "pollinations/openai/gpt-audio-1.5" in names
+
+    def test_down_models_excluded(self, mp):
+        lib, _ = mp
+        names = {c.name for c in candidates_from_fixture(lib)}
+        assert "pollinations/community/samueltargino0567-ux/Gt3" not in names
+        assert "pollinations/inclusionai/ling-3.1-flash" not in names
+
+    def test_degraded_and_unknown_kept(self, mp):
+        lib, _ = mp
+        by_name = {c.name: c for c in candidates_from_fixture(lib)}
+        assert by_name["pollinations/cohere/command-a-plus"].success_rate == pytest.approx(0.9286, rel=1e-3)
+        # unknown health / zero requests -> zero published score, still a candidate
+        assert by_name["pollinations/jaredpalmer/kev-4b"].success_rate == 0.0
+        assert by_name["pollinations/jaredpalmer/kev-4b"].requests == 0
+
+    def test_wilson_bounds(self, mp):
+        lib, _ = mp
+        # huge volume at 99.97% stays ~published; tiny perfect sample bounds low
+        assert lib.wilson_lower_bound(0.9997, 87885) > 0.999
+        assert lib.wilson_lower_bound(1.0, 3) < 0.8
+        assert lib.wilson_lower_bound(1.0, 0) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Rubric ranking
+# ---------------------------------------------------------------------------
+
+
+class TestRubricRanking:
+    def test_default_tier_favored_first_then_health_then_context(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        favored_big = favored_candidate(lib, "z-ai/glm-5.3", ctx=1048576)
+        favored_small = favored_candidate(lib, "nemotron-3-super:cloud", provider="ollama", ctx=262144)
+        strong_metric = metric_candidate(lib, "pollinations/openai/gpt-5.4-nano", 0.9997, 87885)
+        weak_metric = metric_candidate(lib, "pollinations/openai/gpt-oss-20b", 0.9, 1000)
+        ranked = lib.rank_candidates(
+            [weak_metric, favored_small, strong_metric, favored_big], lib.TIER_DEFAULT, stats, cfg
+        )
+        order = [r.candidate.name for r in ranked]
+        # chance first (favored, big context tiebreak), then metric by health
+        assert order == [
+            "z-ai/glm-5.3",
+            "nemotron-3-super:cloud",
+            "pollinations/openai/gpt-5.4-nano",
+            "pollinations/openai/gpt-oss-20b",
+        ]
+
+    def test_think_tier_context_first_with_class_ties(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        favored_1m = favored_candidate(lib, "z-ai/glm-5.3", ctx=1048576)
+        metric_1m = metric_candidate(lib, "pollinations/openai/gpt-6-luna", 0.9997, 87885, ctx=1048576)
+        metric_small = metric_candidate(lib, "pollinations/openai/gpt-5.4-nano", 0.9997, 87885, ctx=400000)
+        ranked = lib.rank_candidates([metric_small, metric_1m, favored_1m], lib.TIER_THINK, stats, cfg)
+        order = [r.candidate.name for r in ranked]
+        # 1M models first; the favored one wins the context tie
+        assert order.index("z-ai/glm-5.3") < order.index("pollinations/openai/gpt-6-luna")
+        assert order[-1] == "pollinations/openai/gpt-5.4-nano"
+
+    def test_failure_demotion_after_min_obs(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        favored = favored_candidate(lib, "z-ai/glm-5.3")
+        strong_metric = metric_candidate(lib, "pollinations/openai/gpt-5.4-nano", 0.9997, 87885)
+        now = time.time()
+        for _ in range(cfg.min_obs):
+            stats.record_failure("z-ai/glm-5.3", lib.FAILURE_CLASS_TIMEOUT, now=now)
+        # evaluate past the recency window so the guard doesn't mask ordering
+        after_guard = now + cfg.recency_window_seconds + 1
+        ranked = lib.rank_candidates([favored, strong_metric], lib.TIER_DEFAULT, stats, cfg, now=after_guard)
+        assert [r.candidate.name for r in ranked] == [
+            "pollinations/openai/gpt-5.4-nano",
+            "z-ai/glm-5.3",
+        ]
+        # sticky: stays demoted on the next evaluation even after stats decay input
+        ranked2 = lib.rank_candidates([favored, strong_metric], lib.TIER_DEFAULT, stats, cfg, now=after_guard)
+        assert ranked2[0].candidate.name == "pollinations/openai/gpt-5.4-nano"
+
+    def test_perfect_small_sample_stays_favored(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        favored = favored_candidate(lib, "z-ai/glm-5.3")
+        strong_metric = metric_candidate(lib, "pollinations/openai/gpt-5.4-nano", 0.9997, 87885)
+        now = time.time()
+        for _ in range(cfg.min_obs * 3):
+            stats.record_success("z-ai/glm-5.3", ttft_seconds=1.0, now=now)
+        ranked = lib.rank_candidates([strong_metric, favored], lib.TIER_DEFAULT, stats, cfg)
+        assert ranked[0].candidate.name == "z-ai/glm-5.3"
+
+    def test_auth_error_demotes_immediately(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        favored = favored_candidate(lib, "z-ai/glm-5.3")
+        metric = metric_candidate(lib, "pollinations/openai/gpt-5.4-nano", 0.9997, 87885)
+        stats.record_failure("z-ai/glm-5.3", lib.FAILURE_CLASS_AUTH)
+        ranked = lib.rank_candidates([favored, metric], lib.TIER_DEFAULT, stats, cfg)
+        assert ranked[0].candidate.name == "pollinations/openai/gpt-5.4-nano"
+
+    def test_latency_demotion_and_floor(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        favored_slow = favored_candidate(lib, "z-ai/glm-5.3", ctx=1048576)
+        metric_fast = metric_candidate(lib, "pollinations/openai/gpt-5.4-nano", 0.9997, 87885, ctx=400000)
+        now = time.time()
+        for _ in range(cfg.min_obs):
+            stats.record_success("z-ai/glm-5.3", ttft_seconds=cfg.demote_ttft_seconds * 4, now=now)
+        ranked = lib.rank_candidates([favored_slow, metric_fast], lib.TIER_DEFAULT, stats, cfg)
+        # latency proof fired -> class floor below metric-backed in default tier
+        assert [r.candidate.name for r in ranked] == [
+            "pollinations/openai/gpt-5.4-nano",
+            "z-ai/glm-5.3",
+        ]
+
+    def test_latency_floor_lifts_via_decay(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        # A latency-demoted model with a PERFECT success record vs a
+        # mediocre metric-backed model: the floor holds it below while active,
+        # and once the stale TTFT events age out of the window it competes on
+        # evidence and wins.
+        favored_slow = favored_candidate(lib, "z-ai/glm-5.3", ctx=1048576)
+        mediocre_metric = metric_candidate(lib, "pollinations/degraded/model", 0.75, 20, ctx=1048576)
+        base = time.time()
+        for _ in range(cfg.min_obs):
+            stats.record_success("z-ai/glm-5.3", ttft_seconds=cfg.demote_ttft_seconds * 4, now=base)
+        ranked = lib.rank_candidates(
+            [favored_slow, mediocre_metric], lib.TIER_DEFAULT, stats, cfg, now=base + 1
+        )
+        assert [r.candidate.name for r in ranked] == [
+            "pollinations/degraded/model",
+            "z-ai/glm-5.3",
+        ]
+        # long after the slow window: events pruned, ttft_n=0, floor lifted —
+        # demotion stays sticky but the model ranks by its evidence (perfect
+        # record) and overtakes the mediocre metric-backed model.
+        ranked_after = lib.rank_candidates(
+            [favored_slow, mediocre_metric], lib.TIER_DEFAULT, stats, cfg, now=base + 5 * cfg.half_life_seconds
+        )
+        assert [r.candidate.name for r in ranked_after] == [
+            "z-ai/glm-5.3",
+            "pollinations/degraded/model",
+        ]
+
+    def test_recency_guard_skip_and_restore(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        favored = favored_candidate(lib, "z-ai/glm-5.3")
+        metric = metric_candidate(lib, "pollinations/openai/gpt-5.4-nano", 0.9997, 87885)
+        now = time.time()
+        stats.record_failure("z-ai/glm-5.3", lib.FAILURE_CLASS_TIMEOUT, now=now)
+        ranked = lib.rank_candidates([favored, metric], lib.TIER_DEFAULT, stats, cfg, now=now + 5)
+        assert ranked[0].candidate.name == "pollinations/openai/gpt-5.4-nano"
+        # a success restores eligibility immediately
+        stats.record_success("z-ai/glm-5.3", ttft_seconds=1.0, now=now + 6)
+        ranked = lib.rank_candidates([favored, metric], lib.TIER_DEFAULT, stats, cfg, now=now + 7)
+        assert ranked[0].candidate.name == "z-ai/glm-5.3"
+
+    def test_recency_guard_expires(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        favored = favored_candidate(lib, "z-ai/glm-5.3")
+        metric = metric_candidate(lib, "pollinations/openai/gpt-5.4-nano", 0.9997, 87885)
+        now = time.time()
+        stats.record_failure("z-ai/glm-5.3", lib.FAILURE_CLASS_TIMEOUT, now=now)
+        ranked = lib.rank_candidates([favored, metric], lib.TIER_DEFAULT, stats, cfg, now=now + cfg.recency_window_seconds + 1)
+        assert ranked[0].candidate.name == "z-ai/glm-5.3"
+
+    def test_recency_guard_all_guarded_falls_back(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        favored = favored_candidate(lib, "z-ai/glm-5.3")
+        metric = metric_candidate(lib, "pollinations/openai/gpt-5.4-nano", 0.9997, 87885)
+        now = time.time()
+        stats.record_failure("z-ai/glm-5.3", lib.FAILURE_CLASS_TIMEOUT, now=now)
+        stats.record_failure("pollinations/openai/gpt-5.4-nano", lib.FAILURE_CLASS_TIMEOUT, now=now)
+        ranked = lib.rank_candidates([favored, metric], lib.TIER_DEFAULT, stats, cfg, now=now + 5)
+        # nothing unguarded -> keep ranking rather than returning nothing
+        assert len(ranked) == 2
+
+    def test_attempt_exclusion(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        favored = favored_candidate(lib, "z-ai/glm-5.3")
+        metric = metric_candidate(lib, "pollinations/openai/gpt-5.4-nano", 0.9997, 87885)
+        ranked = lib.rank_candidates(
+            [favored, metric], lib.TIER_DEFAULT, stats, cfg, exclude=frozenset({"z-ai/glm-5.3"})
+        )
+        assert [r.candidate.name for r in ranked] == ["pollinations/openai/gpt-5.4-nano"]
+        # excluding everything falls back to the full ranked list
+        ranked_all = lib.rank_candidates(
+            [favored, metric],
+            lib.TIER_DEFAULT,
+            stats,
+            cfg,
+            exclude=frozenset({"z-ai/glm-5.3", "pollinations/openai/gpt-5.4-nano"}),
+        )
+        assert len(ranked_all) == 2
+
+    def test_context_fit_filters_known_context_only(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        huge_request = 500000
+        small_metric = metric_candidate(lib, "pollinations/openai/gpt-5.4-nano", 0.9997, 87885, ctx=400000)
+        big_metric = metric_candidate(lib, "pollinations/openai/gpt-6-luna", 0.999, 1000, ctx=1048576)
+        unknown_ctx_favored = favored_candidate(lib, "nemotron-3-super:cloud", provider="ollama", ctx=0)
+        ranked = lib.rank_candidates(
+            [small_metric, big_metric, unknown_ctx_favored],
+            lib.TIER_DEFAULT,
+            stats,
+            cfg,
+            estimate=huge_request,
+        )
+        names = [r.candidate.name for r in ranked]
+        assert "pollinations/openai/gpt-5.4-nano" not in names  # known 400k < 500k estimate
+        assert "pollinations/openai/gpt-6-luna" in names
+        assert "nemotron-3-super:cloud" in names  # unknown context bypasses fit
+
+    def test_existence_check_marks_removed_models(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        gone = favored_candidate(lib, "old-model:cloud", provider="ollama")
+        gone.existence_id = "old-model:cloud"
+        present = favored_candidate(lib, "nemotron-3-super:cloud", provider="ollama")
+        present.existence_id = "nemotron-3-super:cloud"
+        lib.apply_existence([gone, present], {"nemotron-3-super:cloud"}, "ollama")
+        ranked = lib.rank_candidates([gone, present], lib.TIER_DEFAULT, stats, cfg)
+        assert [r.candidate.name for r in ranked] == ["nemotron-3-super:cloud"]
+
+    def test_rate_limit_failures_are_mild(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        favored = favored_candidate(lib, "z-ai/glm-5.3")
+        strong_metric = metric_candidate(lib, "pollinations/openai/gpt-5.4-nano", 0.9997, 87885)
+        now = time.time()
+        for _ in range(cfg.min_obs + 3):
+            stats.record_failure("z-ai/glm-5.3", lib.FAILURE_CLASS_RATE_LIMIT, now=now)
+        derived = stats.derived("z-ai/glm-5.3", now=now + 1)
+        # evidence score depressed...
+        assert derived.success_rate < 1.0
+        # ...but rate limits never fire the sticky demotion proof
+        assert derived.demoted is False
+        after_guard = now + cfg.recency_window_seconds + 1
+        ranked = lib.rank_candidates([favored, strong_metric], lib.TIER_DEFAULT, stats, cfg, now=after_guard)
+        assert ranked[0].candidate.name == "z-ai/glm-5.3"
+
+
+# ---------------------------------------------------------------------------
+# Static group discovery
+# ---------------------------------------------------------------------------
+
+
+class TestStaticDiscovery:
+    def test_discovers_nim_ollama_llm7_excludes_gemini_and_pollinations(self, mp):
+        lib, _ = mp
+        model_list = [
+            {"model_name": "z-ai/glm-5.3", "litellm_params": {"model": "nvidia_nim/z-ai/glm-5.3", "api_key": "x"}},
+            {
+                "model_name": "nemotron-3-super:cloud",
+                "litellm_params": {"model": "openai/nemotron-3-super:cloud", "api_base": "https://ollama.com/v1"},
+            },
+            {
+                "model_name": "default",
+                "litellm_params": {"model": "openai/default", "api_base": "https://api.llm7.io/v1"},
+            },
+            {
+                "model_name": "lite-llm/default",
+                "litellm_params": {
+                    "model": "openai/community/vendouple/laguna-s-2.1:free",
+                    "api_base": "https://gen.pollinations.ai/v1",
+                },
+            },
+            {"model_name": "lite-llm/webSearch", "litellm_params": {"model": "gemini/gemini-3.5-flash-lite"}},
+        ]
+        groups = lib.discover_static_groups(model_list)
+        by_name = {g.group_name: g for g in groups}
+        assert set(by_name) == {"z-ai/glm-5.3", "nemotron-3-super:cloud", "default"}
+        assert by_name["z-ai/glm-5.3"].provider == "nvidia_nim"
+        assert by_name["z-ai/glm-5.3"].upstream_model == "z-ai/glm-5.3"
+        assert by_name["nemotron-3-super:cloud"].upstream_model == "nemotron-3-super:cloud"
+        assert by_name["default"].provider == "llm7"
+
+    def test_llm7_pseudo_models_not_existence_checked(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        groups = [lib.StaticGroup("default", "llm7", "default")]
+        candidates = lib.static_groups_to_candidates(groups)
+        assert candidates[0].existence_id == ""  # exempt from existence checks
+        lib.apply_existence(candidates, set(), "llm7")
+        assert candidates[0].available
+
+
+# ---------------------------------------------------------------------------
+# Plugin behavior (env gate, tier routing, retries)
+# ---------------------------------------------------------------------------
+
+
+class TestPlugin:
+    def test_env_gate_passes_through(self, fresh, monkeypatch):
+        lib, test_plugin, cfg, stats, manager = fresh
+        monkeypatch.setenv("MODEL_PICKER_ENABLED", "")
+        context = make_context(lib, ["lite-llm/default"])
+        result = asyncio.run(test_plugin.run(context))
+        assert result.candidate_models == ["lite-llm/default"]
+
+    @pytest.mark.parametrize("enabled_value", ["true", "1", "YES", "on"])
+    def test_env_gate_truthy_values(self, fresh, monkeypatch, enabled_value):
+        lib, test_plugin, cfg, stats, manager = fresh
+        monkeypatch.setenv("MODEL_PICKER_ENABLED", enabled_value)
+        assert lib.picker_enabled()
+
+    def test_unknown_pool_passes_through(self, fresh, env_enabled):
+        lib, test_plugin, cfg, stats, manager = fresh
+        context = make_context(lib, ["lite-llm/webSearch"])
+        result = asyncio.run(test_plugin.run(context))
+        assert result.candidate_models == ["lite-llm/webSearch"]
+
+    @staticmethod
+    def _fake_snapshot(monkeypatch, lib, manager):
+        async def fake_snapshot(ml=None):
+            return snapshot_with(lib, candidates_from_fixture(lib))
+
+        monkeypatch.setattr(manager, "get_snapshot", fake_snapshot)
+
+    def test_plugin_rewrites_default_tier(self, fresh, env_enabled, monkeypatch):
+        lib, test_plugin, cfg, stats, manager = fresh
+        self._fake_snapshot(monkeypatch, lib, manager)
+        context = make_context(lib, ["lite-llm/default"], metadata={"existing": 1})
+        result = asyncio.run(test_plugin.run(context))
+        assert len(result.candidate_models) == 1
+        assert result.candidate_models[0].startswith("pollinations/")
+        # pick recorded in the shared metadata bucket for retry exclusion
+        assert result.metadata["model_picker_picks"] == [result.candidate_models[0]]
+
+    def test_plugin_rewrites_think_tier_by_context(self, fresh, env_enabled, monkeypatch):
+        lib, test_plugin, cfg, stats, manager = fresh
+        self._fake_snapshot(monkeypatch, lib, manager)
+        context = make_context(lib, ["lite-llm/ultra-think"])
+        result = asyncio.run(test_plugin.run(context))
+        # the 1M-context catalog models outrank 400k gpt-5.4-nano in think tiers
+        assert result.candidate_models[0] in (
+            "pollinations/openai/gpt-6-luna",
+            "pollinations/z-ai/glm-5.3",
+            "pollinations/deepseek/deepseek-v4-flash",
+            "pollinations/community/vendouple/deepseek-v4-pro",
+        )
+
+    def test_plugin_excludes_prior_picks_on_retry(self, fresh, env_enabled, monkeypatch):
+        lib, test_plugin, cfg, stats, manager = fresh
+        self._fake_snapshot(monkeypatch, lib, manager)
+        # litellm_call_id is the shared channel across retry attempts (the
+        # metadata dict itself is pydantic-copied per RoutingContext)
+        metadata = {"litellm_call_id": "call-1"}
+        first = make_context(lib, ["lite-llm/default"], metadata=metadata)
+        asyncio.run(test_plugin.run(first))
+        first_pick = first.candidate_models[0]
+        second = make_context(lib, ["lite-llm/default"], metadata=metadata)
+        asyncio.run(test_plugin.run(second))
+        assert second.candidate_models[0] != first_pick
+        # a different request (different call id) starts fresh at the top pick
+        third = make_context(lib, ["lite-llm/default"], metadata={"litellm_call_id": "call-2"})
+        asyncio.run(test_plugin.run(third))
+        assert third.candidate_models[0] == first_pick
+
+    def test_prior_pick_registry_bounds_and_expiry(self, mp):
+        lib, _ = mp
+        registry = lib.PriorPickRegistry(max_entries=2, ttl_seconds=10)
+        now = 1000.0
+        registry.add("a", "m1", now=now)
+        registry.add("b", "m2", now=now + 1)
+        registry.add("c", "m3", now=now + 2)  # evicts oldest ("a")
+        assert registry.get("a", now=now + 3) == []
+        assert registry.get("b", now=now + 3) == ["m2"]
+        assert registry.get("c", now=now + 3) == ["m3"]
+        # ttl expiry
+        assert registry.get("c", now=now + 2 + 11) == []
+
+    def test_plugin_never_breaks_routing(self, fresh, env_enabled, monkeypatch):
+        lib, test_plugin, cfg, stats, manager = fresh
+
+        def boom(ml=None):
+            raise RuntimeError("catalog exploded")
+
+        monkeypatch.setattr(manager, "get_snapshot", boom)
+        context = make_context(lib, ["lite-llm/default"])
+        result = asyncio.run(test_plugin.run(context))
+        assert result.candidate_models == ["lite-llm/default"]
+
+    def test_no_call_id_does_not_pollute_registry(self, fresh, env_enabled, monkeypatch):
+        """Without a litellm_call_id the pick is still served but not persisted."""
+        lib, test_plugin, cfg, stats, manager = fresh
+        registry = lib.PriorPickRegistry()
+        test_plugin._prior_picks = registry
+        self._fake_snapshot(monkeypatch, lib, manager)
+        context = make_context(lib, ["lite-llm/default"], metadata={})
+        result = asyncio.run(test_plugin.run(context))
+        assert result.candidate_models and result.candidate_models[0].startswith("pollinations/")
+        assert len(registry._by_call) == 0
+
+
+# ---------------------------------------------------------------------------
+# Catalog manager (TTL, stale-serve, fallback)
+# ---------------------------------------------------------------------------
+
+
+class TestCatalogManager:
+    @staticmethod
+    def _no_existence(monkeypatch):
+        async def fake_ids(*args, **kwargs):
+            return set()
+
+        monkeypatch.setattr("model_picker.fetch_listed_ids", fake_ids)
+
+    def test_fresh_snapshot_reused_within_ttl(self, fresh, monkeypatch):
+        lib, _, cfg, stats, manager = fresh
+        calls = {"n": 0}
+
+        async def fake_fetch(cfg):
+            calls["n"] += 1
+            return candidates_from_fixture(lib)
+
+        monkeypatch.setattr("model_picker.fetch_pollinations_catalog", fake_fetch)
+        self._no_existence(monkeypatch)
+        snap1 = asyncio.run(manager.get_snapshot())
+        snap2 = asyncio.run(manager.get_snapshot())
+        assert calls["n"] == 1
+        assert snap1 is snap2
+
+    def test_stale_served_on_refresh_failure(self, fresh, monkeypatch):
+        lib, _, cfg, stats, manager = fresh
+        cfg.ttl_seconds = 0.05
+
+        async def good_fetch(cfg):
+            return candidates_from_fixture(lib)
+
+        async def bad_fetch(cfg):
+            raise RuntimeError("pollinations down")
+
+        monkeypatch.setattr("model_picker.fetch_pollinations_catalog", good_fetch)
+        self._no_existence(monkeypatch)
+        snap1 = asyncio.run(manager.get_snapshot())
+        time.sleep(0.06)
+        monkeypatch.setattr("model_picker.fetch_pollinations_catalog", bad_fetch)
+        snap2 = asyncio.run(manager.get_snapshot())
+        assert snap2.stale is True
+        assert snap2.candidates == snap1.candidates
+
+    def test_fallback_snapshot_when_cold_and_down(self, fresh, monkeypatch):
+        lib, _, cfg, stats, manager = fresh
+
+        async def bad_fetch(cfg):
+            raise RuntimeError("down")
+
+        monkeypatch.setattr("model_picker.fetch_pollinations_catalog", bad_fetch)
+        self._no_existence(monkeypatch)
+        snap = asyncio.run(manager.get_snapshot())
+        assert snap.stale is True
+        names = {c.name for c in snap.candidates}
+        assert f"pollinations/{cfg.fallback_model}" in names
+
+
+# ---------------------------------------------------------------------------
+# Config drift (default frozen; picker deltas)
+# ---------------------------------------------------------------------------
+
+
+class TestConfigDeltas:
+    @staticmethod
+    def _configs():
+        default = yaml.safe_load((LITE_LLM_DIR / "lite-llm-default.yaml").read_text())
+        picker = yaml.safe_load((LITE_LLM_DIR / "lite-llm-picker.yaml").read_text())
+        return default, picker
+
+    @staticmethod
+    def _group_names(cfg):
+        return [m["model_name"] for m in cfg["model_list"]]
+
+    def test_default_config_has_no_picker_artifacts(self):
+        default, _ = self._configs()
+        assert "pollinations/*" not in self._group_names(default)
+        for m in default["model_list"]:
+            crc = (m.get("litellm_params") or {}).get("complexity_router_config") or {}
+            assert "plugins" not in crc
+        callbacks = default["litellm_settings"]["callbacks"]
+        assert not any("model_picker" in c for c in callbacks)
+
+    def test_picker_config_wildcard_and_plugin(self):
+        _, picker = self._configs()
+        assert "pollinations/*" in self._group_names(picker)
+        wildcard = next(m for m in picker["model_list"] if m["model_name"] == "pollinations/*")
+        assert wildcard["litellm_params"]["model"] == "openai/*"
+        assert wildcard["litellm_params"]["api_base"] == "https://gen.pollinations.ai/v1"
+        assert wildcard["model_info"]["allowed_fails"] >= 1000000
+        crc = next(
+            m["litellm_params"]["complexity_router_config"]
+            for m in picker["model_list"]
+            if m["model_name"] == "lite-llm/complexity"
+        )
+        assert crc["plugins"] == ["model_picker_plugin.picker"]
+
+    def test_picker_config_drops_complexity_path_fallbacks(self):
+        default, picker = self._configs()
+        removed_groups = {
+            "lite-llm/router",
+            "lite-llm/default",
+            "lite-llm/think",
+            "lite-llm/ultra-think",
+            "lite-llm/longContext",
+            "lite-llm/complexity",
+        }
+        default_fb = {list(f)[0] for f in default["router_settings"]["fallbacks"]}
+        picker_fb = {list(f)[0] for f in picker["router_settings"]["fallbacks"]}
+        assert removed_groups <= default_fb
+        assert not (removed_groups & picker_fb)
+        assert {"lite-llm/webSearch", "lite-llm/image"} <= picker_fb
+        # fallback target lists are unchanged for the kept groups
+        for entry in picker["router_settings"]["fallbacks"]:
+            key = list(entry)[0]
+            default_entry = next(f for f in default["router_settings"]["fallbacks"] if list(f)[0] == key)
+            assert entry[key] == default_entry[key]
+
+    def test_picker_config_retry_settings(self):
+        default, picker = self._configs()
+        assert picker["router_settings"]["num_retries"] == 3
+        assert "retry_policy" not in picker["router_settings"]
+        assert default["router_settings"]["retry_policy"]["TimeoutErrorRetries"] == 0
+
+    def test_picker_config_parity_with_default(self):
+        """Everything outside the documented deltas is identical."""
+        default, picker = self._configs()
+        delta_groups = {"pollinations/*"}
+        assert [g for g in self._group_names(default)] == [
+            g for g in self._group_names(picker) if g not in delta_groups
+        ]
+        for key in ("search_tools",):
+            assert default[key] == picker[key]
+        for key in ("use_chat_completions_url_for_anthropic_messages", "modify_params", "drop_params"):
+            assert default["litellm_settings"][key] == picker["litellm_settings"][key]
+        assert (
+            default["litellm_settings"]["websearch_interception_params"]
+            == picker["litellm_settings"]["websearch_interception_params"]
+        )
+        # static group entries are byte-identical (modulo the added wildcard)
+        def entries(cfg):
+            return {m["model_name"]: m for m in cfg["model_list"]}
+
+        d, p = entries(default), entries(picker)
+        for name, entry in d.items():
+            expected = entry
+            if name == "lite-llm/complexity":
+                # documented delta: the picker plugin is added to the complexity config
+                import copy
+
+                expected = copy.deepcopy(entry)
+                expected["litellm_params"]["complexity_router_config"]["plugins"] = ["model_picker_plugin.picker"]
+            assert p[name] == expected, f"static entry drifted: {name}"
+        # router settings beyond the documented deltas
+        assert default["router_settings"]["allowed_fails"] == picker["router_settings"]["allowed_fails"]

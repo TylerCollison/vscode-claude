@@ -1,0 +1,274 @@
+# LiteLLM config for MODEL PICKER mode (selected by start-lite-llm.sh when
+# MODEL_PICKER_ENABLED is truthy; lite-llm-default.yaml is used otherwise).
+#
+# This is a hand-maintained fork of lite-llm-default.yaml. Do not regenerate it
+# from the default — operators may add fallbacks here by hand and they must
+# survive. It differs from the default config ONLY in the deltas documented in
+# beads workspace-c8o (asserted by tests/test_model_picker.py::test_config_deltas):
+#
+#   1. Adds the `pollinations/*` wildcard entry (dynamic catalog models) with a
+#      high model_info.allowed_fails — a single-deployment pattern group shares
+#      one cooldown bucket, so the default allowed_fails=1 would cool ALL
+#      pollinations routing off one failure. The picker's recency guard and
+#      per-request retry exclusion take over cooldown's role.
+#   2. Adds the model_picker routing plugin to complexity_router_config.plugins.
+#   3. Removes the static fallbacks for the complexity-path groups (router,
+#      default, think, ultra-think, longContext, complexity) — failures retry
+#      through the picker's next-ranked candidates instead. webSearch/image
+#      fallbacks are kept (gemini path, untouched by the picker).
+#   4. Retry changes: the default config's all-zero retry_policy is dropped
+#      (it zeroes retries per exception type) and num_retries is set so failed
+#      picks retry in-request against the picker's next-ranked model. Fallbacks
+#      manually added to this file engage after those retries exhaust.
+#
+# Everything else is identical to lite-llm-default.yaml.
+model_list:
+  # =========================================================================
+  # 1) UNDERLYING MODELS (DEPLOYMENTS)
+  # =========================================================================
+
+  # --- Pollination Models ---
+  # These models are all generally quite fast (<2sec of latency in healthcheck)
+
+  - model_name: community/vendouple/laguna-s-2.1:free
+    litellm_params:
+      model: openai/community/vendouple/laguna-s-2.1:free
+      api_base: https://gen.pollinations.ai/v1
+      api_key: os.environ/POLLINATION_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  # --- Model Picker wildcard ---
+  # Serves any pollinations catalog id as `pollinations/<id>`; the picker
+  # plugin rewrites eligible requests to pollinations/<best-free-model>.
+  # allowed_fails is effectively disabled: the wildcard resolves to a single
+  # deployment, so one failure would otherwise cool every pollinations pick
+  # for the cooldown window. See the header note above.
+  - model_name: pollinations/*
+    litellm_params:
+      model: openai/*
+      api_base: https://gen.pollinations.ai/v1
+      api_key: os.environ/POLLINATION_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+    model_info:
+      allowed_fails: 1000000
+
+  # --- Ollama Cloud Models ---
+  # This endpoint is fairly slow
+  - model_name: nemotron-3-ultra:cloud
+    litellm_params:
+      model: openai/nemotron-3-ultra:cloud
+      api_base: https://ollama.com/v1
+      api_key: os.environ/OLLAMA_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  - model_name: nemotron-3-super:cloud
+    litellm_params:
+      model: openai/nemotron-3-super:cloud
+      api_base: https://ollama.com/v1
+      api_key: os.environ/OLLAMA_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  # --- Google AI Studio Models ---
+  # These models are all generally (<1sec of latency) fast but sometimes fairly slow (more than 1min of latency)
+  - model_name: gemini-3.5-flash-lite
+    litellm_params:
+      model: gemini/gemini-3.5-flash-lite
+      api_key: os.environ/GOOGLE_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  - model_name: gemini-3.1-flash-lite
+    litellm_params:
+      model: gemini/gemini-3.1-flash-lite
+      api_key: os.environ/GOOGLE_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  # --- LLM7 Models ---
+  # These models are all generally quite fast (<2sec of latency in healthcheck)
+  # The default and fast model groups tend to be flaky
+  - model_name: default
+    litellm_params:
+      model: openai/default
+      api_base: https://api.llm7.io/v1
+      api_key: os.environ/LLM7_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  - model_name: fast
+    litellm_params:
+      model: openai/fast
+      api_base: https://api.llm7.io/v1
+      api_key: os.environ/LLM7_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  - model_name: minimax-m2.7
+    litellm_params:
+      model: openai/minimax-m2.7
+      api_base: https://api.llm7.io/v1
+      api_key: os.environ/LLM7_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  # --- Nvidia NIM Models ---
+  # Note: All of the models from this provider respond rather slowly, but it varies by model
+  # Kimi is buggy in this harness; disabling for now
+  # - model_name: moonshotai/kimi-k3
+  #   litellm_params:
+  #     model: nvidia_nim/moonshotai/kimi-k3
+  #     api_key: os.environ/NIM_API_KEY
+  #     stream_timeout: 30.0
+  #     timeout: 180.0
+
+  # healthcheck latency of <1.5min
+  - model_name: z-ai/glm-5.3
+    litellm_params:
+      model: nvidia_nim/z-ai/glm-5.3
+      api_key: os.environ/NIM_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  # healthcheck latency of <10sec, but can be flaky
+  - model_name: z-ai/glm-5.3-flash
+    litellm_params:
+      model: nvidia_nim/z-ai/glm-5.3-flash
+      api_key: os.environ/NIM_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  # healthcheck latency of <30sec, but can be flaky
+  - model_name: nvidia/nemotron-3-ultra-550b-a55b
+    litellm_params:
+      model: nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b
+      api_key: os.environ/NIM_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  # =========================================================================
+  # 2) UNIFIED ROUTER (TWO-STAGE PIPELINE)
+  # =========================================================================
+  #
+  # "lite-llm/router" is a single endpoint that pipelines two routing
+  # stages:
+  #
+  #   1. Content-based  (callback)        → lite-llm/image
+  #   2. Complexity     (complexity_router)  → lite-llm/default or lite-llm/think
+  #
+  # PICKER MODE: complexity_router_config.plugins runs the model picker after
+  # the tier decision; the surviving value is the model that serves the request.
+
+  - model_name: lite-llm/router
+    litellm_params:
+      # The callback (router_callback.py) intercepts every request and
+      # rewrites the model
+      model: openai/community/vendouple/laguna-s-2.1:free
+      api_base: https://gen.pollinations.ai/v1
+      api_key: os.environ/POLLINATION_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  - model_name: lite-llm/complexity
+    litellm_params:
+      model: auto_router/complexity_router
+      complexity_router_config:
+        plugins: ["model_picker_plugin.picker"]
+        tiers:
+          SIMPLE: lite-llm/default
+          MEDIUM: lite-llm/default
+          COMPLEX: lite-llm/think
+          REASONING: lite-llm/ultra-think
+      complexity_router_default_model: lite-llm/default
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  # =========================================================================
+  # 3) ENTRYPOINT MODEL GROUPS (THE NAMES CLIENTS WILL CALL)
+  # =========================================================================
+
+  - model_name: lite-llm/default
+    litellm_params:
+      model: openai/community/vendouple/laguna-s-2.1:free
+      api_base: https://gen.pollinations.ai/v1
+      api_key: os.environ/POLLINATION_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  - model_name: lite-llm/think
+    litellm_params:
+      model: openai/community/vendouple/laguna-s-2.1:free
+      api_base: https://gen.pollinations.ai/v1
+      api_key: os.environ/POLLINATION_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  - model_name: lite-llm/ultra-think
+    litellm_params:
+      model: openai/community/vendouple/laguna-s-2.1:free
+      api_base: https://gen.pollinations.ai/v1
+      api_key: os.environ/POLLINATION_API_KEY
+      stream_timeout: 600.0
+      timeout: 600.0
+
+  - model_name: lite-llm/longContext
+    litellm_params:
+      model: openai/community/vendouple/laguna-s-2.1:free
+      api_base: https://gen.pollinations.ai/v1
+      api_key: os.environ/POLLINATION_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  - model_name: lite-llm/webSearch
+    litellm_params:
+      model: gemini/gemini-3.5-flash-lite
+      api_key: os.environ/GOOGLE_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  - model_name: lite-llm/image
+    litellm_params:
+      model: gemini/gemini-3.5-flash-lite
+      api_key: os.environ/GOOGLE_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+litellm_settings:
+  # Fixes a bug in translating between an Anthropic client and an OpenAI provider
+  use_chat_completions_url_for_anthropic_messages: true
+  #convert_lm_reasoning_to_text: true # Forces reasoning tokens into standard text blocks
+  modify_params: true
+  drop_params: true
+  # Force-sanitize historical empty texts that cause agent loop crashes
+  #sanitize_input_messages: true
+  #remove_empty_system_messages: true
+
+  # model_picker_plugin.stats_logger feeds the picker's passive health stats.
+  callbacks: ["router_callback.router_handler", "websearch_interception", "model_picker_plugin.stats_logger"]
+  websearch_interception_params:
+    enabled_providers:
+      - openai
+      - gemini
+      - nvidia_nim
+      - mistral
+      - cerebras
+    search_tool_name: exa-search
+
+search_tools:
+  - search_tool_name: exa-search
+    litellm_params:
+      search_provider: exa_ai
+      api_key: os.environ/EXA_API_KEY
+
+router_settings:
+  # Picker mode retries failed picks in-request; the plugin excludes its prior
+  # picks per request, so each retry lands on the next-ranked candidate. The
+  # default config's all-zero retry_policy is deliberately NOT carried over
+  # (it would zero retries per exception type).
+  num_retries: 3
+
+  allowed_fails: 1
+  fallbacks: [{"lite-llm/webSearch": ["gemini-3.1-flash-lite", "minimax-m2.7", "z-ai/glm-5.3-flash", "nemotron-3-super:cloud", "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3", "default", "fast"]}, {"lite-llm/image": ["gemini-3.1-flash-lite", "z-ai/glm-5.3-flash"]}]
