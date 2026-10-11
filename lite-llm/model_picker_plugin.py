@@ -166,13 +166,14 @@ class ModelPickerPlugin:
 
         pick = ranked[0].candidate
         logger.info(
-            "model_picker: tier=%s estimate=%dtok pick=%s (score=%.3f ctx=%s provider=%s stale=%s attempt_excluded=%s)",
+            "model_picker: tier=%s estimate=%dtok pick=%s (score=%.3f ctx=%s provider=%s free=%s stale=%s attempt_excluded=%s)",
             tier,
             estimate,
             pick.name,
             ranked[0].health_score,
             pick.context_length or "?",
             pick.provider,
+            pick.free,
             snapshot.stale,
             prior_picks,
         )
@@ -184,6 +185,7 @@ class ModelPickerPlugin:
             "tier": tier,
             "estimate_tokens": estimate,
             "score": ranked[0].health_score,
+            "free": pick.free,
             "stale_snapshot": snapshot.stale,
         }
         context.candidate_models = [pick.name]
@@ -246,6 +248,15 @@ class ModelPickerStatsLogger(CustomLogger):
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
         group = _resolve_group_name(kwargs)
         if not group:
+            return
+        # Pollinations returns hard failures (credit gate, relayed upstream
+        # errors) as HTTP 200 with the error text as message content. Record
+        # those as failures so the recency guard and demotion proofs see them.
+        text = model_picker.extract_response_text(response_obj)
+        if model_picker.is_soft_failure_content(text):
+            snippet = " ".join(text.split())[:100]
+            logger.info("model_picker: soft failure recorded for %s (content=%r)", group, snippet)
+            self.stats.record_failure(group, model_picker.FAILURE_CLASS_ERROR)
             return
         self.stats.record_success(group, _event_ttft_seconds(kwargs, start_time))
 

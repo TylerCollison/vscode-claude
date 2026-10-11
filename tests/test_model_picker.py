@@ -11,6 +11,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -100,18 +101,55 @@ def favored_candidate(lib, name, provider="nvidia_nim", ctx=0):
 
 
 class TestCatalogParsing:
-    def test_community_models_kept_official_excluded(self, mp):
+    def test_official_and_community_models_kept(self, mp):
         lib, _ = mp
         candidates = candidates_from_fixture(lib)
         names = {c.name for c in candidates}
-        # community models are the picker's pollinations pool
+        # official and community models are both eligible
+        assert "pollinations/openai/gpt-5.4-nano" in names
+        assert "pollinations/openai/gpt-oss-20b" in names
+        assert "pollinations/z-ai/glm-5.3" in names
         assert "pollinations/community/vendouple/deepseek-v4-pro" in names
         assert "pollinations/community/vendouple/glm-5.3-flash" in names
         assert "pollinations/community/sharktide/inferenceport-ai-lightning-text-v2" in names
-        # official catalog models are credit limited -> never candidates
-        assert "pollinations/openai/gpt-5.4-nano" not in names
-        assert "pollinations/openai/gpt-oss-20b" not in names
-        assert "pollinations/z-ai/glm-5.3" not in names
+
+    def test_zero_pollen_rate_marked_free(self, mp):
+        lib, _ = mp
+        by_name = {c.name: c for c in candidates_from_fixture(lib)}
+        # models with nonzero pollen rates are charged
+        assert by_name["pollinations/openai/gpt-5.4-nano"].free is False
+        assert by_name["pollinations/community/vendouple/deepseek-v4-pro"].free is False
+        payload = {
+            "data": [
+                {
+                    "id": "openai/free-model",
+                    "input_modalities": ["text"],
+                    "output_modalities": ["text"],
+                    "supported_endpoints": ["/v1/chat/completions"],
+                    "health": {"status": "healthy", "success_rate": 100, "requests": 10},
+                    "pricing": {"currency": "pollen"},
+                },
+                {
+                    "id": "openai/zero-model",
+                    "input_modalities": ["text"],
+                    "output_modalities": ["text"],
+                    "supported_endpoints": ["/v1/chat/completions"],
+                    "health": {"status": "healthy", "success_rate": 100, "requests": 10},
+                    "pricing": {"currency": "pollen", "promptTextTokens": "0", "completionTextTokens": "0.0"},
+                },
+                {
+                    "id": "openai/no-pricing-model",
+                    "input_modalities": ["text"],
+                    "output_modalities": ["text"],
+                    "supported_endpoints": ["/v1/chat/completions"],
+                    "health": {"status": "healthy", "success_rate": 100, "requests": 10},
+                },
+            ]
+        }
+        parsed = {c.name: c for c in lib.parse_pollinations_models(payload)}
+        assert parsed["pollinations/openai/free-model"].free is True
+        assert parsed["pollinations/openai/zero-model"].free is True
+        assert parsed["pollinations/openai/no-pricing-model"].free is True
 
     def test_paid_only_excluded(self, mp):
         lib, _ = mp
@@ -139,8 +177,8 @@ class TestCatalogParsing:
         names = {c.name for c in candidates_from_fixture(lib)}
         # whisper is audio->text (no text input): not a chat model
         assert "pollinations/openai/whisper-large-v3" not in names
-        # the modality filter still admits text-capable community models that
-        # also serve audio, and excludes audio-only ones
+        # the modality filter admits text-capable models that also serve audio,
+        # and excludes audio-only ones
         payload = {
             "data": [
                 {
@@ -192,28 +230,116 @@ class TestCatalogParsing:
         assert parsed[0].success_rate == 0.0
         assert parsed[0].requests == 0
 
-    def test_community_flag_missing_falls_back_to_id_prefix(self, mp):
-        lib, _ = mp
-        payload = {
-            "data": [
-                {
-                    "id": "community/someone/noflag",
-                    "input_modalities": ["text"],
-                    "output_modalities": ["text"],
-                    "supported_endpoints": ["/v1/chat/completions"],
-                    "health": {"status": "healthy", "success_rate": 100, "requests": 10},
-                }
-            ]
-        }
-        names = {c.name for c in lib.parse_pollinations_models(payload)}
-        assert "pollinations/community/someone/noflag" in names
-
     def test_wilson_bounds(self, mp):
         lib, _ = mp
         # huge volume at 99.97% stays ~published; tiny perfect sample bounds low
         assert lib.wilson_lower_bound(0.9997, 87885) > 0.999
         assert lib.wilson_lower_bound(1.0, 3) < 0.8
         assert lib.wilson_lower_bound(1.0, 0) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Soft-failure detection (errors smuggled through HTTP 200 content)
+# ---------------------------------------------------------------------------
+
+
+def _response_with_content(content):
+    """Minimal stand-in for a litellm ModelResponse."""
+
+    class _Msg:
+        def __init__(self, content):
+            self.content = content
+
+    class _Choice:
+        def __init__(self, content):
+            self.message = _Msg(content)
+
+    class _Resp:
+        def __init__(self, content):
+            self.choices = [_Choice(content)]
+
+    return _Resp(content)
+
+
+class TestSoftFailureDetection:
+    def test_credits_marker_detected(self, mp):
+        lib, _ = mp
+        credits = (
+            "The account behind this API key doesn't have enough credits. "
+            "Please top up or complete a quest, then try again."
+        )
+        assert lib.is_soft_failure_content(credits)
+        # curly-apostrophe variant from JSON transport
+        assert lib.is_soft_failure_content(credits.replace("'", "’"))
+        assert lib.is_soft_failure_content("  The account behind this API key does not have enough credits. ")
+
+    def test_relayed_error_prefix_detected(self, mp):
+        lib, _ = mp
+        assert lib.is_soft_failure_content("\n\n[Error: Z.ai returned 403: {\"code\":\"USER_KEY_UNAUTHORIZED\"}]")
+        assert lib.is_soft_failure_content("[error: something broke]")
+
+    def test_normal_content_not_flagged(self, mp):
+        lib, _ = mp
+        assert not lib.is_soft_failure_content("")
+        assert not lib.is_soft_failure_content(None)
+        assert not lib.is_soft_failure_content("Hello! How can I assist you today?")
+        # a model merely discussing credits mid-response is not an error
+        assert not lib.is_soft_failure_content("I don't have enough context to answer that, sorry!")
+        assert not lib.is_soft_failure_content("To top up your credits, visit the billing page.")
+
+    def test_extract_response_text_shapes(self, mp):
+        lib, _ = mp
+        assert lib.extract_response_text(_response_with_content("hello")) == "hello"
+        assert lib.extract_response_text(_response_with_content(["a", {"text": "b"}])) == "a\nb"
+        assert lib.extract_response_text(None) == ""
+        assert lib.extract_response_text(object()) == ""
+
+    def test_stats_logger_records_soft_failure(self, mp):
+        lib, plugin = mp
+        stats = lib.StatsRegistry()
+        cfg = lib.PickerConfig()
+        logger = plugin.ModelPickerStatsLogger(stats=stats)
+        group = "pollinations/openai/gpt-5.4-nano"
+        group_kwargs = {"litellm_metadata": {"model_group": group}}
+        credits = "The account behind this API key doesn't have enough credits. Please top up."
+        asyncio.run(logger.async_log_success_event(group_kwargs, _response_with_content(credits), None, None))
+        derived = stats.derived(group)
+        assert derived.n_obs == 1
+        assert derived.success_rate == 0.0  # recorded as a failure, not a success
+        # repeated soft failures feed the demotion proof like any hard failure
+        for _ in range(cfg.min_obs - 1):
+            asyncio.run(logger.async_log_success_event(group_kwargs, _response_with_content(credits), None, None))
+        # the now-broken group ranks below a healthy metric-backed candidate
+        gated = lib.ModelCandidate(name=group, provider="pollinations", metricless=True)
+        healthy = lib.ModelCandidate(
+            name="pollinations/openai/healthy", provider="pollinations", metricless=False, success_rate=0.9997, requests=87885
+        )
+        now = time.time() + cfg.recency_window_seconds + 1
+        ranked = lib.rank_candidates([gated, healthy], lib.TIER_DEFAULT, stats, cfg, now=now)
+        assert [r.candidate.name for r in ranked] == ["pollinations/openai/healthy", group]
+        # normal content still records a success (and TTFT)
+        stats2 = lib.StatsRegistry()
+        logger2 = plugin.ModelPickerStatsLogger(stats=stats2)
+        start = datetime.now()
+        asyncio.run(logger2.async_log_success_event(group_kwargs, _response_with_content("Hi!"), start, start))
+        assert stats2.derived(group).n_obs == 1
+        assert stats2.derived(group).success_rate == 1.0
+
+    def test_published_healthy_model_demoted_by_tracked_soft_failures(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        # a published-perfect catalog model whose picks all soft-fail for us
+        gated = metric_candidate(lib, "pollinations/openai/gpt-5.4-nano", 1.0, 87885)
+        healthy = metric_candidate(lib, "pollinations/openai/other", 0.99, 5000)
+        now = time.time()
+        for _ in range(cfg.min_obs):
+            stats.record_failure("pollinations/openai/gpt-5.4-nano", lib.FAILURE_CLASS_ERROR, now=now)
+        after_guard = now + cfg.recency_window_seconds + 1
+        ranked = lib.rank_candidates([gated, healthy], lib.TIER_DEFAULT, stats, cfg, now=after_guard)
+        # published wilson 1.0 no longer shields it: our tracked evidence demotes
+        assert [r.candidate.name for r in ranked] == [
+            "pollinations/openai/other",
+            "pollinations/openai/gpt-5.4-nano",
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -604,10 +730,12 @@ class TestPlugin:
         self._fake_snapshot(monkeypatch, lib, manager)
         context = make_context(lib, ["lite-llm/ultra-think"])
         result = asyncio.run(test_plugin.run(context))
-        # the 1M-context COMMUNITY catalog models win think tiers
+        # the 1M-context catalog models outrank 400k gpt-5.4-nano in think tiers
         assert result.candidate_models[0] in (
+            "pollinations/openai/gpt-6-luna",
+            "pollinations/z-ai/glm-5.3",
+            "pollinations/deepseek/deepseek-v4-flash",
             "pollinations/community/vendouple/deepseek-v4-pro",
-            "pollinations/community/vendouple/glm-5.3-flash",
         )
 
     def test_plugin_excludes_prior_picks_on_retry(self, fresh, env_enabled, monkeypatch):

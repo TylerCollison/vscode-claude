@@ -10,10 +10,11 @@ share state across the plugin/stats-logger references).
 
 Design (beads workspace-c8o, revised in workspace-4wr):
 
-- Candidates: free chat-capable COMMUNITY models from the pollinations
-  catalog (metric-backed; official catalog models are credit limited and
-  excluded) plus curated static groups from the other providers
-  (metric-less). Gemini groups are excluded outright.
+- Candidates: chat-capable models from the pollinations catalog
+  (metric-backed; official and community both eligible, paid_only/down
+  excluded; the catalog's pollen pricing discerns free-tier models, which the
+  backend intermittently credit-gates) plus curated static groups from the
+  other providers (metric-less). Gemini groups are excluded outright.
 - Ranking classes: UNKNOWN (untried metric-less, favored — ranks above
   everything on the health dimension, except deprioritized providers such as
   llm7 whose untried groups start at a neutral prior below healthy
@@ -65,9 +66,10 @@ DEFAULT_DEMOTE_MARGIN = 0.02
 DEFAULT_RECENCY_WINDOW_SECONDS = 60.0
 DEFAULT_HALF_LIFE_SECONDS = 24 * 3600.0
 # Cold-start/catastrophic fallback when the catalog is unreachable. Must be a
-# free community model (official pollinations models are credit limited) and
-# one the litellm config already trusts as its default route.
-DEFAULT_FALLBACK_MODEL = "community/vendouple/laguna-s-2.1:free"
+# community model verified to complete with the account's key (free-tier
+# models are currently credit-gated server-side); revisit if it churns out of
+# the catalog like its predecessor did.
+DEFAULT_FALLBACK_MODEL = "community/vendouple/deepseek-v4-pro"
 DEFAULT_UNKNOWN_CONTEXT_TOKENS = 0  # 0 = unknown; unknown-context candidates bypass fit filtering
 # Metric-less providers that must NOT get the untried benefit-of-the-doubt:
 # llm7 has no published metrics and its groups trip daily token quotas (429 +
@@ -145,6 +147,7 @@ class ModelCandidate:
     available: bool = True  # False when an existence check proved it gone
     existence_id: str = ""  # upstream id to check in the provider's catalog ("" = not checkable)
     source: str = "prior"  # pollinations_api | prior
+    free: bool = False  # pollinations: no nonzero pollen rate (free tier; credit-gated server-side)
 
     @property
     def wilson_score(self) -> float:
@@ -168,14 +171,30 @@ def wilson_lower_bound(success_rate: float, n: int, z: float = 1.96) -> float:
 # ---------------------------------------------------------------------------
 
 
+def has_free_pricing(pricing: dict | None) -> bool:
+    """True when no nonzero pollen rate is declared anywhere.
+
+    Missing or rate-less pricing counts as free: nothing is charged per token.
+    """
+    for key, value in (pricing or {}).items():
+        if key == "currency":
+            continue
+        try:
+            if float(value) > 0:
+                return False
+        except (TypeError, ValueError):
+            continue
+    return True
+
+
 def parse_pollinations_models(payload: dict) -> list[ModelCandidate]:
     """Parse GET /v1/models from pollinations into free chat-capable candidates.
 
-    Only community models qualify: the official (non-community) catalog
-    entries are credit limited, so picks against them fail once the account's
-    credits run out. Community models carry ``community: true`` (the id
-    ``community/`` prefix is accepted as a fallback for catalogs that omit the
-    flag).
+    Official and community models are both eligible; the catalog's pricing
+    metadata discerns free-tier models (no nonzero pollen rate), which the
+    pollinations backend currently gates behind account credits — sometimes
+    even spuriously. The ``free`` flag is surfaced for observability; the
+    soft-failure sniffing in the stats logger handles the gating dynamically.
     """
     out: list[ModelCandidate] = []
     for m in (payload or {}).get("data") or []:
@@ -183,8 +202,6 @@ def parse_pollinations_models(payload: dict) -> list[ModelCandidate]:
             continue
         model_id = m.get("id") or ""
         if not model_id:
-            continue
-        if not (m.get("community") is True or model_id.startswith("community/")):
             continue
         if m.get("paid_only"):
             continue
@@ -207,6 +224,7 @@ def parse_pollinations_models(payload: dict) -> list[ModelCandidate]:
                 success_rate=float(success_rate) / 100.0 if isinstance(success_rate, (int, float)) else 0.0,
                 requests=int(health.get("requests") or 0),
                 source="pollinations_api",
+                free=has_free_pricing(m.get("pricing")),
             )
         )
     return out
@@ -357,6 +375,49 @@ def classify_exception(exc: BaseException | None) -> str:
     if "connection" in lowered:
         return FAILURE_CLASS_CONNECTION
     return FAILURE_CLASS_ERROR
+
+
+# Pollinations (and some community relays) return hard failures as HTTP 200
+# with the error text as the assistant message content, so the callback
+# pipeline reports a "success" and nothing ever demotes the model. The stats
+# logger sniffs these markers and records the event as a failure instead.
+_SOFT_FAILURE_MARKERS = (
+    "doesn't have enough credits",  # pollinations account credit gate
+    "does not have enough credits",  # straight-apostrophe variant
+)
+_SOFT_FAILURE_PREFIXES = (
+    "[error:",  # relayed upstream errors, e.g. "[Error: Z.ai returned 403: ..."
+)
+
+
+def extract_response_text(response_obj: object) -> str:
+    """Best-effort assistant text from a litellm response object ("" if none)."""
+    try:
+        parts: list[str] = []
+        for choice in getattr(response_obj, "choices", None) or []:
+            message = getattr(choice, "message", None) or getattr(choice, "delta", None)
+            content = getattr(message, "content", None) if message is not None else None
+            if isinstance(content, str):
+                parts.append(content)
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, str):
+                        parts.append(part)
+                    elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                        parts.append(part["text"])
+        return "\n".join(p for p in parts if p)
+    except Exception:  # noqa: BLE001 — sniffing must never break logging
+        return ""
+
+
+def is_soft_failure_content(text: str | None) -> bool:
+    """Detect provider errors smuggled through as successful message content."""
+    if not text:
+        return False
+    normalized = text.strip().lower().replace("’", "'").replace("‘", "'")
+    if normalized.startswith(_SOFT_FAILURE_PREFIXES):
+        return True
+    return any(marker in normalized for marker in _SOFT_FAILURE_MARKERS)
 
 
 @dataclass
@@ -533,11 +594,12 @@ def _classify_candidate(
     Pure: class and score are re-derived from the current observation window
     on every evaluation, so demotion recovers (promote) as failures decay or
     successes accrue. Transition logging happens in rank_candidates, which
-    tracks the previous class per group.
+    tracks the previous class per group. The demotion proofs apply to ALL
+    candidates — metric-backed ones rank on published health until our own
+    tracked evidence proves them bad (workspace-ryi: pollinations returns
+    hard failures as HTTP 200 content, so tracked soft failures are the only
+    signal that a published-healthy model is actually gated).
     """
-    if not candidate.metricless:
-        return _CLASS_METRIC, candidate.wilson_score, ""
-
     failure_proof = (
         stats.n_obs >= cfg.min_obs
         and not stats.dead
@@ -549,6 +611,9 @@ def _classify_candidate(
     if failure_proof or latency_proof:
         score = wilson_lower_bound(stats.success_rate, max(stats.n_obs, 1))
         return _CLASS_KNOWN, score, "failures" if failure_proof else "latency"
+
+    if not candidate.metricless:
+        return _CLASS_METRIC, candidate.wilson_score, ""
 
     if stats.n_obs <= 0:
         # Never tried. Untested static groups get the benefit of the doubt —
