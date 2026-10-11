@@ -8,17 +8,28 @@ this module via a sys.modules-guarded sibling loader (litellm's
 ``sys.modules``, so a plain ``import model_picker`` would neither resolve nor
 share state across the plugin/stats-logger references).
 
-Design (beads workspace-c8o):
+Design (beads workspace-c8o, revised in workspace-4wr):
 
 - Candidates: free chat-capable models from the pollinations catalog
   (metric-backed) plus curated static groups from the other providers
   (metric-less). Gemini groups are excluded outright.
-- Ranking classes: UNKNOWN (metric-less, favored — ranks above everything on
-  the health dimension until demotion is proven), METRIC (published health),
-  KNOWN (demoted permanently once proof fires).
-- Demotion proofs (sticky): >= MIN_OBS observations with derived success rate
-  below best-metric-score minus margin; >= MIN_OBS streaming TTFT observations
-  with decayed mean above the TTFT threshold; or an AuthenticationError.
+- Ranking classes: UNKNOWN (untried metric-less, favored — ranks above
+  everything on the health dimension, except deprioritized providers such as
+  llm7 whose untried groups start at a neutral prior below healthy
+  metric-backed candidates), METRIC (published health, or our own tracked
+  health once the group has observations), KNOWN (demoted while the current
+  observation window proves it bad).
+- Self-tracked health (workspace-4wr): once a metric-less group has
+  observations it competes on the decayed, rate-limit-weighted success rate
+  (Laplace-smoothed), so a sustained 429 streak (e.g. an llm7 daily token
+  quota with a ~24h Retry-After) demotes it below healthy metric-backed
+  candidates and real successes promote it back — no published metrics needed.
+- Demotion proofs (re-derived from the rolling window on every evaluation, so
+  recovery is automatic): >= MIN_OBS observations with derived hard-failure
+  rate below best-metric-score minus margin; >= MIN_OBS streaming TTFT
+  observations with decayed mean above the TTFT threshold; or an
+  AuthenticationError (dead until a success). Rate-limit failures never fire
+  the hard proof (busy-but-working) but do weigh down the tracked score.
 - Rubric: default tier sorts health-first then context; think tiers sort
   context-first then health (class only breaks ties). Latency-demoted models
   carry a class floor below all metric-backed candidates in the default tier.
@@ -54,6 +65,14 @@ DEFAULT_RECENCY_WINDOW_SECONDS = 60.0
 DEFAULT_HALF_LIFE_SECONDS = 24 * 3600.0
 DEFAULT_FALLBACK_MODEL = "openai/gpt-5.4-nano"
 DEFAULT_UNKNOWN_CONTEXT_TOKENS = 0  # 0 = unknown; unknown-context candidates bypass fit filtering
+# Metric-less providers that must NOT get the untried benefit-of-the-doubt:
+# llm7 has no published metrics and its groups trip daily token quotas (429 +
+# ~24h Retry-After), so an untried llm7 group starts at a neutral prior below
+# healthy metric-backed candidates instead of at the top of the list.
+DEFAULT_DEPRIORITIZED_PROVIDERS = "llm7"
+# Score an untried deprioritized-provider group competes with: below healthy
+# metric-backed candidates (published wilson > 0.5), above zero-evidence ones.
+DEFAULT_UNTRIED_PRIOR_SCORE = 0.5
 
 CATALOG_FETCH_TIMEOUT_SECONDS = 10.0
 
@@ -91,6 +110,12 @@ class PickerConfig:
         self.half_life_seconds = _env_float("MODEL_PICKER_HALF_LIFE_SECONDS", DEFAULT_HALF_LIFE_SECONDS)
         self.fallback_model = os.environ.get("MODEL_PICKER_FALLBACK_MODEL", DEFAULT_FALLBACK_MODEL)
         self.pollinations_url = os.environ.get("MODEL_PICKER_MODELS_URL", POLLINATIONS_MODELS_URL)
+        self.deprioritized_providers = frozenset(
+            p.strip()
+            for p in os.environ.get("MODEL_PICKER_DEPRIORITIZED_PROVIDERS", DEFAULT_DEPRIORITIZED_PROVIDERS).split(",")
+            if p.strip()
+        )
+        self.untried_prior_score = _env_float("MODEL_PICKER_UNTRIED_PRIOR_SCORE", DEFAULT_UNTRIED_PRIOR_SCORE)
 
 
 def picker_enabled() -> bool:
@@ -327,11 +352,13 @@ class DerivedStats:
 
     success_rate: float = 1.0  # decayed successes / (successes + weighted failures)
     hard_rate: float = 1.0  # success rate over HARD failures only (429s excluded)
+    successes: float = 0.0  # decayed success mass in the window
+    failures: float = 0.0  # decayed weighted failure mass (429s count 0.25)
     n_obs: int = 0  # total observations in the window
     ttft_mean: float = 0.0  # decayed mean TTFT over streaming successes (0 = no data)
     ttft_n: int = 0
     dead: bool = False  # auth failure observed, no success since
-    demoted: bool = False  # sticky: demotion proof fired at least once
+    demoted: bool = False  # KNOWN at the last evaluation (transition logging)
     last_obs_age: float = float("inf")
     last_obs_was_failure: bool = False
 
@@ -343,7 +370,7 @@ class GroupStats:
         self.half_life_seconds = half_life_seconds
         self._events: deque[tuple[float, bool, float | None, str | None]] = deque()
         self.dead = False
-        self.demoted = False
+        self.demoted = False  # rank_class was KNOWN at the last evaluation (transition logging)
         self.last_obs_ts: float | None = None
         self.last_obs_was_failure = False
 
@@ -397,6 +424,8 @@ class GroupStats:
         return DerivedStats(
             success_rate=(successes / denom) if denom > 0 else 1.0,
             hard_rate=(successes / hard_denom) if hard_denom > 0 else 1.0,
+            successes=successes,
+            failures=failures,
             n_obs=n_obs,
             ttft_mean=(ttft_weighted_sum / ttft_weight) if ttft_weight > 0 else 0.0,
             ttft_n=ttft_n,
@@ -448,6 +477,18 @@ class RankedCandidate:
     candidate: ModelCandidate
     health_score: float
     rank_class: int  # _CLASS_FAVORED | _CLASS_METRIC | _CLASS_KNOWN
+    demotion_reason: str = ""  # auth | failures | latency when KNOWN, else ""
+
+
+def tracked_health_score(stats: DerivedStats) -> float:
+    """Self-tracked health for a metric-less group with observations.
+
+    Laplace-smoothed decayed success rate over rate-limit-weighted events:
+    one pseudo-success and one pseudo-failure keep small samples off the rails
+    (a single transient 429 lands mid-pack instead of at zero) while a
+    sustained 429 streak decays toward 0 and real successes promote back.
+    """
+    return (stats.successes + 1.0) / (stats.successes + stats.failures + 2.0)
 
 
 def estimate_tokens(messages: list[dict]) -> int:
@@ -473,36 +514,80 @@ def _classify_candidate(
     stats: DerivedStats,
     cfg: PickerConfig,
     best_metric_score: float,
-) -> tuple[int, float]:
-    """Return (rank_class, health_score) applying the sticky demotion proofs."""
+) -> tuple[int, float, str]:
+    """Return (rank_class, health_score, demotion_reason) for one candidate.
+
+    Pure: class and score are re-derived from the current observation window
+    on every evaluation, so demotion recovers (promote) as failures decay or
+    successes accrue. Transition logging happens in rank_candidates, which
+    tracks the previous class per group.
+    """
     if not candidate.metricless:
-        return _CLASS_METRIC, candidate.wilson_score
+        return _CLASS_METRIC, candidate.wilson_score, ""
 
-    # Sticky demotion: once a proof fires the group stays KNOWN permanently.
-    if not stats.demoted:
-        failure_proof = (
-            stats.n_obs >= cfg.min_obs
-            and not stats.dead
-            and stats.hard_rate < best_metric_score - cfg.demote_margin
+    failure_proof = (
+        stats.n_obs >= cfg.min_obs
+        and not stats.dead
+        and stats.hard_rate < best_metric_score - cfg.demote_margin
+    )
+    latency_proof = stats.ttft_n >= cfg.min_obs and stats.ttft_mean > cfg.demote_ttft_seconds
+    if stats.dead:
+        return _CLASS_KNOWN, 0.0, "auth"
+    if failure_proof or latency_proof:
+        score = wilson_lower_bound(stats.success_rate, max(stats.n_obs, 1))
+        return _CLASS_KNOWN, score, "failures" if failure_proof else "latency"
+
+    if stats.n_obs <= 0:
+        # Never tried. Untested static groups get the benefit of the doubt —
+        # except deprioritized providers (llm7: no published metrics, groups
+        # that trip daily token quotas), which start at a neutral prior below
+        # healthy metric-backed candidates and compete on tracked evidence
+        # from the first observation.
+        if candidate.provider in cfg.deprioritized_providers:
+            return _CLASS_METRIC, cfg.untried_prior_score, ""
+        return _CLASS_FAVORED, 1.0, ""
+
+    # Tried: rank on OUR OWN tracked health (429-weighted, decayed) instead of
+    # a static 1.0, so sustained rate-limiting demotes without waiting for a
+    # hard-failure proof.
+    return _CLASS_METRIC, tracked_health_score(stats), ""
+
+
+def _log_class_transition(
+    stats_registry: StatsRegistry,
+    name: str,
+    rank_class: int,
+    reason: str,
+    dstats: DerivedStats,
+) -> None:
+    """Log KNOWN <-> not-KNOWN transitions for a group.
+
+    GroupStats.demoted mirrors the class the group got at its last evaluation
+    (the classification itself is stateless — DerivedStats copies are
+    throwaway, and writing the flag there never persisted, which made the old
+    demote lines re-fire on every request). Rate limits alone never produce
+    KNOWN, so they never log a demotion; the tracked score drop is silent.
+    """
+    gstats = stats_registry.group(name)
+    is_known = rank_class == _CLASS_KNOWN
+    if is_known and not gstats.demoted:
+        logger.info(
+            "model_picker: demoted %s (reason=%s n_obs=%d rate=%.3f ttft=%.1fs)",
+            name,
+            reason,
+            dstats.n_obs,
+            dstats.success_rate,
+            dstats.ttft_mean,
         )
-        latency_proof = stats.ttft_n >= cfg.min_obs and stats.ttft_mean > cfg.demote_ttft_seconds
-        if stats.dead or failure_proof or latency_proof:
-            stats.demoted = True
-            logger.info(
-                "model_picker: demoted %s (dead=%s failure_proof=%s latency_proof=%s n_obs=%d rate=%.3f ttft=%.1fs)",
-                candidate.name,
-                stats.dead,
-                failure_proof,
-                latency_proof,
-                stats.n_obs,
-                stats.success_rate,
-                stats.ttft_mean,
-            )
-
-    if stats.demoted:
-        score = 0.0 if stats.dead else wilson_lower_bound(stats.success_rate, max(stats.n_obs, 1))
-        return _CLASS_KNOWN, score
-    return _CLASS_FAVORED, 1.0
+    elif gstats.demoted and not is_known:
+        logger.info(
+            "model_picker: promoted %s (n_obs=%d rate=%.3f ttft=%.1fs)",
+            name,
+            dstats.n_obs,
+            dstats.success_rate,
+            dstats.ttft_mean,
+        )
+    gstats.demoted = is_known
 
 
 def rank_candidates(
@@ -538,13 +623,15 @@ def rank_candidates(
 
     ranked: list[RankedCandidate] = []
     for c, dstats in pool:
-        rank_class, score = _classify_candidate(c, dstats, cfg, best_metric_score)
-        ranked.append(RankedCandidate(candidate=c, health_score=score, rank_class=rank_class))
+        rank_class, score, reason = _classify_candidate(c, dstats, cfg, best_metric_score)
+        _log_class_transition(stats_registry, c.name, rank_class, reason, dstats)
+        ranked.append(RankedCandidate(candidate=c, health_score=score, rank_class=rank_class, demotion_reason=reason))
+    dstats_by_name = {c.name: d for c, d in pool}
 
     # Recency guard: skip candidates whose most recent observation was a
     # failure inside the recency window; if that leaves nothing, keep all.
     def _is_guarded(r: RankedCandidate) -> bool:
-        d = stats_registry.derived(r.candidate.name, now)
+        d = dstats_by_name[r.candidate.name]
         return d.last_obs_was_failure and d.last_obs_age <= cfg.recency_window_seconds
 
     unguarded = [r for r in ranked if not _is_guarded(r)]
@@ -564,7 +651,7 @@ def rank_candidates(
     latency_demoted_names: set[str] = set()
     for r in ranked:
         if r.rank_class == _CLASS_KNOWN:
-            d = stats_registry.derived(r.candidate.name, now)
+            d = dstats_by_name[r.candidate.name]
             if d.ttft_n >= cfg.min_obs and d.ttft_mean > cfg.demote_ttft_seconds:
                 latency_demoted_names.add(r.candidate.name)
 

@@ -167,6 +167,27 @@ class TestRubricRanking:
             "pollinations/openai/gpt-oss-20b",
         ]
 
+    def test_llm7_untried_below_healthy_metric_backed(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        llm7_fast = favored_candidate(lib, "fast", provider="llm7")
+        llm7_default = favored_candidate(lib, "default", provider="llm7")
+        healthy = metric_candidate(lib, "pollinations/openai/gpt-5.4-nano", 0.9997, 87885)
+        ranked = lib.rank_candidates([llm7_fast, healthy, llm7_default], lib.TIER_DEFAULT, stats, cfg)
+        # try pollinations before llm7 even though the llm7 groups are untried
+        assert [r.candidate.name for r in ranked] == [
+            "pollinations/openai/gpt-5.4-nano",
+            "default",
+            "fast",
+        ]
+
+    def test_untried_nim_still_favored_above_llm7(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        nim = favored_candidate(lib, "z-ai/glm-5.3", provider="nvidia_nim")
+        llm7_fast = favored_candidate(lib, "fast", provider="llm7")
+        ranked = lib.rank_candidates([llm7_fast, nim], lib.TIER_DEFAULT, stats, cfg)
+        # only llm7 loses the untried benefit-of-the-doubt; NIM keeps it
+        assert [r.candidate.name for r in ranked] == ["z-ai/glm-5.3", "fast"]
+
     def test_think_tier_context_first_with_class_ties(self, fresh):
         lib, _, cfg, stats, _ = fresh
         favored_1m = favored_candidate(lib, "z-ai/glm-5.3", ctx=1048576)
@@ -192,19 +213,36 @@ class TestRubricRanking:
             "pollinations/openai/gpt-5.4-nano",
             "z-ai/glm-5.3",
         ]
-        # sticky: stays demoted on the next evaluation even after stats decay input
+        # the same window evidence re-demotes on the next evaluation
         ranked2 = lib.rank_candidates([favored, strong_metric], lib.TIER_DEFAULT, stats, cfg, now=after_guard)
         assert ranked2[0].candidate.name == "pollinations/openai/gpt-5.4-nano"
+        # once the failure window ages out entirely, the group is promoted back
+        ranked3 = lib.rank_candidates(
+            [favored, strong_metric], lib.TIER_DEFAULT, stats, cfg, now=now + 5 * cfg.half_life_seconds
+        )
+        assert [r.candidate.name for r in ranked3] == [
+            "z-ai/glm-5.3",
+            "pollinations/openai/gpt-5.4-nano",
+        ]
 
-    def test_perfect_small_sample_stays_favored(self, fresh):
+    def test_perfect_small_sample_ranks_on_tracked_evidence(self, fresh):
         lib, _, cfg, stats, _ = fresh
         favored = favored_candidate(lib, "z-ai/glm-5.3")
         strong_metric = metric_candidate(lib, "pollinations/openai/gpt-5.4-nano", 0.9997, 87885)
+        weak_metric = metric_candidate(lib, "pollinations/openai/gpt-oss-20b", 0.75, 20)
         now = time.time()
         for _ in range(cfg.min_obs * 3):
             stats.record_success("z-ai/glm-5.3", ttft_seconds=1.0, now=now)
-        ranked = lib.rank_candidates([strong_metric, favored], lib.TIER_DEFAULT, stats, cfg)
-        assert ranked[0].candidate.name == "z-ai/glm-5.3"
+        ranked = lib.rank_candidates(
+            [weak_metric, strong_metric, favored], lib.TIER_DEFAULT, stats, cfg, now=now + 1
+        )
+        # a small perfect sample competes on our tracked evidence: above weak
+        # published metrics, below a huge-volume published near-perfect one
+        assert [r.candidate.name for r in ranked] == [
+            "pollinations/openai/gpt-5.4-nano",
+            "z-ai/glm-5.3",
+            "pollinations/openai/gpt-oss-20b",
+        ]
 
     def test_auth_error_demotes_immediately(self, fresh):
         lib, _, cfg, stats, _ = fresh
@@ -265,10 +303,15 @@ class TestRubricRanking:
         stats.record_failure("z-ai/glm-5.3", lib.FAILURE_CLASS_TIMEOUT, now=now)
         ranked = lib.rank_candidates([favored, metric], lib.TIER_DEFAULT, stats, cfg, now=now + 5)
         assert ranked[0].candidate.name == "pollinations/openai/gpt-5.4-nano"
-        # a success restores eligibility immediately
+        # a success restores eligibility immediately (no longer guard-skipped);
+        # the mixed 1-failure/1-success window scores 0.5, so the strong
+        # published metric still outranks it on evidence
         stats.record_success("z-ai/glm-5.3", ttft_seconds=1.0, now=now + 6)
         ranked = lib.rank_candidates([favored, metric], lib.TIER_DEFAULT, stats, cfg, now=now + 7)
-        assert ranked[0].candidate.name == "z-ai/glm-5.3"
+        assert [r.candidate.name for r in ranked] == [
+            "pollinations/openai/gpt-5.4-nano",
+            "z-ai/glm-5.3",
+        ]
 
     def test_recency_guard_expires(self, fresh):
         lib, _, cfg, stats, _ = fresh
@@ -277,7 +320,12 @@ class TestRubricRanking:
         now = time.time()
         stats.record_failure("z-ai/glm-5.3", lib.FAILURE_CLASS_TIMEOUT, now=now)
         ranked = lib.rank_candidates([favored, metric], lib.TIER_DEFAULT, stats, cfg, now=now + cfg.recency_window_seconds + 1)
-        assert ranked[0].candidate.name == "z-ai/glm-5.3"
+        # the guard expires (candidate eligible again, no longer skipped) but
+        # the all-failure window scores low, so the strong metric stays first
+        assert [r.candidate.name for r in ranked] == [
+            "pollinations/openai/gpt-5.4-nano",
+            "z-ai/glm-5.3",
+        ]
 
     def test_recency_guard_all_guarded_falls_back(self, fresh):
         lib, _, cfg, stats, _ = fresh
@@ -336,21 +384,60 @@ class TestRubricRanking:
         ranked = lib.rank_candidates([gone, present], lib.TIER_DEFAULT, stats, cfg)
         assert [r.candidate.name for r in ranked] == ["nemotron-3-super:cloud"]
 
-    def test_rate_limit_failures_are_mild(self, fresh):
+    def test_sustained_rate_limits_demote_and_recover(self, fresh):
         lib, _, cfg, stats, _ = fresh
-        favored = favored_candidate(lib, "z-ai/glm-5.3")
+        llm7 = favored_candidate(lib, "fast", provider="llm7")
         strong_metric = metric_candidate(lib, "pollinations/openai/gpt-5.4-nano", 0.9997, 87885)
+        mediocre_metric = metric_candidate(lib, "pollinations/degraded/model", 0.75, 20)
         now = time.time()
         for _ in range(cfg.min_obs + 3):
-            stats.record_failure("z-ai/glm-5.3", lib.FAILURE_CLASS_RATE_LIMIT, now=now)
-        derived = stats.derived("z-ai/glm-5.3", now=now + 1)
+            stats.record_failure("fast", lib.FAILURE_CLASS_RATE_LIMIT, now=now)
+        derived = stats.derived("fast", now=now + 1)
         # evidence score depressed...
         assert derived.success_rate < 1.0
-        # ...but rate limits never fire the sticky demotion proof
+        # ...but rate limits never fire the hard demotion proof (busy-but-working)
         assert derived.demoted is False
+        # a sustained 429 streak (daily token quota) sinks the tracked score
+        # below healthy AND mediocre metric-backed candidates
         after_guard = now + cfg.recency_window_seconds + 1
-        ranked = lib.rank_candidates([favored, strong_metric], lib.TIER_DEFAULT, stats, cfg, now=after_guard)
-        assert ranked[0].candidate.name == "z-ai/glm-5.3"
+        ranked = lib.rank_candidates(
+            [llm7, strong_metric, mediocre_metric], lib.TIER_DEFAULT, stats, cfg, now=after_guard
+        )
+        assert [r.candidate.name for r in ranked] == [
+            "pollinations/openai/gpt-5.4-nano",
+            "pollinations/degraded/model",
+            "fast",
+        ]
+        # real successes promote it back above the mediocre candidate
+        for _ in range(10):
+            stats.record_success("fast", ttft_seconds=1.0, now=now + 2)
+        ranked = lib.rank_candidates(
+            [llm7, strong_metric, mediocre_metric], lib.TIER_DEFAULT, stats, cfg, now=now + 3
+        )
+        assert [r.candidate.name for r in ranked] == [
+            "pollinations/openai/gpt-5.4-nano",
+            "fast",
+            "pollinations/degraded/model",
+        ]
+
+    def test_single_rate_limit_failure_lands_midpack(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        llm7 = favored_candidate(lib, "fast", provider="llm7")
+        strong_metric = metric_candidate(lib, "pollinations/openai/gpt-5.4-nano", 0.9997, 87885)
+        zero_evidence = metric_candidate(lib, "pollinations/unknown/model", 1.0, 0)
+        now = time.time()
+        stats.record_failure("fast", lib.FAILURE_CLASS_RATE_LIMIT, now=now)
+        # one transient 429 must not bury the group at zero: Laplace smoothing
+        # puts it below healthy evidence but above zero-evidence candidates
+        after_guard = now + cfg.recency_window_seconds + 1
+        ranked = lib.rank_candidates(
+            [llm7, strong_metric, zero_evidence], lib.TIER_DEFAULT, stats, cfg, now=after_guard
+        )
+        assert [r.candidate.name for r in ranked] == [
+            "pollinations/openai/gpt-5.4-nano",
+            "fast",
+            "pollinations/unknown/model",
+        ]
 
 
 # ---------------------------------------------------------------------------
