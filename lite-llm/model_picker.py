@@ -10,8 +10,9 @@ share state across the plugin/stats-logger references).
 
 Design (beads workspace-c8o, revised in workspace-4wr):
 
-- Candidates: free chat-capable models from the pollinations catalog
-  (metric-backed) plus curated static groups from the other providers
+- Candidates: free chat-capable COMMUNITY models from the pollinations
+  catalog (metric-backed; official catalog models are credit limited and
+  excluded) plus curated static groups from the other providers
   (metric-less). Gemini groups are excluded outright.
 - Ranking classes: UNKNOWN (untried metric-less, favored — ranks above
   everything on the health dimension, except deprioritized providers such as
@@ -63,7 +64,10 @@ DEFAULT_DEMOTE_TTFT_SECONDS = 15.0
 DEFAULT_DEMOTE_MARGIN = 0.02
 DEFAULT_RECENCY_WINDOW_SECONDS = 60.0
 DEFAULT_HALF_LIFE_SECONDS = 24 * 3600.0
-DEFAULT_FALLBACK_MODEL = "openai/gpt-5.4-nano"
+# Cold-start/catastrophic fallback when the catalog is unreachable. Must be a
+# free community model (official pollinations models are credit limited) and
+# one the litellm config already trusts as its default route.
+DEFAULT_FALLBACK_MODEL = "community/vendouple/laguna-s-2.1:free"
 DEFAULT_UNKNOWN_CONTEXT_TOKENS = 0  # 0 = unknown; unknown-context candidates bypass fit filtering
 # Metric-less providers that must NOT get the untried benefit-of-the-doubt:
 # llm7 has no published metrics and its groups trip daily token quotas (429 +
@@ -165,13 +169,22 @@ def wilson_lower_bound(success_rate: float, n: int, z: float = 1.96) -> float:
 
 
 def parse_pollinations_models(payload: dict) -> list[ModelCandidate]:
-    """Parse GET /v1/models from pollinations into free chat-capable candidates."""
+    """Parse GET /v1/models from pollinations into free chat-capable candidates.
+
+    Only community models qualify: the official (non-community) catalog
+    entries are credit limited, so picks against them fail once the account's
+    credits run out. Community models carry ``community: true`` (the id
+    ``community/`` prefix is accepted as a fallback for catalogs that omit the
+    flag).
+    """
     out: list[ModelCandidate] = []
     for m in (payload or {}).get("data") or []:
         if not isinstance(m, dict):
             continue
         model_id = m.get("id") or ""
         if not model_id:
+            continue
+        if not (m.get("community") is True or model_id.startswith("community/")):
             continue
         if m.get("paid_only"):
             continue

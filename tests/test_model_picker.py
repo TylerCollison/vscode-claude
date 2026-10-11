@@ -100,26 +100,70 @@ def favored_candidate(lib, name, provider="nvidia_nim", ctx=0):
 
 
 class TestCatalogParsing:
-    def test_free_chat_models_kept(self, mp):
+    def test_community_models_kept_official_excluded(self, mp):
         lib, _ = mp
         candidates = candidates_from_fixture(lib)
         names = {c.name for c in candidates}
-        assert "pollinations/openai/gpt-5.4-nano" in names
+        # community models are the picker's pollinations pool
         assert "pollinations/community/vendouple/deepseek-v4-pro" in names
+        assert "pollinations/community/vendouple/glm-5.3-flash" in names
+        assert "pollinations/community/sharktide/inferenceport-ai-lightning-text-v2" in names
+        # official catalog models are credit limited -> never candidates
+        assert "pollinations/openai/gpt-5.4-nano" not in names
+        assert "pollinations/openai/gpt-oss-20b" not in names
+        assert "pollinations/z-ai/glm-5.3" not in names
 
     def test_paid_only_excluded(self, mp):
         lib, _ = mp
         names = {c.name for c in candidates_from_fixture(lib)}
         assert "pollinations/poolside/laguna-s-2.1" not in names
         assert "pollinations/stepfun/step-5-preview" not in names
+        # even a community model flagged paid_only is excluded
+        payload = {
+            "data": [
+                {
+                    "id": "community/someone/paid",
+                    "community": True,
+                    "paid_only": True,
+                    "input_modalities": ["text"],
+                    "output_modalities": ["text"],
+                    "supported_endpoints": ["/v1/chat/completions"],
+                    "health": {"status": "healthy", "success_rate": 100, "requests": 10},
+                }
+            ]
+        }
+        assert lib.parse_pollinations_models(payload) == []
 
     def test_audio_only_models_excluded(self, mp):
         lib, _ = mp
         names = {c.name for c in candidates_from_fixture(lib)}
         # whisper is audio->text (no text input): not a chat model
         assert "pollinations/openai/whisper-large-v3" not in names
-        # gpt-audio-1.5 accepts text in/out alongside audio: chat-capable, kept
-        assert "pollinations/openai/gpt-audio-1.5" in names
+        # the modality filter still admits text-capable community models that
+        # also serve audio, and excludes audio-only ones
+        payload = {
+            "data": [
+                {
+                    "id": "community/someone/audio-chat",
+                    "community": True,
+                    "input_modalities": ["text", "audio"],
+                    "output_modalities": ["text", "audio"],
+                    "supported_endpoints": ["/v1/chat/completions"],
+                    "health": {"status": "healthy", "success_rate": 100, "requests": 10},
+                },
+                {
+                    "id": "community/someone/whisper",
+                    "community": True,
+                    "input_modalities": ["audio"],
+                    "output_modalities": ["text"],
+                    "supported_endpoints": ["/v1/chat/completions"],
+                    "health": {"status": "healthy", "success_rate": 100, "requests": 10},
+                },
+            ]
+        }
+        parsed = {c.name for c in lib.parse_pollinations_models(payload)}
+        assert "pollinations/community/someone/audio-chat" in parsed
+        assert "pollinations/community/someone/whisper" not in parsed
 
     def test_down_models_excluded(self, mp):
         lib, _ = mp
@@ -130,10 +174,39 @@ class TestCatalogParsing:
     def test_degraded_and_unknown_kept(self, mp):
         lib, _ = mp
         by_name = {c.name: c for c in candidates_from_fixture(lib)}
-        assert by_name["pollinations/cohere/command-a-plus"].success_rate == pytest.approx(0.9286, rel=1e-3)
+        assert by_name["pollinations/community/sharktide/inferenceport-ai-lightning-text-v2"].success_rate == pytest.approx(0.9)
         # unknown health / zero requests -> zero published score, still a candidate
-        assert by_name["pollinations/jaredpalmer/kev-4b"].success_rate == 0.0
-        assert by_name["pollinations/jaredpalmer/kev-4b"].requests == 0
+        payload = {
+            "data": [
+                {
+                    "id": "community/someone/unproven",
+                    "community": True,
+                    "input_modalities": ["text"],
+                    "output_modalities": ["text"],
+                    "supported_endpoints": ["/v1/chat/completions"],
+                    "health": {"status": "unknown", "requests": 0},
+                }
+            ]
+        }
+        parsed = lib.parse_pollinations_models(payload)
+        assert parsed[0].success_rate == 0.0
+        assert parsed[0].requests == 0
+
+    def test_community_flag_missing_falls_back_to_id_prefix(self, mp):
+        lib, _ = mp
+        payload = {
+            "data": [
+                {
+                    "id": "community/someone/noflag",
+                    "input_modalities": ["text"],
+                    "output_modalities": ["text"],
+                    "supported_endpoints": ["/v1/chat/completions"],
+                    "health": {"status": "healthy", "success_rate": 100, "requests": 10},
+                }
+            ]
+        }
+        names = {c.name for c in lib.parse_pollinations_models(payload)}
+        assert "pollinations/community/someone/noflag" in names
 
     def test_wilson_bounds(self, mp):
         lib, _ = mp
@@ -531,12 +604,10 @@ class TestPlugin:
         self._fake_snapshot(monkeypatch, lib, manager)
         context = make_context(lib, ["lite-llm/ultra-think"])
         result = asyncio.run(test_plugin.run(context))
-        # the 1M-context catalog models outrank 400k gpt-5.4-nano in think tiers
+        # the 1M-context COMMUNITY catalog models win think tiers
         assert result.candidate_models[0] in (
-            "pollinations/openai/gpt-6-luna",
-            "pollinations/z-ai/glm-5.3",
-            "pollinations/deepseek/deepseek-v4-flash",
             "pollinations/community/vendouple/deepseek-v4-pro",
+            "pollinations/community/vendouple/glm-5.3-flash",
         )
 
     def test_plugin_excludes_prior_picks_on_retry(self, fresh, env_enabled, monkeypatch):

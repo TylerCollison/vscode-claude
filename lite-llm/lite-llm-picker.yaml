@@ -40,7 +40,8 @@ model_list:
 
   # --- Model Picker wildcard ---
   # Serves any pollinations catalog id as `pollinations/<id>`; the picker
-  # plugin rewrites eligible requests to pollinations/<best-free-model>.
+  # plugin rewrites eligible requests to pollinations/<best-free-community-model>
+  # (official catalog models are credit limited and never picked).
   # allowed_fails is effectively disabled: the wildcard resolves to a single
   # deployment, so one failure would otherwise cool every pollinations pick
   # for the cooldown window. See the header note above.
