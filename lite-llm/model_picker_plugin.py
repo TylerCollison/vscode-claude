@@ -236,8 +236,9 @@ def _event_ttft_seconds(kwargs: dict, start_time: datetime) -> float | None:
 class ModelPickerStatsLogger(CustomLogger):
     """Records per-group success/failure/TTFT observations for the picker."""
 
-    def __init__(self, stats=None) -> None:
+    def __init__(self, stats=None, manager=None) -> None:
         self._stats = stats
+        self._manager = manager
 
     @property
     def stats(self):
@@ -245,8 +246,37 @@ class ModelPickerStatsLogger(CustomLogger):
             self._stats = model_picker.get_shared_stats()
         return self._stats
 
-    async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+    @property
+    def manager(self):
+        if self._manager is None:
+            self._manager = model_picker.get_shared_manager()
+        return self._manager
+
+    def _event_group(self, kwargs: dict) -> str:
+        """Group name for an event, aligned with the picker's candidate names.
+
+        litellm stamps pattern-resolved wildcard deployments (model_name
+        ``pollinations/*``) WITHOUT the group prefix — a pick the picker tracks
+        as ``pollinations/community/x`` records its health under
+        ``community/x``, so the picker's per-candidate lookups never match.
+        Re-prefix from the cached catalog snapshot when unambiguous.
+        """
         group = _resolve_group_name(kwargs)
+        if not group or group.startswith("pollinations/"):
+            return group
+        names = self.manager.peek_candidate_names()
+        if not names:
+            return group
+        candidate = f"pollinations/{group}"
+        # only rewrite when unambiguous: the prefixed name is a tracked
+        # candidate and the bare name is not itself one (static groups like
+        # `z-ai/glm-5.3` record under their own names).
+        if candidate in names and group not in names:
+            return candidate
+        return group
+
+    async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+        group = self._event_group(kwargs)
         if not group:
             return
         # Pollinations returns hard failures (credit gate, relayed upstream
@@ -261,7 +291,7 @@ class ModelPickerStatsLogger(CustomLogger):
         self.stats.record_success(group, _event_ttft_seconds(kwargs, start_time))
 
     async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
-        group = _resolve_group_name(kwargs)
+        group = self._event_group(kwargs)
         if not group:
             return
         exception = kwargs.get("exception")

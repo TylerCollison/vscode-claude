@@ -791,6 +791,41 @@ class TestPlugin:
         assert len(registry._by_call) == 0
 
 
+    def test_event_group_reconciles_wildcard_names(self, mp, fresh):
+        """Wildcard-served picks record under pollinations/<id>, not the bare id."""
+        lib, plugin = mp
+        _, _, cfg, stats, manager = fresh
+        catalog = lib.CatalogSnapshot(
+            candidates=[
+                metric_candidate(lib, "pollinations/community/x", 0.99, 100),
+                favored_candidate(lib, "z-ai/glm-5.3", provider="nvidia_nim"),
+                metric_candidate(lib, "pollinations/z-ai/glm-5.3", 0.99, 100),
+            ]
+        )
+        manager._snapshot = catalog
+        stats_logger = plugin.ModelPickerStatsLogger(stats=stats, manager=manager)
+        # wildcard-served: bare catalog id gains the pollinations/ prefix
+        assert stats_logger._event_group({"litellm_metadata": {"deployment_model_name": "community/x"}}) == (
+            "pollinations/community/x"
+        )
+        # static group names match a candidate directly -> untouched, even when
+        # a pollinations catalog model shares the suffix
+        assert stats_logger._event_group({"litellm_metadata": {"deployment_model_name": "z-ai/glm-5.3"}}) == "z-ai/glm-5.3"
+        # already-prefixed names pass through
+        assert stats_logger._event_group({"litellm_metadata": {"deployment_model_name": "pollinations/community/x"}}) == (
+            "pollinations/community/x"
+        )
+        # unknown names pass through untouched
+        assert stats_logger._event_group({"litellm_metadata": {"deployment_model_name": "fast"}}) == "fast"
+
+    def test_event_group_cold_manager_passes_through(self, mp, fresh):
+        lib, plugin = mp
+        _, _, cfg, stats, manager = fresh
+        stats_logger = plugin.ModelPickerStatsLogger(stats=stats, manager=manager)
+        assert manager.peek_candidate_names() is None
+        assert stats_logger._event_group({"litellm_metadata": {"deployment_model_name": "community/x"}}) == "community/x"
+
+
 # ---------------------------------------------------------------------------
 # Catalog manager (TTL, stale-serve, fallback)
 # ---------------------------------------------------------------------------

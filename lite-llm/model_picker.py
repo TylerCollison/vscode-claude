@@ -875,6 +875,17 @@ class CatalogManager:
                 self._snapshot = self._fallback_snapshot()
                 return self._snapshot
 
+    def peek_candidate_names(self) -> set[str] | None:
+        """Candidate names from the cached snapshot, without refreshing.
+
+        None when the manager is cold (no snapshot yet). Used by the stats
+        logger to reconcile group names against the picker's candidates.
+        """
+        snap = self._snapshot
+        if snap is None:
+            return None
+        return {c.name for c in snap.candidates}
+
 
 def get_shared_manager() -> CatalogManager:
     """Process-wide manager.
