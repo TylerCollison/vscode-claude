@@ -1,5 +1,6 @@
 """
-Model Picker: litellm complexity-router routing plugin + passive stats logger.
+Model Picker: litellm complexity-router routing plugin + passive stats logger
++ soft-failure interception.
 
 Wired from lite-llm-picker.yaml:
 
@@ -16,6 +17,15 @@ best free chat model per the tier rubric and may return a dynamic
 ``pollinations/<catalog-id>`` name served by the ``pollinations/*`` wildcard
 model_list entry, or any existing static group name.
 
+The stats_logger callback additionally INTERCEPTS soft failures: pollinations
+serves hard errors (account credit gate, relayed upstream errors) as HTTP 200
+with the error text as assistant message content, which litellm treats as a
+success — no retry, no fallback. On the streaming path the iterator hook drops
+the failed stream before the error chunk is yielded and retries (bounded)
+through the routing pipeline with failed models excluded, synthesizing the
+retry's answer into the same SSE stream; the non-streaming path swaps the
+response wholesale. The user never sees provider error content.
+
 litellm's ``get_instance_fn`` exec's this file with spec_from_file_location
 WITHOUT registering it in sys.modules, so a plain ``import model_picker``
 would not resolve, and this file being referenced from both the plugins list
@@ -26,12 +36,15 @@ key so the catalog cache and rolling stats are shared by every instance.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
+import json
 import logging
 import os
 import sys
 from datetime import datetime
 
+import litellm
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.types.router import RoutingContext
 
@@ -145,10 +158,16 @@ class ModelPickerPlugin:
         # read (litellm stamps attempted_retries into the real dict before the
         # copy), but writes through it never reach the request. Pick history
         # therefore lives in the call-scoped PriorPickRegistry, keyed by the
-        # litellm_call_id that every proxy request carries.
+        # litellm_call_id that every proxy request carries. The soft-failure
+        # retry hook additionally passes an explicit model_picker_exclude list
+        # through the request metadata for models this request already saw
+        # fail.
         metadata = context.metadata if context.metadata else {}
         call_id = str(metadata.get("litellm_call_id") or "")
-        prior_picks = self.prior_picks.get(call_id)
+        prior_picks = list(self.prior_picks.get(call_id))
+        for extra in metadata.get("model_picker_exclude") or []:
+            if extra not in prior_picks:
+                prior_picks.append(str(extra))
 
         estimate = model_picker.estimate_tokens(context.structured_messages)
         snapshot = await self.manager.get_snapshot(_get_router_model_list())
@@ -233,12 +252,126 @@ def _event_ttft_seconds(kwargs: dict, start_time: datetime) -> float | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Soft-failure retry (the user must never see a provider error as chat content)
+# ---------------------------------------------------------------------------
+
+# Pollinations serves hard failures as HTTP 200 with the error text as the
+# assistant message — litellm sees a SUCCESS: no router retry, no fallback, no
+# attempt exclusion. The hooks below intercept at the proxy boundary: clean
+# chunks pass through untouched (true streaming), and when the error text
+# appears, the failed stream is dropped and the request is retried (bounded)
+# through the full routing pipeline with the failed models excluded. The
+# client only ever receives the retry's answer, synthesized into the same
+# SSE stream.
+
+_SOFT_FAILURE_RETRY_LIMIT = 8
+
+# anthropic /messages SSE event dict keys we synthesize when continuing a
+# stream with a retry's answer.
+_RETRY_PASSTHROUGH_KEYS = (
+    "model",
+    "messages",
+    "max_tokens",
+    "metadata",
+    "temperature",
+    "top_p",
+    "top_k",
+    "stop",
+    "tools",
+    "tool_choice",
+    "response_format",
+    "seed",
+    "stream_timeout",
+    "timeout",
+    "num_retries",
+    "litellm_metadata",
+    "proxy_server_request",
+)
+
+_FALLBACK_REPLY = (
+    "[model_picker] every candidate model for this request failed; please retry in a moment."
+)
+
+
+def _delta_text_of(event: dict) -> str:
+    if event.get("type") != "content_block_delta":
+        return ""
+    delta = event.get("delta") or {}
+    if not isinstance(delta, dict):
+        return ""
+    return str(delta.get("text") or delta.get("thinking") or "")
+
+
+def _chunk_events(chunk: object) -> list[dict]:
+    """Anthropic events carried by one streamed chunk.
+
+    Chunks arrive either as event dicts (agentic/fake-stream paths) or as
+    already-encoded SSE frames — strings/bytes holding `event:`/`data:` lines
+    (the /v1/messages streaming path). Normalize both to event dicts.
+    """
+    if isinstance(chunk, (bytes, bytearray)):
+        chunk = chunk.decode("utf-8", errors="ignore")
+    if isinstance(chunk, dict):
+        return [chunk]
+    if isinstance(chunk, str):
+        events: list[dict] = []
+        for line in chunk.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("data:"):
+                continue
+            payload = stripped[len("data:"):].strip()
+            if not payload or payload == "[DONE]":
+                continue
+            try:
+                event = json.loads(payload)
+            except Exception:  # noqa: BLE001 — never break the stream on a parse miss
+                continue
+            if isinstance(event, dict):
+                events.append(event)
+        return events
+    # Non-dict objects (defensive): reuse the response-text extractor.
+    text = model_picker.extract_response_text(chunk)
+    return [{"type": "content_block_delta", "delta": {"type": "text_delta", "text": text}}] if text else []
+
+
+def _event_text(chunk: object) -> str:
+    """Assistant text carried by one streamed chunk (any shape)."""
+    return "".join(_delta_text_of(e) for e in _chunk_events(chunk))
+
+
+def _sse_frame(event: dict) -> str:
+    """Encode an anthropic event dict as an SSE frame matching the stream."""
+    return f"event: {event.get('type', '')}\ndata: {json.dumps(event, separators=(',', ':'))}\n\n"
+
+
+def _usage_dict(response_obj: object) -> dict:
+    usage = getattr(response_obj, "usage", None)
+    out: dict = {}
+    prompt = getattr(usage, "prompt_tokens", None) if usage is not None else None
+    completion = getattr(usage, "completion_tokens", None) if usage is not None else None
+    if isinstance(prompt, (int, float)):
+        out["input_tokens"] = int(prompt)
+    if isinstance(completion, (int, float)):
+        out["output_tokens"] = int(completion)
+    return out
+
+
+def _finish_reason(response_obj: object) -> str:
+    try:
+        reason = response_obj.choices[0].finish_reason  # type: ignore[index,union-attr]
+    except Exception:  # noqa: BLE001 — synthesis must never fail the request
+        reason = None
+    return str(reason) if reason else "end_turn"
+
+
 class ModelPickerStatsLogger(CustomLogger):
     """Records per-group success/failure/TTFT observations for the picker."""
 
-    def __init__(self, stats=None, manager=None) -> None:
+    def __init__(self, stats=None, manager=None, prior_picks=None) -> None:
         self._stats = stats
         self._manager = manager
+        self._prior_picks = prior_picks
 
     @property
     def stats(self):
@@ -251,6 +384,12 @@ class ModelPickerStatsLogger(CustomLogger):
         if self._manager is None:
             self._manager = model_picker.get_shared_manager()
         return self._manager
+
+    @property
+    def prior_picks(self):
+        if self._prior_picks is None:
+            self._prior_picks = model_picker.get_shared_prior_picks()
+        return self._prior_picks
 
     def _event_group(self, kwargs: dict) -> str:
         """Group name for an event, aligned with the picker's candidate names.
@@ -286,7 +425,7 @@ class ModelPickerStatsLogger(CustomLogger):
         if model_picker.is_soft_failure_content(text):
             snippet = " ".join(text.split())[:100]
             logger.info("model_picker: soft failure recorded for %s (content=%r)", group, snippet)
-            self.stats.record_failure(group, model_picker.FAILURE_CLASS_ERROR)
+            self.stats.record_failure(group, model_picker.FAILURE_CLASS_SOFT)
             return
         self.stats.record_success(group, _event_ttft_seconds(kwargs, start_time))
 
@@ -296,6 +435,210 @@ class ModelPickerStatsLogger(CustomLogger):
             return
         exception = kwargs.get("exception")
         self.stats.record_failure(group, model_picker.classify_exception(exception))
+
+    # -- soft-failure interception ------------------------------------------
+
+    def _failed_group(self, request_data: dict, response: object) -> str:
+        """Group a failed (intercepted) attempt belongs to, reconciled.
+
+        Proxy-level request metadata carries the wildcard group name
+        (``pollinations/*``) rather than the resolved candidate, so the
+        picker's own pick record (PriorPickRegistry, keyed by litellm_call_id)
+        is the authoritative first source; the response's model and the
+        metadata group follow. A group is only trusted when it names a tracked
+        candidate.
+        """
+        candidates: list[str] = []
+        call_id = ""
+        logging_obj = getattr(response, "logging_obj", None)
+        if isinstance(request_data, dict):
+            for holder in (request_data.get("litellm_metadata"), request_data.get("metadata")):
+                if isinstance(holder, dict) and holder.get("litellm_call_id"):
+                    call_id = str(holder["litellm_call_id"])
+                    break
+        if not call_id and logging_obj is not None:
+            call_id = str(getattr(logging_obj, "litellm_call_id", "") or "")
+        if call_id:
+            picks = self.prior_picks.get(call_id)
+            if picks:
+                candidates.append(picks[-1])
+        # the stream's logging object carries the router-stamped deployment
+        # group (the same channel the stats logger records from)
+        call_details = getattr(logging_obj, "model_call_details", None)
+        if isinstance(call_details, dict):
+            holder = call_details.get("litellm_metadata")
+            if isinstance(holder, dict):
+                for key in ("deployment_model_name", "model_group"):
+                    value = holder.get(key)
+                    if value:
+                        candidates.append(str(value))
+        model = getattr(response, "model", None)
+        if isinstance(model, str) and model:
+            candidates.append(model)
+        metadata_group = self._event_group(request_data if isinstance(request_data, dict) else {})
+        if metadata_group:
+            candidates.append(metadata_group)
+        known = self.manager.peek_candidate_names()
+        for group in candidates:
+            reconciled = self._event_group({"litellm_metadata": {"model_group": group}})
+            if reconciled and (known is None or reconciled in known):
+                return reconciled
+        return metadata_group
+
+    @staticmethod
+    def _exclude_group(request_data: dict, group: str) -> None:
+        """Record a failed model on the request so the picker skips it."""
+        if not group or not isinstance(request_data, dict):
+            return
+        for key in ("litellm_metadata", "metadata"):
+            holder = request_data.get(key)
+            if isinstance(holder, dict):
+                excluded = holder.setdefault("model_picker_exclude", [])
+                if isinstance(excluded, list) and group not in excluded:
+                    excluded.append(group)
+
+    @staticmethod
+    def _retry_data(request_data: dict) -> dict | None:
+        """A non-streaming copy of the request for the retry call."""
+        if not isinstance(request_data, dict) or not request_data.get("messages"):
+            return None
+        retry: dict = {}
+        for key in _RETRY_PASSTHROUGH_KEYS:
+            if key in request_data:
+                retry[key] = request_data[key]
+        retry["stream"] = False
+        return retry
+
+    @staticmethod
+    async def _router_acompletion(retry_data: dict):
+        from litellm.proxy.proxy_server import llm_router
+
+        if llm_router is not None:
+            return await llm_router.acompletion(**retry_data)
+        return await litellm.acompletion(**retry_data)
+
+    async def _retry_until_clean(self, request_data: dict, first_group: str):
+        """Retry the request (bounded) with failed models excluded.
+
+        Returns (response, failed_groups) — response is None when every
+        attempt soft-failed. Each failed attempt is recorded as a soft
+        failure and excluded from the next pick.
+        """
+        failed_groups: list[str] = []
+        group = first_group
+        for _ in range(_SOFT_FAILURE_RETRY_LIMIT):
+            if group:
+                self.stats.record_failure(group, model_picker.FAILURE_CLASS_SOFT)
+                self._exclude_group(request_data, group)
+                failed_groups.append(group)
+                logger.info("model_picker: soft failure intercepted for %s; retrying", group)
+            retry_data = self._retry_data(request_data)
+            if retry_data is None:
+                break
+            try:
+                retry_resp = await self._router_acompletion(retry_data)
+            except Exception as e:  # noqa: BLE001 — a failed retry must not kill the stream
+                logger.warning("model_picker: retry attempt failed (%s)", e)
+                break
+            text = model_picker.extract_response_text(retry_resp)
+            if model_picker.is_soft_failure_content(text):
+                group = self._event_group({"litellm_metadata": {"model_group": getattr(retry_resp, "model", "")}})
+                continue
+            return retry_resp, failed_groups
+        return None, failed_groups
+
+    @staticmethod
+    def _synthesize_tail_events(response_obj: object, open_block: tuple[int, str] | None, next_index: int) -> list[dict]:
+        """Anthropic SSE events continuing the stream with a retry's answer."""
+        text = model_picker.extract_response_text(response_obj) or _FALLBACK_REPLY
+        events: list[dict] = []
+        if open_block is not None and open_block[1] == "text":
+            index = open_block[0]
+        else:
+            if open_block is not None:
+                events.append({"type": "content_block_stop", "index": open_block[0]})
+            index = next_index
+            events.append({"type": "content_block_start", "index": index, "content_block": {"type": "text", "text": ""}})
+        events.append({"type": "content_block_delta", "index": index, "delta": {"type": "text_delta", "text": text}})
+        events.append({"type": "content_block_stop", "index": index})
+        events.append(
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": _finish_reason(response_obj), "stop_sequence": None},
+                "usage": _usage_dict(response_obj),
+            }
+        )
+        events.append({"type": "message_stop"})
+        return events
+
+    async def async_post_call_streaming_iterator_hook(self, user_api_key_dict, response, request_data):
+        """Sniff streamed chunks; on a soft failure, drop the stream and retry.
+
+        Clean chunks pass through untouched (zero added latency). The credit
+        gate arrives atomically in a single delta chunk, so detection happens
+        before that chunk is yielded and the client never sees it.
+        """
+        open_block: tuple[int, str] | None = None
+        next_index = 0
+        accumulated = ""
+        soft_text: str | None = None
+        try:
+            async for chunk in response:
+                try:
+                    text = _event_text(chunk)
+                    if text:
+                        accumulated += text
+                    for event in _chunk_events(chunk):
+                        etype = event.get("type")
+                        if etype == "content_block_start":
+                            block = event.get("content_block") or {}
+                            open_block = (int(event.get("index", 0) or 0), str(block.get("type") or "text"))
+                            next_index = max(next_index, open_block[0] + 1)
+                        elif etype == "content_block_stop":
+                            next_index = max(next_index, int(event.get("index", 0) or 0) + 1)
+                            open_block = None
+                    if text and model_picker.is_soft_failure_content(accumulated):
+                        soft_text = accumulated
+                        break  # dropped before yield — the client never sees it
+                except Exception as e:  # noqa: BLE001 — sniffing must never break the stream
+                    logger.debug("model_picker: stream sniff error (%s)", e)
+                yield chunk
+        except (asyncio.CancelledError, GeneratorExit):
+            raise
+        if soft_text is None:
+            return
+
+        try:
+            group = self._failed_group(request_data, response)
+            retry_resp, failed_groups = await self._retry_until_clean(request_data, group)
+            if retry_resp is None:
+                logger.warning(
+                    "model_picker: all %d retry attempts soft-failed for %s; replying with fallback notice",
+                    _SOFT_FAILURE_RETRY_LIMIT,
+                    failed_groups,
+                )
+            for event in self._synthesize_tail_events(retry_resp, open_block, next_index):
+                yield _sse_frame(event)
+        except Exception as e:  # noqa: BLE001 — retry errors must not crash the SSE stream
+            logger.warning("model_picker: stream retry error (%s)", e)
+            for event in self._synthesize_tail_events(None, open_block, next_index):
+                yield _sse_frame(event)
+
+    async def async_post_call_success_hook(self, user_api_key_dict, data, response):
+        """Non-streaming twin: swap a soft-failed response for a retried one."""
+        try:
+            text = model_picker.extract_response_text(response)
+            if not text or not model_picker.is_soft_failure_content(text):
+                return response
+            group = self._failed_group(data if isinstance(data, dict) else {}, response)
+            retry_resp, failed_groups = await self._retry_until_clean(data, group)
+            if retry_resp is not None:
+                return retry_resp
+            logger.warning("model_picker: all retry attempts soft-failed for %s; replying with fallback notice", failed_groups)
+            return response
+        except Exception as e:  # noqa: BLE001 — hook errors must not fail the request
+            logger.warning("model_picker: non-streaming retry error (%s)", e)
+            return response
 
 
 # Module-level instances referenced from lite-llm-picker.yaml.

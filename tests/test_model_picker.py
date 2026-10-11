@@ -14,6 +14,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import litellm
 import pytest
 import yaml
 
@@ -340,6 +341,168 @@ class TestSoftFailureDetection:
             "pollinations/openai/other",
             "pollinations/openai/gpt-5.4-nano",
         ]
+
+
+# ---------------------------------------------------------------------------
+# Soft-failure retry (the client never sees provider error content)
+# ---------------------------------------------------------------------------
+
+
+class TestSoftFailureRetry:
+    @staticmethod
+    def _anthropic_events(*texts):
+        """Anthropic SSE event dicts: message_start, then one delta per text."""
+        events = [
+            {"type": "message_start", "message": {"type": "message_start", "role": "assistant", "model": "m"}},
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+        ]
+        for t in texts:
+            events.append({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": t}})
+        events.append({"type": "content_block_stop", "index": 0})
+        return events
+
+    @staticmethod
+    def _fake_router_acompletion(monkeypatch, logger, responses):
+        calls = {"n": 0, "kwargs": []}
+
+        async def fake_router_acompletion(retry_data):
+            calls["n"] += 1
+            calls["kwargs"].append(retry_data)
+            return responses[min(calls["n"] - 1, len(responses) - 1)]
+
+        monkeypatch.setattr(logger, "_router_acompletion", fake_router_acompletion)
+        return calls
+
+    def test_streaming_retry_swallows_error_and_synthesizes_answer(self, mp, monkeypatch):
+        lib, plugin = mp
+        logger = plugin.ModelPickerStatsLogger(stats=lib.StatsRegistry())
+        credits = "The account behind this API key doesn't have enough credits. Please top up."
+        events = self._anthropic_events("Could not process", credits)
+        good_resp = litellm.ModelResponse(
+            choices=[{"message": {"role": "assistant", "content": "Hello!"}, "finish_reason": "stop"}],
+            usage={"prompt_tokens": 3, "completion_tokens": 2},
+        )
+        calls = self._fake_router_acompletion(monkeypatch, logger, [good_resp])
+
+        async def stream():
+            for e in events:
+                yield e
+
+        request_data = {
+            "model": "lite-llm/complexity",
+            "messages": [{"role": "user", "content": "hi"}],
+            "litellm_metadata": {"model_group": "pollinations/community/x"},
+        }
+
+        async def run():
+            out = []
+            async for chunk in logger.async_post_call_streaming_iterator_hook(None, stream(), request_data):
+                out.append(chunk)
+            return out
+
+        out = asyncio.run(run())
+        # the gated model was intercepted and excluded
+        assert calls["n"] == 1
+        assert "pollinations/community/x" in request_data["litellm_metadata"]["model_picker_exclude"]
+        # the retry data was non-streaming
+        assert calls["kwargs"][0]["stream"] is False
+        # the client never sees the credits text...
+        flat = "".join(plugin._event_text(c) for c in out)
+        assert "enough credits" not in flat
+        # ...but does see the retry's answer, followed by proper stream closure
+        assert "Hello!" in flat
+        types = [e.get("type") for c in out for e in plugin._chunk_events(c)]
+        assert types[-2:] == ["message_delta", "message_stop"]
+        # the failed model was recorded as a soft failure (demotes on first)
+        derived = logger.stats.derived("pollinations/community/x")
+        assert derived.soft_failures == 1
+        # one soft failure is conclusive: the gated model ranks below healthy peers
+        gated = lib.ModelCandidate(name="pollinations/community/x", provider="pollinations", metricless=True)
+        healthy = metric_candidate(lib, "pollinations/openai/healthy", 0.9997, 87885)
+        cfg = lib.PickerConfig()
+        now = time.time() + cfg.recency_window_seconds + 1
+        ranked = lib.rank_candidates([gated, healthy], lib.TIER_DEFAULT, logger.stats, cfg, now=now)
+        assert ranked[0].candidate.name == "pollinations/openai/healthy"
+
+    def test_streaming_clean_response_passes_through_untouched(self, mp, monkeypatch):
+        lib, plugin = mp
+        logger = plugin.ModelPickerStatsLogger(stats=lib.StatsRegistry())
+        calls = self._fake_router_acompletion(monkeypatch, logger, [])
+        events = self._anthropic_events("Just a normal reply, mentions credits in passing.")
+
+        async def stream():
+            for e in events:
+                yield e
+
+        async def run():
+            out = []
+            async for chunk in logger.async_post_call_streaming_iterator_hook(
+                None, stream(), {"model": "m", "messages": [], "litellm_metadata": {"model_group": "z-ai/glm-5.3"}}
+            ):
+                out.append(chunk)
+            return out
+
+        out = asyncio.run(run())
+        assert out == events  # byte-identical pass-through, no retry
+        assert calls["n"] == 0
+
+    def test_streaming_all_retries_fail_yields_fallback_notice(self, mp, monkeypatch):
+        lib, plugin = mp
+        logger = plugin.ModelPickerStatsLogger(stats=lib.StatsRegistry())
+        credits = "The account behind this API key doesn't have enough credits. Please top up."
+        bad = litellm.ModelResponse(choices=[{"message": {"role": "assistant", "content": credits}, "finish_reason": "stop"}])
+        calls = self._fake_router_acompletion(monkeypatch, logger, [bad, bad, bad])
+        events = self._anthropic_events(credits)
+
+        async def stream():
+            for e in events:
+                yield e
+
+        async def run():
+            out = []
+            async for chunk in logger.async_post_call_streaming_iterator_hook(
+                None, stream(), {"model": "m", "messages": [{"role": "user", "content": "hi"}], "litellm_metadata": {}}
+            ):
+                out.append(chunk)
+            return out
+
+        out = asyncio.run(run())
+        flat = "".join(plugin._event_text(c) for c in out)
+        assert "enough credits" not in flat
+        assert "every candidate model" in flat
+        assert calls["n"] == plugin._SOFT_FAILURE_RETRY_LIMIT
+
+    def test_non_streaming_soft_failure_replaced_by_retry(self, mp, monkeypatch):
+        lib, plugin = mp
+        logger = plugin.ModelPickerStatsLogger(stats=lib.StatsRegistry())
+        credits = "The account behind this API key doesn't have enough credits. Please top up."
+        bad = litellm.ModelResponse(choices=[{"message": {"role": "assistant", "content": credits}, "finish_reason": "stop"}])
+        good = litellm.ModelResponse(choices=[{"message": {"role": "assistant", "content": "OK"}, "finish_reason": "stop"}])
+        calls = self._fake_router_acompletion(monkeypatch, logger, [good])
+        result = asyncio.run(
+            logger.async_post_call_success_hook(
+                None,
+                {"model": "lite-llm/complexity", "messages": [{"role": "user", "content": "hi"}], "litellm_metadata": {"model_group": "pollinations/community/x"}},
+                bad,
+            )
+        )
+        assert result is good
+        assert calls["n"] == 1
+
+    def test_picker_honors_exclude_metadata(self, fresh, env_enabled, monkeypatch):
+        lib, test_plugin, cfg, stats, manager = fresh
+
+        async def fake_snapshot(ml=None):
+            return snapshot_with(lib, candidates_from_fixture(lib))
+
+        monkeypatch.setattr(manager, "get_snapshot", fake_snapshot)
+        metadata = {
+            "litellm_call_id": "call-x",
+            "model_picker_exclude": ["pollinations/community/vendouple/deepseek-v4-pro"],
+        }
+        context = make_context(lib, ["lite-llm/default"], metadata=metadata)
+        result = asyncio.run(test_plugin.run(context))
+        assert result.candidate_models[0] != "pollinations/community/vendouple/deepseek-v4-pro"
 
 
 # ---------------------------------------------------------------------------

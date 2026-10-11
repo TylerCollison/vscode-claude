@@ -29,9 +29,11 @@ Design (beads workspace-c8o, revised in workspace-4wr):
 - Demotion proofs (re-derived from the rolling window on every evaluation, so
   recovery is automatic): >= MIN_OBS observations with derived hard-failure
   rate below best-metric-score minus margin; >= MIN_OBS streaming TTFT
-  observations with decayed mean above the TTFT threshold; or an
-  AuthenticationError (dead until a success). Rate-limit failures never fire
-  the hard proof (busy-but-working) but do weigh down the tracked score.
+  observations with decayed mean above the TTFT threshold; a single soft
+  failure (provider error inside a 200 response — deterministic per
+  model+account, so one observation is conclusive); or an AuthenticationError
+  (dead until a success). Rate-limit failures never fire the hard proof
+  (busy-but-working) but do weigh down the tracked score.
 - Rubric: default tier sorts health-first then context; think tiers sort
   context-first then health (class only breaks ties). Latency-demoted models
   carry a class floor below all metric-backed candidates in the default tier.
@@ -343,6 +345,10 @@ FAILURE_CLASS_RATE_LIMIT = "rate_limit"
 FAILURE_CLASS_TIMEOUT = "timeout"
 FAILURE_CLASS_CONNECTION = "connection"
 FAILURE_CLASS_ERROR = "error"
+# Provider errors smuggled through HTTP 200 message content (credits gate,
+# relayed upstream errors). Deterministic per model+account — one observation
+# is conclusive — so the demotion proof fires on the first one.
+FAILURE_CLASS_SOFT = "soft"
 
 # 429 = busy-but-working: mild penalty, fast recovery. Everything else is a
 # full failure. Auth additionally dead-marks the group until a success.
@@ -352,6 +358,7 @@ _FAILURE_WEIGHTS = {
     FAILURE_CLASS_TIMEOUT: 1.0,
     FAILURE_CLASS_CONNECTION: 1.0,
     FAILURE_CLASS_ERROR: 1.0,
+    FAILURE_CLASS_SOFT: 1.0,
 }
 
 _MAX_EVENTS_PER_GROUP = 200
@@ -428,6 +435,7 @@ class DerivedStats:
     hard_rate: float = 1.0  # success rate over HARD failures only (429s excluded)
     successes: float = 0.0  # decayed success mass in the window
     failures: float = 0.0  # decayed weighted failure mass (429s count 0.25)
+    soft_failures: int = 0  # in-window count of soft (200-with-error-content) failures
     n_obs: int = 0  # total observations in the window
     ttft_mean: float = 0.0  # decayed mean TTFT over streaming successes (0 = no data)
     ttft_n: int = 0
@@ -477,6 +485,7 @@ class GroupStats:
         ttft_weighted_sum = ttft_weight = 0.0
         ttft_n = 0
         n_obs = 0
+        soft_failures = 0
         for ts, ok, ttft, failure_class in self._events:
             weight = 0.5 ** ((now - ts) / half)
             n_obs += 1
@@ -492,6 +501,8 @@ class GroupStats:
                 # demoted. Only hard failures feed the demotion proof.
                 if failure_class != FAILURE_CLASS_RATE_LIMIT:
                     hard_failures += weight
+                if failure_class == FAILURE_CLASS_SOFT:
+                    soft_failures += 1
         denom = successes + failures
         hard_denom = successes + hard_failures
         last_age = (now - self.last_obs_ts) if self.last_obs_ts is not None else float("inf")
@@ -500,6 +511,7 @@ class GroupStats:
             hard_rate=(successes / hard_denom) if hard_denom > 0 else 1.0,
             successes=successes,
             failures=failures,
+            soft_failures=soft_failures,
             n_obs=n_obs,
             ttft_mean=(ttft_weighted_sum / ttft_weight) if ttft_weight > 0 else 0.0,
             ttft_n=ttft_n,
@@ -606,8 +618,14 @@ def _classify_candidate(
         and stats.hard_rate < best_metric_score - cfg.demote_margin
     )
     latency_proof = stats.ttft_n >= cfg.min_obs and stats.ttft_mean > cfg.demote_ttft_seconds
+    # A soft failure (provider error inside a 200 response) is deterministic
+    # per model+account, not a transient blip: one observation is conclusive.
+    soft_proof = stats.soft_failures > 0
     if stats.dead:
         return _CLASS_KNOWN, 0.0, "auth"
+    if soft_proof:
+        score = wilson_lower_bound(stats.success_rate, max(stats.n_obs, 1))
+        return _CLASS_KNOWN, score, "soft"
     if failure_proof or latency_proof:
         score = wilson_lower_bound(stats.success_rate, max(stats.n_obs, 1))
         return _CLASS_KNOWN, score, "failures" if failure_proof else "latency"
