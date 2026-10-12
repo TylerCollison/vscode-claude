@@ -183,6 +183,12 @@ model_list:
           MEDIUM: lite-llm/default
           COMPLEX: lite-llm/think
           REASONING: lite-llm/ultra-think
+        # The default stamps max_tokens = the tier model's output ceiling
+        # (128000 for the gpt-named pollinations models per litellm's OpenAI
+        # catalog) onto every routed request, replacing the caller's value —
+        # pollinations' credit gate prices that estimate against the account
+        # balance and rejects it. Let the caller's own max_tokens through.
+        max_tokens_from_tier_model: false
       complexity_router_default_model: lite-llm/default
       stream_timeout: 30.0
       timeout: 180.0

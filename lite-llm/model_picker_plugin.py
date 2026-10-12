@@ -83,6 +83,38 @@ def _load_sibling(name: str):
 
 model_picker = _load_sibling("model_picker")
 
+
+# ---------------------------------------------------------------------------
+# Legacy max_tokens for OpenAI-compatible providers
+# ---------------------------------------------------------------------------
+
+# Every `openai/`-prefixed deployment in this proxy is an OpenAI-COMPATIBLE
+# third party (pollinations, llm7, ollama) — none is actual OpenAI. litellm
+# renames max_tokens -> max_completion_tokens for gpt-named models (an OpenAI
+# API requirement), and pollinations' credit gate treats that parameter name
+# punitively (gated at any value, even 1, while the legacy max_tokens passes).
+# Restore the legacy name on the wire: for these providers it is the safe,
+# universally-supported form.
+def _preserve_legacy_max_tokens() -> None:
+    try:
+        from litellm.llms.openai.chat.gpt_5_transformation import OpenAIGPT5Config
+
+        original = OpenAIGPT5Config.map_openai_params
+
+        def map_openai_params(self, non_default_params, optional_params, model, drop_params):
+            params = original(self, non_default_params, optional_params, model, drop_params)
+            if isinstance(params, dict) and "max_completion_tokens" in params and "max_tokens" not in params:
+                params["max_tokens"] = params.pop("max_completion_tokens")
+            return params
+
+        OpenAIGPT5Config.map_openai_params = map_openai_params
+        logger.debug("model_picker: legacy max_tokens preservation installed for OpenAIGPT5Config")
+    except Exception as e:  # noqa: BLE001 — a patch failure must not break the proxy
+        logger.warning("model_picker: could not install legacy max_tokens preservation (%s)", e)
+
+
+_preserve_legacy_max_tokens()
+
 # ---------------------------------------------------------------------------
 # Tier detection
 # ---------------------------------------------------------------------------
