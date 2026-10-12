@@ -21,10 +21,12 @@ The stats_logger callback additionally INTERCEPTS soft failures: pollinations
 serves hard errors (account credit gate, relayed upstream errors) as HTTP 200
 with the error text as assistant message content, which litellm treats as a
 success — no retry, no fallback. On the streaming path the iterator hook drops
-the failed stream before the error chunk is yielded and retries (bounded)
-through the routing pipeline with failed models excluded, synthesizing the
-retry's answer into the same SSE stream; the non-streaming path swaps the
-response wholesale. The user never sees provider error content.
+the failed stream before the error chunk is yielded and retries through the
+routing pipeline with failed models excluded — continuing until a model
+succeeds or every candidate has been tried (bounded by the pool size, with a
+repeat-detector for pool exhaustion) — then synthesizes the winning answer
+into the same SSE stream; the non-streaming path swaps the response wholesale.
+The user never sees provider error content.
 
 litellm's ``get_instance_fn`` exec's this file with spec_from_file_location
 WITHOUT registering it in sys.modules, so a plain ``import model_picker``
@@ -42,7 +44,6 @@ import json
 import logging
 import os
 import sys
-import time
 from datetime import datetime
 
 import litellm
@@ -266,10 +267,13 @@ def _event_ttft_seconds(kwargs: dict, start_time: datetime) -> float | None:
 # client only ever receives the retry's answer, synthesized into the same
 # SSE stream.
 
-_SOFT_FAILURE_RETRY_LIMIT = 8
-# Wall-clock cap on the retry walk: a single attempt can burn minutes on a
-# slow provider timeout, and the client is waiting on an open stream.
-_SOFT_FAILURE_RETRY_BUDGET_SECONDS = 90.0
+# The retry walk has NO attempt cap: it continues until a model succeeds or
+# the picker runs out of distinct candidates. Termination is guaranteed by
+# bounding the walk at the candidate-pool size (plus attribution slack) and by
+# a repeat-detector — when the picker re-offers an already-failed model, the
+# pool is exhausted.
+_RETRY_WALK_SLACK = 4
+_RETRY_WALK_SAFETY_CAP = 256
 
 # anthropic /messages SSE event dict keys we synthesize when continuing a
 # stream with a retry's answer.
@@ -294,8 +298,8 @@ _RETRY_PASSTHROUGH_KEYS = (
 )
 
 _FALLBACK_REPLY = (
-    "[model_picker] {tried} models were tried for this request without success "
-    "(last failure: {reason}); please retry in a moment."
+    "[model_picker] every available model was tried for this request without success "
+    "({tried} attempts, last failure: {reason}); please retry in a moment."
 )
 
 
@@ -522,22 +526,36 @@ class ModelPickerStatsLogger(CustomLogger):
             return await llm_router.acompletion(**retry_data)
         return await litellm.acompletion(**retry_data)
 
-    async def _retry_until_clean(self, request_data: dict, first_group: str):
-        """Retry the request (bounded) with failed models excluded.
+    async def _candidate_cap(self) -> int:
+        """Walk bound: one attempt per distinct candidate, plus slack for
+        unattributed attempts. Falls back to a safety cap when the pool is
+        unavailable."""
+        try:
+            snap = await self.manager.get_snapshot()
+            return len(snap.candidates) + _RETRY_WALK_SLACK
+        except Exception:  # noqa: BLE001 — the walk must stay bounded regardless
+            return _RETRY_WALK_SAFETY_CAP
 
-        Returns (response, failure_summary) — response is None when the walk
-        exhausted its budget. Each failed attempt is recorded and excluded
-        from the next pick. Both soft failures (200-with-error-content) and
-        hard exceptions continue the walk: one bad provider must not end it.
+    async def _retry_until_clean(self, request_data: dict, first_group: str):
+        """Retry the request until a model succeeds or none are left to try.
+
+        Returns (response, failure_summary) — response is None when every
+        available candidate failed. Each failed attempt is recorded and
+        excluded from the next pick; both soft failures (200-with-error-
+        content) and hard exceptions continue the walk. Termination: the walk
+        is bounded by the candidate-pool size, and a re-offered already-failed
+        model means the picker has nothing fresh left.
         """
         failed_groups: list[str] = []
         last_reason = "unknown"
         group = first_group
         attempts = 1  # the intercepted attempt
-        deadline = time.monotonic() + _SOFT_FAILURE_RETRY_BUDGET_SECONDS
-        for _ in range(_SOFT_FAILURE_RETRY_LIMIT):
-            if time.monotonic() >= deadline:
-                logger.warning("model_picker: retry walk exceeded %.0fs budget", _SOFT_FAILURE_RETRY_BUDGET_SECONDS)
+        cap = await self._candidate_cap()
+        while attempts < cap:
+            if group and group in failed_groups:
+                # the picker is re-offering an already-failed model: no fresh
+                # candidates remain
+                logger.info("model_picker: candidate pool exhausted after %d attempts", attempts)
                 break
             if group:
                 self.stats.record_failure(group, model_picker.FAILURE_CLASS_SOFT)

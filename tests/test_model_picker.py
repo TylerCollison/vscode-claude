@@ -350,6 +350,18 @@ class TestSoftFailureDetection:
 
 class TestSoftFailureRetry:
     @staticmethod
+    def _make_logger(lib, plugin, pool=("pollinations/community/x", "pollinations/community/y")):
+        """Logger wired to a warm catalog snapshot (no network in _candidate_cap)."""
+        manager = lib.CatalogManager()
+        manager._snapshot = lib.CatalogSnapshot(
+            candidates=[
+                lib.ModelCandidate(name=n, provider="pollinations", metricless=False, success_rate=0.99, requests=100)
+                for n in pool
+            ]
+        )
+        return plugin.ModelPickerStatsLogger(stats=lib.StatsRegistry(), manager=manager)
+
+    @staticmethod
     def _anthropic_events(*texts):
         """Anthropic SSE event dicts: message_start, then one delta per text."""
         events = [
@@ -375,7 +387,7 @@ class TestSoftFailureRetry:
 
     def test_streaming_retry_swallows_error_and_synthesizes_answer(self, mp, monkeypatch):
         lib, plugin = mp
-        logger = plugin.ModelPickerStatsLogger(stats=lib.StatsRegistry())
+        logger = self._make_logger(lib, plugin)
         credits = "The account behind this API key doesn't have enough credits. Please top up."
         events = self._anthropic_events("Could not process", credits)
         good_resp = litellm.ModelResponse(
@@ -426,7 +438,7 @@ class TestSoftFailureRetry:
 
     def test_streaming_clean_response_passes_through_untouched(self, mp, monkeypatch):
         lib, plugin = mp
-        logger = plugin.ModelPickerStatsLogger(stats=lib.StatsRegistry())
+        logger = self._make_logger(lib, plugin)
         calls = self._fake_router_acompletion(monkeypatch, logger, [])
         events = self._anthropic_events("Just a normal reply, mentions credits in passing.")
 
@@ -448,10 +460,12 @@ class TestSoftFailureRetry:
 
     def test_streaming_all_retries_fail_yields_fallback_notice(self, mp, monkeypatch):
         lib, plugin = mp
-        logger = plugin.ModelPickerStatsLogger(stats=lib.StatsRegistry())
+        logger = self._make_logger(lib, plugin)
         credits = "The account behind this API key doesn't have enough credits. Please top up."
         bad = litellm.ModelResponse(choices=[{"message": {"role": "assistant", "content": credits}, "finish_reason": "stop"}])
-        calls = self._fake_router_acompletion(monkeypatch, logger, [bad] * plugin._SOFT_FAILURE_RETRY_LIMIT)
+        calls = self._fake_router_acompletion(
+            monkeypatch, logger, [bad] * (len(("pollinations/community/x", "pollinations/community/y")) + plugin._RETRY_WALK_SLACK)
+        )
         events = self._anthropic_events(credits)
 
         async def stream():
@@ -469,15 +483,17 @@ class TestSoftFailureRetry:
         out = asyncio.run(run())
         flat = "".join(plugin._event_text(c) for c in out)
         assert "enough credits" not in flat
-        # the notice is truthful: how many models were tried and why they failed
-        assert f"{plugin._SOFT_FAILURE_RETRY_LIMIT + 1} models" in flat
+        # the walk is bounded by the candidate pool (2 candidates + slack),
+        # and the notice reports the true attempt count and last failure
+        expected_attempts = len(("pollinations/community/x", "pollinations/community/y")) + plugin._RETRY_WALK_SLACK
+        assert f"{expected_attempts} attempts" in flat
         assert "provider error in response content" in flat
-        assert calls["n"] == plugin._SOFT_FAILURE_RETRY_LIMIT
+        assert calls["n"] == expected_attempts - 1
 
     def test_streaming_hard_failure_continues_the_walk(self, mp, monkeypatch):
         """One provider erroring hard must not end the retry walk."""
         lib, plugin = mp
-        logger = plugin.ModelPickerStatsLogger(stats=lib.StatsRegistry())
+        logger = self._make_logger(lib, plugin)
         credits = "The account behind this API key doesn't have enough credits. Please top up."
         events = self._anthropic_events(credits)
 
@@ -512,7 +528,7 @@ class TestSoftFailureRetry:
 
     def test_non_streaming_soft_failure_replaced_by_retry(self, mp, monkeypatch):
         lib, plugin = mp
-        logger = plugin.ModelPickerStatsLogger(stats=lib.StatsRegistry())
+        logger = self._make_logger(lib, plugin)
         credits = "The account behind this API key doesn't have enough credits. Please top up."
         bad = litellm.ModelResponse(choices=[{"message": {"role": "assistant", "content": credits}, "finish_reason": "stop"}])
         good = litellm.ModelResponse(choices=[{"message": {"role": "assistant", "content": "OK"}, "finish_reason": "stop"}])
