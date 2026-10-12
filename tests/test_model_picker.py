@@ -451,7 +451,7 @@ class TestSoftFailureRetry:
         logger = plugin.ModelPickerStatsLogger(stats=lib.StatsRegistry())
         credits = "The account behind this API key doesn't have enough credits. Please top up."
         bad = litellm.ModelResponse(choices=[{"message": {"role": "assistant", "content": credits}, "finish_reason": "stop"}])
-        calls = self._fake_router_acompletion(monkeypatch, logger, [bad, bad, bad])
+        calls = self._fake_router_acompletion(monkeypatch, logger, [bad] * plugin._SOFT_FAILURE_RETRY_LIMIT)
         events = self._anthropic_events(credits)
 
         async def stream():
@@ -469,8 +469,46 @@ class TestSoftFailureRetry:
         out = asyncio.run(run())
         flat = "".join(plugin._event_text(c) for c in out)
         assert "enough credits" not in flat
-        assert "every candidate model" in flat
+        # the notice is truthful: how many models were tried and why they failed
+        assert f"{plugin._SOFT_FAILURE_RETRY_LIMIT + 1} models" in flat
+        assert "provider error in response content" in flat
         assert calls["n"] == plugin._SOFT_FAILURE_RETRY_LIMIT
+
+    def test_streaming_hard_failure_continues_the_walk(self, mp, monkeypatch):
+        """One provider erroring hard must not end the retry walk."""
+        lib, plugin = mp
+        logger = plugin.ModelPickerStatsLogger(stats=lib.StatsRegistry())
+        credits = "The account behind this API key doesn't have enough credits. Please top up."
+        events = self._anthropic_events(credits)
+
+        async def stream():
+            for e in events:
+                yield e
+
+        calls = {"n": 0}
+
+        async def flaky_then_good(retry_data):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise litellm.Timeout("Request timed out", model="m")
+            return litellm.ModelResponse(
+                choices=[{"message": {"role": "assistant", "content": "Recovered!"}, "finish_reason": "stop"}]
+            )
+
+        monkeypatch.setattr(logger, "_router_acompletion", flaky_then_good)
+        out = []
+
+        async def run():
+            async for chunk in logger.async_post_call_streaming_iterator_hook(
+                None, stream(), {"model": "m", "messages": [{"role": "user", "content": "hi"}], "litellm_metadata": {}}
+            ):
+                out.append(chunk)
+
+        asyncio.run(run())
+        flat = "".join(plugin._event_text(c) for c in out)
+        assert "enough credits" not in flat
+        assert "Recovered!" in flat
+        assert calls["n"] == 2
 
     def test_non_streaming_soft_failure_replaced_by_retry(self, mp, monkeypatch):
         lib, plugin = mp

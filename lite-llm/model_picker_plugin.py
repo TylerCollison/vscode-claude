@@ -42,6 +42,7 @@ import json
 import logging
 import os
 import sys
+import time
 from datetime import datetime
 
 import litellm
@@ -266,6 +267,9 @@ def _event_ttft_seconds(kwargs: dict, start_time: datetime) -> float | None:
 # SSE stream.
 
 _SOFT_FAILURE_RETRY_LIMIT = 8
+# Wall-clock cap on the retry walk: a single attempt can burn minutes on a
+# slow provider timeout, and the client is waiting on an open stream.
+_SOFT_FAILURE_RETRY_BUDGET_SECONDS = 90.0
 
 # anthropic /messages SSE event dict keys we synthesize when continuing a
 # stream with a retry's answer.
@@ -290,7 +294,8 @@ _RETRY_PASSTHROUGH_KEYS = (
 )
 
 _FALLBACK_REPLY = (
-    "[model_picker] every candidate model for this request failed; please retry in a moment."
+    "[model_picker] {tried} models were tried for this request without success "
+    "(last failure: {reason}); please retry in a moment."
 )
 
 
@@ -520,13 +525,20 @@ class ModelPickerStatsLogger(CustomLogger):
     async def _retry_until_clean(self, request_data: dict, first_group: str):
         """Retry the request (bounded) with failed models excluded.
 
-        Returns (response, failed_groups) — response is None when every
-        attempt soft-failed. Each failed attempt is recorded as a soft
-        failure and excluded from the next pick.
+        Returns (response, failure_summary) — response is None when the walk
+        exhausted its budget. Each failed attempt is recorded and excluded
+        from the next pick. Both soft failures (200-with-error-content) and
+        hard exceptions continue the walk: one bad provider must not end it.
         """
         failed_groups: list[str] = []
+        last_reason = "unknown"
         group = first_group
+        attempts = 1  # the intercepted attempt
+        deadline = time.monotonic() + _SOFT_FAILURE_RETRY_BUDGET_SECONDS
         for _ in range(_SOFT_FAILURE_RETRY_LIMIT):
+            if time.monotonic() >= deadline:
+                logger.warning("model_picker: retry walk exceeded %.0fs budget", _SOFT_FAILURE_RETRY_BUDGET_SECONDS)
+                break
             if group:
                 self.stats.record_failure(group, model_picker.FAILURE_CLASS_SOFT)
                 self._exclude_group(request_data, group)
@@ -535,22 +547,33 @@ class ModelPickerStatsLogger(CustomLogger):
             retry_data = self._retry_data(request_data)
             if retry_data is None:
                 break
+            attempts += 1
             try:
                 retry_resp = await self._router_acompletion(retry_data)
-            except Exception as e:  # noqa: BLE001 — a failed retry must not kill the stream
-                logger.warning("model_picker: retry attempt failed (%s)", e)
-                break
+            except Exception as e:  # noqa: BLE001 — one bad provider must not end the walk
+                last_reason = f"upstream error ({type(e).__name__})"
+                group = self._event_group({"litellm_metadata": {"model_group": getattr(e, "model", "")}})
+                logger.warning("model_picker: retry attempt failed (%s); trying next candidate", e)
+                continue
             text = model_picker.extract_response_text(retry_resp)
             if model_picker.is_soft_failure_content(text):
+                last_reason = "provider error in response content"
                 group = self._event_group({"litellm_metadata": {"model_group": getattr(retry_resp, "model", "")}})
                 continue
-            return retry_resp, failed_groups
-        return None, failed_groups
+            return retry_resp, {"tried": attempts, "reason": last_reason, "groups": failed_groups}
+        return None, {"tried": attempts, "reason": last_reason, "groups": failed_groups}
 
     @staticmethod
-    def _synthesize_tail_events(response_obj: object, open_block: tuple[int, str] | None, next_index: int) -> list[dict]:
+    def _synthesize_tail_events(
+        response_obj: object,
+        open_block: tuple[int, str] | None,
+        next_index: int,
+        fallback_text: str = "",
+    ) -> list[dict]:
         """Anthropic SSE events continuing the stream with a retry's answer."""
-        text = model_picker.extract_response_text(response_obj) or _FALLBACK_REPLY
+        text = model_picker.extract_response_text(response_obj) or fallback_text or _FALLBACK_REPLY.format(
+            tried=0, reason="unknown"
+        )
         events: list[dict] = []
         if open_block is not None and open_block[1] == "text":
             index = open_block[0]
@@ -610,14 +633,15 @@ class ModelPickerStatsLogger(CustomLogger):
 
         try:
             group = self._failed_group(request_data, response)
-            retry_resp, failed_groups = await self._retry_until_clean(request_data, group)
+            retry_resp, summary = await self._retry_until_clean(request_data, group)
             if retry_resp is None:
                 logger.warning(
-                    "model_picker: all %d retry attempts soft-failed for %s; replying with fallback notice",
-                    _SOFT_FAILURE_RETRY_LIMIT,
-                    failed_groups,
+                    "model_picker: retry walk exhausted after %d attempts (%s); replying with fallback notice",
+                    summary["tried"],
+                    summary["groups"],
                 )
-            for event in self._synthesize_tail_events(retry_resp, open_block, next_index):
+            fallback = _FALLBACK_REPLY.format(tried=summary["tried"], reason=summary["reason"])
+            for event in self._synthesize_tail_events(retry_resp, open_block, next_index, fallback):
                 yield _sse_frame(event)
         except Exception as e:  # noqa: BLE001 — retry errors must not crash the SSE stream
             logger.warning("model_picker: stream retry error (%s)", e)
@@ -626,19 +650,27 @@ class ModelPickerStatsLogger(CustomLogger):
 
     async def async_post_call_success_hook(self, user_api_key_dict, data, response):
         """Non-streaming twin: swap a soft-failed response for a retried one."""
+        text = model_picker.extract_response_text(response)
+        if not text or not model_picker.is_soft_failure_content(text):
+            return response
         try:
-            text = model_picker.extract_response_text(response)
-            if not text or not model_picker.is_soft_failure_content(text):
-                return response
             group = self._failed_group(data if isinstance(data, dict) else {}, response)
-            retry_resp, failed_groups = await self._retry_until_clean(data, group)
+            retry_resp, summary = await self._retry_until_clean(data, group)
             if retry_resp is not None:
                 return retry_resp
-            logger.warning("model_picker: all retry attempts soft-failed for %s; replying with fallback notice", failed_groups)
-            return response
+            logger.warning(
+                "model_picker: retry walk exhausted after %d attempts (%s); replying with fallback notice",
+                summary["tried"],
+                summary["groups"],
+            )
+            notice_text = _FALLBACK_REPLY.format(tried=summary["tried"], reason=summary["reason"])
         except Exception as e:  # noqa: BLE001 — hook errors must not fail the request
             logger.warning("model_picker: non-streaming retry error (%s)", e)
-            return response
+            notice_text = _FALLBACK_REPLY.format(tried=1, reason="retry error")
+        # never return the error-bearing original response
+        return litellm.ModelResponse(
+            choices=[{"message": {"role": "assistant", "content": notice_text}, "finish_reason": "stop"}]
+        )
 
 
 # Module-level instances referenced from lite-llm-picker.yaml.
