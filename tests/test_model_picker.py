@@ -906,9 +906,10 @@ class TestProviderCatalogs:
             ]
         }
         by_name = {c.name: c for c in lib.parse_llm7_models(payload)}
-        assert set(by_name) == {"llm7/DeepSeek-V4.1-Flash", "llm7/NoMeta"}
-        assert by_name["llm7/DeepSeek-V4.1-Flash"].context_length == 400000
+        # priced models are filtered out (free-only): only the unpriced one remains
+        assert set(by_name) == {"llm7/NoMeta"}
         assert by_name["llm7/NoMeta"].context_length == 0
+        assert by_name["llm7/NoMeta"].free is True
 
     def test_llm7_availability_telemetry_is_published_health(self, mp):
         lib, _ = mp
@@ -917,14 +918,19 @@ class TestProviderCatalogs:
                 {"id": "Healthy", "model_type": "chat", "schema_endpoints": ["openai"],
                  "availability_last_hour_percent": 100.0,
                  "availability": {"old": 100.0, "mid": 100.0, "recent": 100.0},
-                 "pricing": {"input": 0.5, "output": 1.0}},
+                 "pricing": {"input": 0, "output": 0}},
                 {"id": "Flaky", "model_type": "chat", "schema_endpoints": ["openai"],
                  "availability_last_hour_percent": 83.33,
-                 "availability": {"old": 95.0, "mid": 90.0, "recent": 85.0}},
+                 "availability": {"old": 95.0, "mid": 90.0, "recent": 85.0},
+                 "pricing": {"input": 0, "output": 0}},
                 {"id": "Untelemeted", "model_type": "chat", "schema_endpoints": ["openai"]},
+                {"id": "Priced", "model_type": "chat", "schema_endpoints": ["openai"],
+                 "availability_last_hour_percent": 100.0,
+                 "pricing": {"input": 0.02, "output": 0.04}},
             ]
         }
         by_name = {c.name: c for c in lib.parse_llm7_models(payload)}
+        assert "llm7/Priced" not in by_name  # free-only filter
         healthy = by_name["llm7/Healthy"]
         flaky = by_name["llm7/Flaky"]
         untelem = by_name["llm7/Untelemeted"]
@@ -941,7 +947,9 @@ class TestProviderCatalogs:
         ranked = lib.rank_candidates([flaky, healthy], lib.TIER_DEFAULT, stats, cfg)
         assert ranked[0].candidate.name == "llm7/Healthy"
 
-    def test_llm7_free_discernment_matches_pollinations(self, mp):
+    def test_llm7_free_only_filter(self, mp):
+        """Free-only, like pollinations: metered models never become candidates,
+        even when that leaves the pool empty (currently the case upstream)."""
         lib, _ = mp
         payload = {
             "data": [
@@ -953,9 +961,8 @@ class TestProviderCatalogs:
             ]
         }
         by_name = {c.name: c for c in lib.parse_llm7_models(payload)}
-        assert by_name["llm7/Priced"].free is False
-        assert by_name["llm7/Free"].free is True
-        assert by_name["llm7/NoPrice"].free is True
+        assert set(by_name) == {"llm7/Free", "llm7/NoPrice"}
+        assert all(c.free for c in by_name.values())
 
     def test_provider_failure_keeps_last_known_candidates(self, fresh, monkeypatch):
         """One provider's failed refresh must not sink the others' candidates."""

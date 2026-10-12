@@ -16,12 +16,12 @@ Design (beads workspace-c8o, revised in workspace-4wr):
   discerns free-tier models, which the backend intermittently credit-gates)
   plus NIM, Ollama and LLM7 listings. NIM and Ollama publish no metrics
   (metric-less; NIM filters non-chat families by id). LLM7 publishes
-  availability telemetry, per-token pricing and context windows: its models
-  rank as metric-backed on the published health, with the same zero-cost
-  free discernment as pollinations. Each provider's listing is served
-  through a wildcard model_list entry (pollinations/*, nvidia_nim/*,
-  ollama/*, llm7/*); a failed provider refresh keeps that provider's
-  last-known candidates.
+  availability telemetry, per-token pricing and context windows: only its
+  FREE models (zero/absent pricing) are eligible, and those with
+  availability telemetry rank as metric-backed on the published health.
+  Each provider's listing is served through a wildcard model_list entry
+  (pollinations/*, nvidia_nim/*, ollama/*, llm7/*); a failed provider
+  refresh keeps that provider's last-known candidates.
 - Ranking classes: UNKNOWN (untried metric-less, favored — ranks above
   everything on the health dimension, except deprioritized providers such as
   llm7 whose untried groups start at a neutral prior below healthy
@@ -342,16 +342,17 @@ _LLM7_PUBLISHED_SAMPLE_SIZE = 100
 
 
 def parse_llm7_models(payload: dict | list) -> list[ModelCandidate]:
-    """Parse LLM7's /v1/models into chat-capable candidates.
+    """Parse LLM7's /v1/models into free chat-capable candidates.
 
     LLM7's catalog carries rich metadata: model_type (chat/image/audio/...),
     schema_endpoints, an advertised context window, per-token pricing, and
-    availability telemetry. Only OpenAI-endpoint chat models qualify. The
-    availability telemetry is published health: models with it rank as
-    metric-backed (like pollinations' success_rate) instead of riding the
-    metric-less favorite boost; the zero-cost discernment matches
-    pollinations' (a free flag, though nothing on llm7 currently prices at
-    zero).
+    availability telemetry. Only OpenAI-endpoint chat models qualify, and
+    only FREE ones (zero/absent per-token pricing, the same discernment as
+    pollinations) — every currently-listed model is metered, so this pool is
+    empty until llm7 lists a free model; that is intentional. Admitted
+    models with availability telemetry rank as metric-backed (like
+    pollinations' success_rate) instead of riding the metric-less favorite
+    boost.
     """
     out: list[ModelCandidate] = []
     for m in _bare_catalog_entries(payload):
@@ -359,6 +360,9 @@ def parse_llm7_models(payload: dict | list) -> list[ModelCandidate]:
             continue
         endpoints = m.get("schema_endpoints") or []
         if endpoints and "openai" not in endpoints:
+            continue
+        pricing = m.get("pricing")
+        if not has_free_pricing(pricing):
             continue
         context_window = m.get("context_window") or {}
         health = _llm7_published_health(m)
@@ -371,7 +375,7 @@ def parse_llm7_models(payload: dict | list) -> list[ModelCandidate]:
                 success_rate=health if health is not None else 0.0,
                 requests=_LLM7_PUBLISHED_SAMPLE_SIZE if health is not None else 0,
                 source="prior",
-                free=has_free_pricing(m.get("pricing")),
+                free=True,
             )
         )
     return out
