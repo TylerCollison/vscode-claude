@@ -896,7 +896,10 @@ class TestProviderCatalogs:
         payload = {
             "data": [
                 {"id": "DeepSeek-V4.1-Flash", "model_type": "chat", "schema_endpoints": ["openai"],
-                 "context_window": {"tokens": 400000}},
+                 "context_window": {"tokens": 400000},
+                 "availability": {"old": 94.51, "mid": 96.3, "recent": 91.67},
+                 "availability_last_hour_percent": 100.0,
+                 "pricing": {"input": 0.3, "output": 1.2, "currency": "USD"}},
                 {"id": "Some-Vision", "model_type": "image", "schema_endpoints": ["openai"]},
                 {"id": "AnthropicOnly", "model_type": "chat", "schema_endpoints": ["anthropic"]},
                 {"id": "NoMeta", "model_type": "chat"},
@@ -906,6 +909,53 @@ class TestProviderCatalogs:
         assert set(by_name) == {"llm7/DeepSeek-V4.1-Flash", "llm7/NoMeta"}
         assert by_name["llm7/DeepSeek-V4.1-Flash"].context_length == 400000
         assert by_name["llm7/NoMeta"].context_length == 0
+
+    def test_llm7_availability_telemetry_is_published_health(self, mp):
+        lib, _ = mp
+        payload = {
+            "data": [
+                {"id": "Healthy", "model_type": "chat", "schema_endpoints": ["openai"],
+                 "availability_last_hour_percent": 100.0,
+                 "availability": {"old": 100.0, "mid": 100.0, "recent": 100.0},
+                 "pricing": {"input": 0.5, "output": 1.0}},
+                {"id": "Flaky", "model_type": "chat", "schema_endpoints": ["openai"],
+                 "availability_last_hour_percent": 83.33,
+                 "availability": {"old": 95.0, "mid": 90.0, "recent": 85.0}},
+                {"id": "Untelemeted", "model_type": "chat", "schema_endpoints": ["openai"]},
+            ]
+        }
+        by_name = {c.name: c for c in lib.parse_llm7_models(payload)}
+        healthy = by_name["llm7/Healthy"]
+        flaky = by_name["llm7/Flaky"]
+        untelem = by_name["llm7/Untelemeted"]
+        # telemetred models are metric-backed on the published health...
+        assert healthy.metricless is False
+        assert healthy.success_rate == 1.0
+        assert healthy.requests > 0
+        assert flaky.metricless is False
+        assert 0.83 < flaky.success_rate < 0.90  # last-hour dominant blend
+        # ...while untelemetred ones keep the metric-less favorite treatment
+        assert untelem.metricless is True
+        # flaky published health ranks below the healthy published health
+        stats, cfg = lib.StatsRegistry(), lib.PickerConfig()
+        ranked = lib.rank_candidates([flaky, healthy], lib.TIER_DEFAULT, stats, cfg)
+        assert ranked[0].candidate.name == "llm7/Healthy"
+
+    def test_llm7_free_discernment_matches_pollinations(self, mp):
+        lib, _ = mp
+        payload = {
+            "data": [
+                {"id": "Priced", "model_type": "chat", "schema_endpoints": ["openai"],
+                 "pricing": {"input": 0.02, "output": 0.04, "currency": "USD"}},
+                {"id": "Free", "model_type": "chat", "schema_endpoints": ["openai"],
+                 "pricing": {"input": 0, "output": 0, "currency": "USD"}},
+                {"id": "NoPrice", "model_type": "chat", "schema_endpoints": ["openai"]},
+            ]
+        }
+        by_name = {c.name: c for c in lib.parse_llm7_models(payload)}
+        assert by_name["llm7/Priced"].free is False
+        assert by_name["llm7/Free"].free is True
+        assert by_name["llm7/NoPrice"].free is True
 
     def test_provider_failure_keeps_last_known_candidates(self, fresh, monkeypatch):
         """One provider's failed refresh must not sink the others' candidates."""

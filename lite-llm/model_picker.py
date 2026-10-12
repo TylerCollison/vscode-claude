@@ -14,11 +14,14 @@ Design (beads workspace-c8o, revised in workspace-4wr):
   catalog API — the pollinations listing (metric-backed; official and
   community both eligible, paid_only/down excluded; its pollen pricing
   discerns free-tier models, which the backend intermittently credit-gates)
-  plus NIM, Ollama and LLM7 listings (metric-less; NIM filters non-chat
-  families by id, LLM7 filters on model_type/schema_endpoints and reads the
-  advertised context window). Each provider's listing is served through a
-  wildcard model_list entry (pollinations/*, nvidia_nim/*, ollama/*, llm7/*);
-  a failed provider refresh keeps that provider's last-known candidates.
+  plus NIM, Ollama and LLM7 listings. NIM and Ollama publish no metrics
+  (metric-less; NIM filters non-chat families by id). LLM7 publishes
+  availability telemetry, per-token pricing and context windows: its models
+  rank as metric-backed on the published health, with the same zero-cost
+  free discernment as pollinations. Each provider's listing is served
+  through a wildcard model_list entry (pollinations/*, nvidia_nim/*,
+  ollama/*, llm7/*); a failed provider refresh keeps that provider's
+  last-known candidates.
 - Ranking classes: UNKNOWN (untried metric-less, favored — ranks above
   everything on the health dimension, except deprioritized providers such as
   llm7 whose untried groups start at a neutral prior below healthy
@@ -311,12 +314,44 @@ def parse_ollama_models(payload: dict | list) -> list[ModelCandidate]:
     return out
 
 
+def _llm7_published_health(model: dict) -> float | None:
+    """Published availability for one LLM7 model, as 0..1 (None when absent).
+
+    Blends the catalog's telemetry: the last-hour percentage dominates, then
+    the availability buckets (recent/mid/old). Weights renormalize over
+    whatever the catalog provides.
+    """
+    availability = model.get("availability") or {}
+    parts = (
+        (0.5, model.get("availability_last_hour_percent")),
+        (0.2, availability.get("recent")),
+        (0.2, availability.get("mid")),
+        (0.1, availability.get("old")),
+    )
+    weighted = [(w, v) for w, v in parts if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    if not weighted:
+        return None
+    total_weight = sum(w for w, _ in weighted)
+    return sum(w * v for w, v in weighted) / total_weight / 100.0
+
+
+# LLM7's availability telemetry is aggregated server-side without sample
+# counts; treat each published figure as a modest-size sample so the Wilson
+# lower bound stays conservative around the true rate.
+_LLM7_PUBLISHED_SAMPLE_SIZE = 100
+
+
 def parse_llm7_models(payload: dict | list) -> list[ModelCandidate]:
-    """Parse LLM7's /v1/models into chat-capable metric-less candidates.
+    """Parse LLM7's /v1/models into chat-capable candidates.
 
     LLM7's catalog carries rich metadata: model_type (chat/image/audio/...),
-    schema_endpoints, and context_window. Only OpenAI-endpoint chat models
-    qualify; the advertised context window feeds fit filtering.
+    schema_endpoints, an advertised context window, per-token pricing, and
+    availability telemetry. Only OpenAI-endpoint chat models qualify. The
+    availability telemetry is published health: models with it rank as
+    metric-backed (like pollinations' success_rate) instead of riding the
+    metric-less favorite boost; the zero-cost discernment matches
+    pollinations' (a free flag, though nothing on llm7 currently prices at
+    zero).
     """
     out: list[ModelCandidate] = []
     for m in _bare_catalog_entries(payload):
@@ -326,13 +361,17 @@ def parse_llm7_models(payload: dict | list) -> list[ModelCandidate]:
         if endpoints and "openai" not in endpoints:
             continue
         context_window = m.get("context_window") or {}
+        health = _llm7_published_health(m)
         out.append(
             ModelCandidate(
                 name=f"llm7/{m['id']}",
                 provider="llm7",
                 context_length=int(context_window.get("tokens") or 0),
-                metricless=True,
+                metricless=health is None,
+                success_rate=health if health is not None else 0.0,
+                requests=_LLM7_PUBLISHED_SAMPLE_SIZE if health is not None else 0,
                 source="prior",
+                free=has_free_pricing(m.get("pricing")),
             )
         )
     return out
