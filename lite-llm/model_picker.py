@@ -10,11 +10,15 @@ share state across the plugin/stats-logger references).
 
 Design (beads workspace-c8o, revised in workspace-4wr):
 
-- Candidates: chat-capable models from the pollinations catalog
-  (metric-backed; official and community both eligible, paid_only/down
-  excluded; the catalog's pollen pricing discerns free-tier models, which the
-  backend intermittently credit-gates) plus curated static groups from the
-  other providers (metric-less). Gemini groups are excluded outright.
+- Candidates: chat-capable models discovered live from every provider's
+  catalog API — the pollinations listing (metric-backed; official and
+  community both eligible, paid_only/down excluded; its pollen pricing
+  discerns free-tier models, which the backend intermittently credit-gates)
+  plus NIM, Ollama and LLM7 listings (metric-less; NIM filters non-chat
+  families by id, LLM7 filters on model_type/schema_endpoints and reads the
+  advertised context window). Each provider's listing is served through a
+  wildcard model_list entry (pollinations/*, nvidia_nim/*, ollama/*, llm7/*);
+  a failed provider refresh keeps that provider's last-known candidates.
 - Ranking classes: UNKNOWN (untried metric-less, favored — ranks above
   everything on the health dimension, except deprioritized providers such as
   llm7 whose untried groups start at a neutral prior below healthy
@@ -60,6 +64,7 @@ logger = logging.getLogger("model_picker")
 POLLINATIONS_MODELS_URL = "https://gen.pollinations.ai/v1/models"
 NIM_MODELS_URL = "https://integrate.api.nvidia.com/v1/models"
 OLLAMA_MODELS_URL = "https://ollama.com/v1/models"
+LLM7_MODELS_URL = "https://api.llm7.io/v1/models"
 
 DEFAULT_TTL_SECONDS = 300.0
 DEFAULT_MIN_OBS = 3
@@ -72,7 +77,6 @@ DEFAULT_HALF_LIFE_SECONDS = 24 * 3600.0
 # models are currently credit-gated server-side); revisit if it churns out of
 # the catalog like its predecessor did.
 DEFAULT_FALLBACK_MODEL = "community/vendouple/deepseek-v4-pro"
-DEFAULT_UNKNOWN_CONTEXT_TOKENS = 0  # 0 = unknown; unknown-context candidates bypass fit filtering
 # Metric-less providers that must NOT get the untried benefit-of-the-doubt:
 # llm7 has no published metrics and its groups trip daily token quotas (429 +
 # ~24h Retry-After), so an untried llm7 group starts at a neutral prior below
@@ -146,8 +150,7 @@ class ModelCandidate:
     metricless: bool = True  # no published metrics -> favored while UNKNOWN
     success_rate: float = 1.0  # published 0..1 (placeholder for metric-less)
     requests: int = 0  # published sample size
-    available: bool = True  # False when an existence check proved it gone
-    existence_id: str = ""  # upstream id to check in the provider's catalog ("" = not checkable)
+    available: bool = True  # False when the provider's catalog dropped it
     source: str = "prior"  # pollinations_api | prior
     free: bool = False  # pollinations: no nonzero pollen rate (free tier; credit-gated server-side)
 
@@ -232,105 +235,104 @@ def parse_pollinations_models(payload: dict) -> list[ModelCandidate]:
     return out
 
 
-def parse_model_ids(payload: dict | list) -> set[str]:
-    """Bare model-id set from a provider's /v1/models (existence checks)."""
+# ---------------------------------------------------------------------------
+# NIM's catalog lists every hosted model — embeddings, retrievers, vision,
+# guard/reward models — with no modality metadata. Exclude the non-chat
+# families by id substring; anything chatty that slips through is sorted out
+# by the health tracking after a few real requests.
+_NIM_NON_CHAT_SUBSTRINGS = (
+    "embed",
+    "rerank",
+    "retriever",
+    "guard",
+    "safety",
+    "reward",
+    "clip",
+    "vision",
+    "deplot",
+    "nemotron-parse",
+    "riva",
+    "diffusion",
+    "video-detector",
+    "kosmos",
+    "neva",
+    "vila",
+    "fuyu",
+    "synthetic",
+)
+
+
+def _is_nim_chat_model(model_id: str) -> bool:
+    lowered = model_id.lower()
+    return not any(marker in lowered for marker in _NIM_NON_CHAT_SUBSTRINGS)
+
+
+def _bare_catalog_entries(payload: dict | list) -> list[dict]:
     data = payload.get("data") if isinstance(payload, dict) else payload
-    if data is None:
-        data = []
-    ids: set[str] = set()
-    for m in data:
-        if isinstance(m, dict) and m.get("id"):
-            ids.add(str(m["id"]))
-        elif isinstance(m, str):
-            ids.add(m)
-    return ids
+    return [m for m in (data or []) if isinstance(m, dict) and m.get("id")]
 
 
-def apply_existence(candidates: list[ModelCandidate], listed_ids: set[str], provider: str) -> None:
-    """Mark candidates of *provider* unavailable when absent from its catalog.
-
-    Catches laguna-style model removal without waiting for failures. Empty
-    ``listed_ids`` (fetch failed) leaves candidates untouched — stale-serve.
-    """
-    if not listed_ids:
-        return
-    for c in candidates:
-        if c.provider == provider and c.existence_id and c.existence_id not in listed_ids:
-            c.available = False
-
-
-# ---------------------------------------------------------------------------
-# Static group discovery (metric-less candidates from the litellm config)
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class StaticGroup:
-    group_name: str
-    provider: str
-    upstream_model: str  # provider-facing id (for existence checks / ctx xref)
-
-
-def _strip_provider_prefix(model: str) -> str:
-    for prefix in ("nvidia_nim/", "openai/", "gemini/"):
-        if model.startswith(prefix):
-            return model[len(prefix):]
-    return model
-
-
-def discover_static_groups(model_list: list[dict]) -> list[StaticGroup]:
-    """Derive metric-less candidate groups from the router's model_list.
-
-    Recognizes nvidia_nim (by model prefix), ollama and llm7 (by api_base).
-    Pollinations-backed groups are handled by the catalog; gemini groups are
-    excluded per spec; anything unrecognized is ignored.
-    """
-    out: list[StaticGroup] = []
-    seen: set[str] = set()
-    for entry in model_list or []:
-        if not isinstance(entry, dict):
+def parse_nim_models(payload: dict | list) -> list[ModelCandidate]:
+    """Parse NIM's /v1/models into chat-capable metric-less candidates."""
+    out: list[ModelCandidate] = []
+    for m in _bare_catalog_entries(payload):
+        model_id = str(m["id"])
+        if not _is_nim_chat_model(model_id):
             continue
-        group_name = entry.get("model_name") or ""
-        params = entry.get("litellm_params") or {}
-        model = str(params.get("model") or "")
-        api_base = str(params.get("api_base") or "")
-        if not group_name or group_name in seen:
-            continue
-
-        provider: str | None = None
-        upstream = _strip_provider_prefix(model)
-        if model.startswith("nvidia_nim/"):
-            provider = "nvidia_nim"
-        else:
-            for needle, prov in _STATIC_PROVIDER_BY_API_BASE:
-                if needle in api_base:
-                    provider = prov
-                    break
-        if provider is None:
-            continue  # pollinations (catalog), gemini (excluded), complexity, unknown
-        seen.add(group_name)
-        out.append(StaticGroup(group_name=group_name, provider=provider, upstream_model=upstream))
+        out.append(
+            ModelCandidate(
+                name=f"nvidia_nim/{model_id}",
+                provider="nvidia_nim",
+                context_length=int(m.get("context_length") or 0),
+                metricless=True,
+                source="prior",
+            )
+        )
     return out
 
 
-def static_groups_to_candidates(
-    groups: list[StaticGroup],
-    pollinations_context_by_id: dict[str, int] | None = None,
-) -> list[ModelCandidate]:
-    """Build metric-less candidates; context from config model_info or pollinations xref."""
-    ctx_by_id = pollinations_context_by_id or {}
-    out = []
-    for g in groups:
+def parse_ollama_models(payload: dict | list) -> list[ModelCandidate]:
+    """Parse Ollama's /v1/models into chat-capable metric-less candidates."""
+    out: list[ModelCandidate] = []
+    for m in _bare_catalog_entries(payload):
+        model_id = str(m["id"])
+        lowered = model_id.lower()
+        if "embed" in lowered:
+            continue
         out.append(
             ModelCandidate(
-                name=g.group_name,
-                provider=g.provider,
-                context_length=ctx_by_id.get(g.upstream_model, DEFAULT_UNKNOWN_CONTEXT_TOKENS),
+                name=f"ollama/{model_id}",
+                provider="ollama",
+                context_length=int(m.get("context_length") or 0),
                 metricless=True,
-                success_rate=1.0,
-                requests=0,
                 source="prior",
-                existence_id="" if g.provider == "llm7" else g.upstream_model,
+            )
+        )
+    return out
+
+
+def parse_llm7_models(payload: dict | list) -> list[ModelCandidate]:
+    """Parse LLM7's /v1/models into chat-capable metric-less candidates.
+
+    LLM7's catalog carries rich metadata: model_type (chat/image/audio/...),
+    schema_endpoints, and context_window. Only OpenAI-endpoint chat models
+    qualify; the advertised context window feeds fit filtering.
+    """
+    out: list[ModelCandidate] = []
+    for m in _bare_catalog_entries(payload):
+        if m.get("model_type") not in (None, "chat"):
+            continue
+        endpoints = m.get("schema_endpoints") or []
+        if endpoints and "openai" not in endpoints:
+            continue
+        context_window = m.get("context_window") or {}
+        out.append(
+            ModelCandidate(
+                name=f"llm7/{m['id']}",
+                provider="llm7",
+                context_length=int(context_window.get("tokens") or 0),
+                metricless=True,
+                source="prior",
             )
         )
     return out
@@ -798,13 +800,9 @@ async def fetch_pollinations_catalog(cfg: PickerConfig) -> list[ModelCandidate]:
     return parse_pollinations_models(payload)
 
 
-async def fetch_listed_ids(url: str, api_key_env: str) -> set[str]:
-    try:
-        payload = await _fetch_json(url, os.environ.get(api_key_env))
-        return parse_model_ids(payload)
-    except Exception as e:  # noqa: BLE001 — existence checks are best-effort
-        logger.warning("model_picker: existence fetch failed for %s: %s", url, e)
-        return set()
+async def fetch_provider_models(url: str, api_key_env: str) -> dict | list:
+    """Raw /v1/models payload from a provider (parsed by the caller)."""
+    return await _fetch_json(url, os.environ.get(api_key_env))
 
 
 # ---------------------------------------------------------------------------
@@ -818,31 +816,25 @@ class CatalogSnapshot:
     created_at: float = field(default_factory=time.time)
     stale: bool = False  # served from cache after a refresh failure
 
-    def context_by_id(self) -> dict[str, int]:
-        return {
-            c.name.split("/", 1)[1]: c.context_length
-            for c in self.candidates
-            if c.provider == "pollinations" and c.context_length
-        }
-
 
 class CatalogManager:
-    """TTL-cached catalog with single-flight refresh and stale/fallback serve."""
+    """TTL-cached catalog with single-flight refresh and stale/fallback serve.
+
+    Every provider is catalog-driven: pollinations, NIM, Ollama and LLM7
+    models are discovered from their /v1/models listings at refresh time and
+    served through the per-provider wildcard model_list entries. A provider
+    whose listing fails mid-refresh keeps its previously-known candidates
+    (stale-serve); a fully cold failure serves the fallback snapshot.
+    """
 
     def __init__(self, cfg: PickerConfig | None = None) -> None:
         self.cfg = cfg or PickerConfig()
         self._snapshot: CatalogSnapshot | None = None
         self._lock = asyncio.Lock()
-        self._static_groups: list[StaticGroup] | None = None
-
-    def _ensure_static_groups(self, router_model_list: list[dict] | None) -> None:
-        if self._static_groups is None and router_model_list:
-            self._static_groups = discover_static_groups(router_model_list)
+        self._last_good: dict[str, list[ModelCandidate]] = {}
 
     def _fallback_snapshot(self) -> CatalogSnapshot:
-        self._ensure_static_groups(None)
-        candidates = static_groups_to_candidates(self._static_groups or [])
-        candidates.append(
+        candidates = [
             ModelCandidate(
                 name=f"pollinations/{self.cfg.fallback_model}",
                 provider="pollinations",
@@ -852,10 +844,30 @@ class CatalogManager:
                 requests=0,
                 source="prior",
             )
-        )
+        ]
         return CatalogSnapshot(candidates=candidates, stale=True)
 
-    async def get_snapshot(self, router_model_list: list[dict] | None = None) -> CatalogSnapshot:
+    async def _fetch_provider(
+        self,
+        provider_key: str,
+        fetch,
+        parse,
+    ) -> list[ModelCandidate]:
+        """Fetch+parse one provider's catalog, tolerating its failure.
+
+        A failed or empty refresh keeps the provider's last-known candidates
+        (stale-serve per provider) instead of taking down the whole snapshot.
+        """
+        try:
+            candidates = parse(await fetch())
+            if candidates:
+                self._last_good[provider_key] = candidates
+            return candidates or self._last_good.get(provider_key, [])
+        except Exception as e:  # noqa: BLE001 — one provider must not sink the snapshot
+            logger.warning("model_picker: %s catalog refresh failed (%s); using last known", provider_key, e)
+            return self._last_good.get(provider_key, [])
+
+    async def get_snapshot(self) -> CatalogSnapshot:
         """Return a fresh-enough snapshot; single-flight, stale-serve on failure."""
         now = time.time()
         snap = self._snapshot
@@ -868,21 +880,29 @@ class CatalogManager:
             if snap is not None and (now - snap.created_at) < self.cfg.ttl_seconds:
                 return snap
             try:
-                self._ensure_static_groups(router_model_list)
-                pollinations = await fetch_pollinations_catalog(self.cfg)
-                nim_ids = await fetch_listed_ids(NIM_MODELS_URL, "NIM_API_KEY")
-                ollama_ids = await fetch_listed_ids(OLLAMA_MODELS_URL, "OLLAMA_API_KEY")
-                static = static_groups_to_candidates(
-                    self._static_groups or [],
-                    pollinations_context_by_id={
-                        c.name.split("/", 1)[1]: c.context_length for c in pollinations if c.context_length
-                    },
+                pollinations = await self._fetch_provider(
+                    "pollinations",
+                    lambda: fetch_pollinations_catalog(self.cfg),
+                    parse_pollinations_models,
                 )
-                apply_existence(static, nim_ids, "nvidia_nim")
-                apply_existence(static, ollama_ids, "ollama")
-                candidates = pollinations + static
+                nim = await self._fetch_provider(
+                    "nvidia_nim",
+                    lambda: fetch_provider_models(NIM_MODELS_URL, "NIM_API_KEY"),
+                    parse_nim_models,
+                )
+                ollama = await self._fetch_provider(
+                    "ollama",
+                    lambda: fetch_provider_models(OLLAMA_MODELS_URL, "OLLAMA_API_KEY"),
+                    parse_ollama_models,
+                )
+                llm7 = await self._fetch_provider(
+                    "llm7",
+                    lambda: fetch_provider_models(LLM7_MODELS_URL, "LLM7_API_KEY"),
+                    parse_llm7_models,
+                )
+                candidates = pollinations + nim + ollama + llm7
                 if not candidates:
-                    raise RuntimeError("pollinations catalog returned no eligible models")
+                    raise RuntimeError("provider catalogs returned no eligible models")
                 self._snapshot = CatalogSnapshot(candidates=candidates)
                 return self._snapshot
             except Exception as e:  # noqa: BLE001 — never fail routing on catalog trouble

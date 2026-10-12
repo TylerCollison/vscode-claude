@@ -39,6 +39,7 @@ key so the catalog cache and rolling stats are shared by every instance.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.util
 import json
 import logging
@@ -113,7 +114,34 @@ def _preserve_legacy_max_tokens() -> None:
         logger.warning("model_picker: could not install legacy max_tokens preservation (%s)", e)
 
 
+# Catalog-driven pools inevitably contain listed-but-dead models (a NIM model
+# 404s while still appearing in its catalog). litellm refuses to retry
+# NotFoundError unconditionally, which would end the request on the first dead
+# candidate — but the picker's exclusion walk is exactly the right handler:
+# record the failure, exclude the model, try the next candidate. Let 404s
+# follow the normal retry path.
+def _retry_not_found_errors() -> None:
+    try:
+        import litellm as _litellm
+
+        router_cls = _litellm.router.Router
+        original = router_cls.should_retry_this_error
+
+        def should_retry_this_error(self, error, *args, **kwargs):
+            try:
+                return original(self, error, *args, **kwargs)
+            except _litellm.NotFoundError:
+                logger.info("model_picker: NotFoundError made retryable for the exclusion walk")
+                return True
+
+        router_cls.should_retry_this_error = should_retry_this_error
+        logger.debug("model_picker: NotFoundError retry patch installed")
+    except Exception as e:  # noqa: BLE001 — a patch failure must not break the proxy
+        logger.warning("model_picker: could not install NotFoundError retry patch (%s)", e)
+
+
 _preserve_legacy_max_tokens()
+_retry_not_found_errors()
 
 # ---------------------------------------------------------------------------
 # Tier detection
@@ -198,13 +226,23 @@ class ModelPickerPlugin:
         # fail.
         metadata = context.metadata if context.metadata else {}
         call_id = str(metadata.get("litellm_call_id") or "")
+        if not call_id:
+            # litellm does not surface litellm_call_id to routing plugins, so
+            # key the per-request pick history on the conversation itself —
+            # the router's in-request retries replay the same messages, which
+            # makes this stable across attempts (and unique enough per
+            # request that identical concurrent retries sharing a history is
+            # benign: they would hit the same broken models anyway).
+            call_id = "conv-" + hashlib.sha1(
+                json.dumps(context.structured_messages, sort_keys=True, default=str).encode()
+            ).hexdigest()
         prior_picks = list(self.prior_picks.get(call_id))
         for extra in metadata.get("model_picker_exclude") or []:
             if extra not in prior_picks:
                 prior_picks.append(str(extra))
 
         estimate = model_picker.estimate_tokens(context.structured_messages)
-        snapshot = await self.manager.get_snapshot(_get_router_model_list())
+        snapshot = await self.manager.get_snapshot()
         ranked = model_picker.rank_candidates(
             snapshot.candidates,
             tier,
@@ -243,18 +281,6 @@ class ModelPickerPlugin:
         }
         context.candidate_models = [pick.name]
         return context
-
-
-def _get_router_model_list() -> list[dict]:
-    """Best-effort access to the proxy router's model_list for static discovery."""
-    try:
-        from litellm.proxy.proxy_server import llm_router
-
-        if llm_router is not None:
-            return list(getattr(llm_router, "model_list", None) or [])
-    except Exception:  # noqa: BLE001 — unit-test / non-proxy contexts
-        pass
-    return []
 
 
 # ---------------------------------------------------------------------------

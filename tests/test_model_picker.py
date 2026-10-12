@@ -791,14 +791,14 @@ class TestRubricRanking:
         assert "nemotron-3-super:cloud" in names  # unknown context bypasses fit
 
     def test_existence_check_marks_removed_models(self, fresh):
+        """Catalog-driven candidates are born from the listing; the manager's
+        per-provider stale-serve replaces the old existence-check mechanism."""
         lib, _, cfg, stats, _ = fresh
-        gone = favored_candidate(lib, "old-model:cloud", provider="ollama")
-        gone.existence_id = "old-model:cloud"
-        present = favored_candidate(lib, "nemotron-3-super:cloud", provider="ollama")
-        present.existence_id = "nemotron-3-super:cloud"
-        lib.apply_existence([gone, present], {"nemotron-3-super:cloud"}, "ollama")
+        gone = favored_candidate(lib, "old-model", provider="ollama")
+        gone.available = False
+        present = favored_candidate(lib, "nemotron-3-super", provider="ollama")
         ranked = lib.rank_candidates([gone, present], lib.TIER_DEFAULT, stats, cfg)
-        assert [r.candidate.name for r in ranked] == ["nemotron-3-super:cloud"]
+        assert [r.candidate.name for r in ranked] == ["nemotron-3-super"]
 
     def test_sustained_rate_limits_demote_and_recover(self, fresh):
         lib, _, cfg, stats, _ = fresh
@@ -857,47 +857,83 @@ class TestRubricRanking:
 
 
 # ---------------------------------------------------------------------------
-# Static group discovery
+# Provider catalog parsing (NIM, Ollama, LLM7)
 # ---------------------------------------------------------------------------
 
 
-class TestStaticDiscovery:
-    def test_discovers_nim_ollama_llm7_excludes_gemini_and_pollinations(self, mp):
+class TestProviderCatalogs:
+    def test_nim_models_parsed_with_nonchat_filtered(self, mp):
         lib, _ = mp
-        model_list = [
-            {"model_name": "z-ai/glm-5.3", "litellm_params": {"model": "nvidia_nim/z-ai/glm-5.3", "api_key": "x"}},
-            {
-                "model_name": "nemotron-3-super:cloud",
-                "litellm_params": {"model": "openai/nemotron-3-super:cloud", "api_base": "https://ollama.com/v1"},
-            },
-            {
-                "model_name": "default",
-                "litellm_params": {"model": "openai/default", "api_base": "https://api.llm7.io/v1"},
-            },
-            {
-                "model_name": "lite-llm/default",
-                "litellm_params": {
-                    "model": "openai/community/vendouple/laguna-s-2.1:free",
-                    "api_base": "https://gen.pollinations.ai/v1",
-                },
-            },
-            {"model_name": "lite-llm/webSearch", "litellm_params": {"model": "gemini/gemini-3.5-flash-lite"}},
-        ]
-        groups = lib.discover_static_groups(model_list)
-        by_name = {g.group_name: g for g in groups}
-        assert set(by_name) == {"z-ai/glm-5.3", "nemotron-3-super:cloud", "default"}
-        assert by_name["z-ai/glm-5.3"].provider == "nvidia_nim"
-        assert by_name["z-ai/glm-5.3"].upstream_model == "z-ai/glm-5.3"
-        assert by_name["nemotron-3-super:cloud"].upstream_model == "nemotron-3-super:cloud"
-        assert by_name["default"].provider == "llm7"
+        payload = {
+            "data": [
+                {"id": "z-ai/glm-5.3"},
+                {"id": "nvidia/nemotron-3-ultra-550b-a55b"},
+                {"id": "nvidia/nemotron-3-embed-1b"},
+                {"id": "nvidia/nv-embedqa-mistral-7b-v2"},
+                {"id": "meta/llama-3.2-11b-vision-instruct"},
+                {"id": "nvidia/llama-3.1-nemoguard-8b-content-safety"},
+                {"id": "nvidia/nemotron-parse"},
+                {"id": "nvidia/riva-translate-4b-instruct"},
+                {"id": "snowflake/arctic-embed-l"},
+            ]
+        }
+        candidates = lib.parse_nim_models(payload)
+        names = {c.name for c in candidates}
+        assert names == {"nvidia_nim/z-ai/glm-5.3", "nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b"}
+        for c in candidates:
+            assert c.provider == "nvidia_nim"
+            assert c.metricless is True
 
-    def test_llm7_pseudo_models_not_existence_checked(self, fresh):
-        lib, _, cfg, stats, _ = fresh
-        groups = [lib.StaticGroup("default", "llm7", "default")]
-        candidates = lib.static_groups_to_candidates(groups)
-        assert candidates[0].existence_id == ""  # exempt from existence checks
-        lib.apply_existence(candidates, set(), "llm7")
-        assert candidates[0].available
+    def test_ollama_models_parsed(self, mp):
+        lib, _ = mp
+        payload = {"data": [{"id": "nemotron-3-super"}, {"id": "glm-5.3-flash"}, {"id": "some-embed-model"}]}
+        candidates = lib.parse_ollama_models(payload)
+        assert {c.name for c in candidates} == {"ollama/nemotron-3-super", "ollama/glm-5.3-flash"}
+        assert all(c.provider == "ollama" for c in candidates)
+
+    def test_llm7_models_parsed_with_type_endpoint_context(self, mp):
+        lib, _ = mp
+        payload = {
+            "data": [
+                {"id": "DeepSeek-V4.1-Flash", "model_type": "chat", "schema_endpoints": ["openai"],
+                 "context_window": {"tokens": 400000}},
+                {"id": "Some-Vision", "model_type": "image", "schema_endpoints": ["openai"]},
+                {"id": "AnthropicOnly", "model_type": "chat", "schema_endpoints": ["anthropic"]},
+                {"id": "NoMeta", "model_type": "chat"},
+            ]
+        }
+        by_name = {c.name: c for c in lib.parse_llm7_models(payload)}
+        assert set(by_name) == {"llm7/DeepSeek-V4.1-Flash", "llm7/NoMeta"}
+        assert by_name["llm7/DeepSeek-V4.1-Flash"].context_length == 400000
+        assert by_name["llm7/NoMeta"].context_length == 0
+
+    def test_provider_failure_keeps_last_known_candidates(self, fresh, monkeypatch):
+        """One provider's failed refresh must not sink the others' candidates."""
+        lib, _, cfg, stats, manager = fresh
+        good = [lib.ModelCandidate(name="nvidia_nim/z-ai/glm-5.3", provider="nvidia_nim", metricless=True)]
+
+        async def good_fetch(url, key_env):
+            if key_env != "NIM_API_KEY":
+                return {"data": []}
+            return {"data": [{"id": "z-ai/glm-5.3"}]}
+
+        async def bad_fetch(cfg):
+            raise RuntimeError("down")
+
+        monkeypatch.setattr("model_picker.fetch_pollinations_catalog", bad_fetch)
+        monkeypatch.setattr("model_picker.fetch_provider_models", good_fetch)
+        # first refresh: pollinations fails, NIM succeeds
+        snap1 = asyncio.run(manager.get_snapshot())
+        assert [c.name for c in snap1.candidates] == ["nvidia_nim/z-ai/glm-5.3"]
+        # second refresh: NIM now fails too -> its last-known candidates persist
+        cfg.ttl_seconds = 0.05
+        time.sleep(0.06)
+        monkeypatch.setattr("model_picker.fetch_provider_models", bad_fetch)
+        snap2 = asyncio.run(manager.get_snapshot())
+        assert [c.name for c in snap2.candidates] == ["nvidia_nim/z-ai/glm-5.3"]
+        # per-provider stale-serve is transparent: the snapshot is freshly
+        # built around each provider's last-known candidates
+        assert snap2.stale is False
 
 
 # ---------------------------------------------------------------------------
@@ -996,16 +1032,21 @@ class TestPlugin:
         result = asyncio.run(test_plugin.run(context))
         assert result.candidate_models == ["lite-llm/default"]
 
-    def test_no_call_id_does_not_pollute_registry(self, fresh, env_enabled, monkeypatch):
-        """Without a litellm_call_id the pick is still served but not persisted."""
+    def test_no_call_id_keys_registry_on_conversation(self, fresh, env_enabled, monkeypatch):
+        """litellm does not surface litellm_call_id to routing plugins, so the
+        pick history falls back to a conversation-derived key — which still
+        excludes prior picks across the router's in-request retries."""
         lib, test_plugin, cfg, stats, manager = fresh
         registry = lib.PriorPickRegistry()
         test_plugin._prior_picks = registry
         self._fake_snapshot(monkeypatch, lib, manager)
         context = make_context(lib, ["lite-llm/default"], metadata={})
-        result = asyncio.run(test_plugin.run(context))
-        assert result.candidate_models and result.candidate_models[0].startswith("pollinations/")
-        assert len(registry._by_call) == 0
+        first = asyncio.run(test_plugin.run(context))
+        assert first.candidate_models and first.candidate_models[0].startswith("pollinations/")
+        assert len(registry._by_call) == 1
+        # the same conversation (the retry) is excluded from its prior pick
+        second = asyncio.run(test_plugin.run(make_context(lib, ["lite-llm/default"], metadata={})))
+        assert second.candidate_models[0] != first.candidate_models[0]
 
 
     def test_event_group_reconciles_wildcard_names(self, mp, fresh):
@@ -1050,11 +1091,15 @@ class TestPlugin:
 
 class TestCatalogManager:
     @staticmethod
-    def _no_existence(monkeypatch):
-        async def fake_ids(*args, **kwargs):
-            return set()
+    def _mock_other_providers(monkeypatch, fail=False):
+        """Mock the NIM/Ollama/LLM7 catalog fetches (empty or failing)."""
 
-        monkeypatch.setattr("model_picker.fetch_listed_ids", fake_ids)
+        async def empty_fetch(url, key_env):
+            if fail:
+                raise RuntimeError(f"{key_env} down")
+            return {"data": []}
+
+        monkeypatch.setattr("model_picker.fetch_provider_models", empty_fetch)
 
     def test_fresh_snapshot_reused_within_ttl(self, fresh, monkeypatch):
         lib, _, cfg, stats, manager = fresh
@@ -1065,7 +1110,7 @@ class TestCatalogManager:
             return candidates_from_fixture(lib)
 
         monkeypatch.setattr("model_picker.fetch_pollinations_catalog", fake_fetch)
-        self._no_existence(monkeypatch)
+        self._mock_other_providers(monkeypatch)
         snap1 = asyncio.run(manager.get_snapshot())
         snap2 = asyncio.run(manager.get_snapshot())
         assert calls["n"] == 1
@@ -1082,7 +1127,7 @@ class TestCatalogManager:
             raise RuntimeError("pollinations down")
 
         monkeypatch.setattr("model_picker.fetch_pollinations_catalog", good_fetch)
-        self._no_existence(monkeypatch)
+        self._mock_other_providers(monkeypatch)
         snap1 = asyncio.run(manager.get_snapshot())
         time.sleep(0.06)
         monkeypatch.setattr("model_picker.fetch_pollinations_catalog", bad_fetch)
@@ -1097,7 +1142,7 @@ class TestCatalogManager:
             raise RuntimeError("down")
 
         monkeypatch.setattr("model_picker.fetch_pollinations_catalog", bad_fetch)
-        self._no_existence(monkeypatch)
+        self._mock_other_providers(monkeypatch)
         snap = asyncio.run(manager.get_snapshot())
         assert snap.stale is True
         names = {c.name for c in snap.candidates}
@@ -1158,24 +1203,48 @@ class TestConfigDeltas:
         assert removed_groups <= default_fb
         assert not (removed_groups & picker_fb)
         assert {"lite-llm/webSearch", "lite-llm/image"} <= picker_fb
-        # fallback target lists are unchanged for the kept groups
+        # the removed static groups must not appear as fallback targets
+        removed_statics = {"minimax-m2.7", "z-ai/glm-5.3-flash", "nemotron-3-super:cloud",
+                           "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3",
+                           "default", "fast"}
         for entry in picker["router_settings"]["fallbacks"]:
-            key = list(entry)[0]
-            default_entry = next(f for f in default["router_settings"]["fallbacks"] if list(f)[0] == key)
-            assert entry[key] == default_entry[key]
+            assert not (set(entry[key]) & removed_statics) if (key := list(entry)[0]) else True
+        # every picker fallback target resolves through a wildcard or a kept group
+        wildcard_prefixes = ("nvidia_nim/", "ollama/", "llm7/", "pollinations/", "gemini-")
+        for entry in picker["router_settings"]["fallbacks"]:
+            for target in entry[list(entry)[0]]:
+                assert target.startswith(wildcard_prefixes), target
 
     def test_picker_config_retry_settings(self):
         default, picker = self._configs()
-        assert picker["router_settings"]["num_retries"] == 3
+        # the hard-failure walk budget: each retry re-enters the picker, which
+        # excludes the failed candidate
+        assert picker["router_settings"]["num_retries"] == 64
         assert "retry_policy" not in picker["router_settings"]
         assert default["router_settings"]["retry_policy"]["TimeoutErrorRetries"] == 0
 
     def test_picker_config_parity_with_default(self):
-        """Everything outside the documented deltas is identical."""
+        """Everything outside the documented deltas is identical.
+
+        Picker-mode deltas: the provider wildcards replace the hand-maintained
+        static provider groups (the picker discovers those catalogs live)."""
         default, picker = self._configs()
-        delta_groups = {"pollinations/*"}
-        assert [g for g in self._group_names(default)] == [
-            g for g in self._group_names(picker) if g not in delta_groups
+        added_wildcards = {"pollinations/*", "nvidia_nim/*", "ollama/*", "llm7/*"}
+        removed_statics = {
+            "nemotron-3-super:cloud",
+            "nemotron-3-ultra:cloud",
+            "z-ai/glm-5.3",
+            "z-ai/glm-5.3-flash",
+            "nvidia/nemotron-3-ultra-550b-a55b",
+            "default",
+            "fast",
+            "minimax-m2.7",
+        }
+        picker_groups = set(self._group_names(picker))
+        assert added_wildcards <= picker_groups
+        assert not (removed_statics & picker_groups)
+        assert [g for g in self._group_names(default) if g not in removed_statics] == [
+            g for g in self._group_names(picker) if g not in added_wildcards
         ]
         for key in ("search_tools",):
             assert default[key] == picker[key]
@@ -1191,6 +1260,9 @@ class TestConfigDeltas:
 
         d, p = entries(default), entries(picker)
         for name, entry in d.items():
+            if name in removed_statics:
+                assert name not in p  # replaced by the provider wildcards
+                continue
             expected = entry
             if name == "lite-llm/complexity":
                 # documented delta: the picker plugin is added to the complexity config

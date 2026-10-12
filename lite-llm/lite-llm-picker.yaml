@@ -55,23 +55,39 @@ model_list:
     model_info:
       allowed_fails: 1000000
 
-  # --- Ollama Cloud Models ---
-  # This endpoint is fairly slow
-  - model_name: nemotron-3-ultra:cloud
+  # --- Provider wildcards (picker mode) ---
+  # Every provider is catalog-driven: the picker lists each provider's
+  # /v1/models at refresh time and rewrites eligible requests to
+  # <provider>/<catalog-id>, served by these wildcard entries. The provider
+  # catalogs churn (model ids come and go), so nothing here is hand-maintained.
+  - model_name: nvidia_nim/*
     litellm_params:
-      model: openai/nemotron-3-ultra:cloud
-      api_base: https://ollama.com/v1
-      api_key: os.environ/OLLAMA_API_KEY
+      model: nvidia_nim/*
+      api_key: os.environ/NIM_API_KEY
       stream_timeout: 30.0
       timeout: 180.0
+    model_info:
+      allowed_fails: 1000000
 
-  - model_name: nemotron-3-super:cloud
+  - model_name: ollama/*
     litellm_params:
-      model: openai/nemotron-3-super:cloud
+      model: openai/*
       api_base: https://ollama.com/v1
       api_key: os.environ/OLLAMA_API_KEY
       stream_timeout: 30.0
       timeout: 180.0
+    model_info:
+      allowed_fails: 1000000
+
+  - model_name: llm7/*
+    litellm_params:
+      model: openai/*
+      api_base: https://api.llm7.io/v1
+      api_key: os.environ/LLM7_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+    model_info:
+      allowed_fails: 1000000
 
   # --- Google AI Studio Models ---
   # These models are all generally (<1sec of latency) fast but sometimes fairly slow (more than 1min of latency)
@@ -86,67 +102,6 @@ model_list:
     litellm_params:
       model: gemini/gemini-3.1-flash-lite
       api_key: os.environ/GOOGLE_API_KEY
-      stream_timeout: 30.0
-      timeout: 180.0
-
-  # --- LLM7 Models ---
-  # These models are all generally quite fast (<2sec of latency in healthcheck)
-  # The default and fast model groups tend to be flaky
-  - model_name: default
-    litellm_params:
-      model: openai/default
-      api_base: https://api.llm7.io/v1
-      api_key: os.environ/LLM7_API_KEY
-      stream_timeout: 30.0
-      timeout: 180.0
-
-  - model_name: fast
-    litellm_params:
-      model: openai/fast
-      api_base: https://api.llm7.io/v1
-      api_key: os.environ/LLM7_API_KEY
-      stream_timeout: 30.0
-      timeout: 180.0
-
-  - model_name: minimax-m2.7
-    litellm_params:
-      model: openai/minimax-m2.7
-      api_base: https://api.llm7.io/v1
-      api_key: os.environ/LLM7_API_KEY
-      stream_timeout: 30.0
-      timeout: 180.0
-
-  # --- Nvidia NIM Models ---
-  # Note: All of the models from this provider respond rather slowly, but it varies by model
-  # Kimi is buggy in this harness; disabling for now
-  # - model_name: moonshotai/kimi-k3
-  #   litellm_params:
-  #     model: nvidia_nim/moonshotai/kimi-k3
-  #     api_key: os.environ/NIM_API_KEY
-  #     stream_timeout: 30.0
-  #     timeout: 180.0
-
-  # healthcheck latency of <1.5min
-  - model_name: z-ai/glm-5.3
-    litellm_params:
-      model: nvidia_nim/z-ai/glm-5.3
-      api_key: os.environ/NIM_API_KEY
-      stream_timeout: 30.0
-      timeout: 180.0
-
-  # healthcheck latency of <10sec, but can be flaky
-  - model_name: z-ai/glm-5.3-flash
-    litellm_params:
-      model: nvidia_nim/z-ai/glm-5.3-flash
-      api_key: os.environ/NIM_API_KEY
-      stream_timeout: 30.0
-      timeout: 180.0
-
-  # healthcheck latency of <30sec, but can be flaky
-  - model_name: nvidia/nemotron-3-ultra-550b-a55b
-    litellm_params:
-      model: nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b
-      api_key: os.environ/NIM_API_KEY
       stream_timeout: 30.0
       timeout: 180.0
 
@@ -273,9 +228,11 @@ search_tools:
 router_settings:
   # Picker mode retries failed picks in-request; the plugin excludes its prior
   # picks per request, so each retry lands on the next-ranked candidate. The
-  # default config's all-zero retry_policy is deliberately NOT carried over
-  # (it would zero retries per exception type).
-  num_retries: 3
+  # budget spans the catalog-driven pool (the walk continues until a model
+  # works or none are left; most failures — 404s, credit gates — fail fast).
+  # The default config's all-zero retry_policy is deliberately NOT carried
+  # over (it would zero retries per exception type).
+  num_retries: 64
 
   allowed_fails: 1
-  fallbacks: [{"lite-llm/webSearch": ["gemini-3.1-flash-lite", "minimax-m2.7", "z-ai/glm-5.3-flash", "nemotron-3-super:cloud", "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3", "default", "fast"]}, {"lite-llm/image": ["gemini-3.1-flash-lite", "z-ai/glm-5.3-flash"]}]
+  fallbacks: [{"lite-llm/webSearch": ["gemini-3.1-flash-lite", "nvidia_nim/z-ai/glm-5.3-flash", "ollama/nemotron-3-super", "nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b", "llm7/GLM-5.3-Flash"]}, {"lite-llm/image": ["gemini-3.1-flash-lite", "nvidia_nim/z-ai/glm-5.3-flash"]}]
