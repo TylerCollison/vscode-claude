@@ -967,6 +967,16 @@ class CatalogManager:
             return None
         return {c.name for c in snap.candidates}
 
+    def peek_candidate(self, name: str) -> "ModelCandidate | None":
+        """One candidate from the cached snapshot by name (None if cold/absent)."""
+        snap = self._snapshot
+        if snap is None:
+            return None
+        for c in snap.candidates:
+            if c.name == name:
+                return c
+        return None
+
 
 def get_shared_manager() -> CatalogManager:
     """Process-wide manager.

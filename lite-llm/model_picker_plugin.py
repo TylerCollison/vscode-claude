@@ -114,6 +114,84 @@ def _preserve_legacy_max_tokens() -> None:
         logger.warning("model_picker: could not install legacy max_tokens preservation (%s)", e)
 
 
+# Catalog-discovered models are absent from litellm's static model map
+# (model_prices_and_context_window.json): litellm only knows the models the
+# world submitted PRs for. Routing paths that need a routed model's context
+# window (the router's pre-call checks, the complexity router's context
+# compaction) go through Router.get_router_model_info, which RAISES
+# ModelNotMappedError for anything unmapped — 500-ing every request that
+# lands on a discovered candidate. Fall back to what the picker already
+# knows: the catalog's published context window, then the deployment's own
+# model_info, then a conservative default.
+_FALLBACK_MAX_INPUT_TOKENS = 32768
+_FALLBACK_MAX_OUTPUT_TOKENS = 8192
+
+
+def _unmapped_model_info_fallback(deployment, manager=None, resolved_name=None) -> dict:
+    """Model info for a catalog-discovered model absent from litellm's map."""
+    info: dict = {}
+    candidate = None
+    lookup_names = []
+    if resolved_name:
+        lookup_names.append(str(resolved_name))
+    if isinstance(deployment, dict) and deployment.get("model_name"):
+        lookup_names.append(str(deployment["model_name"]))
+    for name in lookup_names:
+        if "*" in name:
+            continue  # the wildcard literal never matches a candidate
+        try:
+            mgr = manager or model_picker.get_shared_manager()
+            candidate = mgr.peek_candidate(name)
+        except Exception:  # noqa: BLE001 — the fallback must never fail
+            candidate = None
+        if candidate is not None:
+            break
+    if isinstance(deployment, dict):
+        user_info = deployment.get("model_info") or {}
+        if isinstance(user_info, dict):
+            info.update({k: v for k, v in user_info.items() if v is not None})
+    if candidate is not None and candidate.context_length:
+        max_input = max(1024, candidate.context_length - _FALLBACK_MAX_OUTPUT_TOKENS)
+    else:
+        max_input = info.get("max_input_tokens") or _FALLBACK_MAX_INPUT_TOKENS
+    info.setdefault("max_input_tokens", max_input)
+    info.setdefault("max_output_tokens", _FALLBACK_MAX_OUTPUT_TOKENS)
+    info.setdefault("max_tokens", _FALLBACK_MAX_OUTPUT_TOKENS)
+    if candidate is not None:
+        info.setdefault("litellm_provider", candidate.provider)
+    return info
+
+
+def _fallback_model_info_for_unmapped_models() -> None:
+    try:
+        from litellm.router import Router as _Router
+
+        original = _Router.get_router_model_info
+
+        def get_router_model_info(self, deployment, received_model_name=None, *args, **kwargs):
+            try:
+                return original(self, deployment, received_model_name, *args, **kwargs)
+            except Exception as e:
+                if "isn't mapped" not in str(e) and "ModelNotMapped" not in type(e).__name__:
+                    raise
+                # the deployment's model_name is the wildcard literal; the
+                # received name is the resolved candidate
+                name = received_model_name or (
+                    deployment.get("model_name") if isinstance(deployment, dict) else deployment
+                )
+                logger.info("model_picker: unmapped-model fallback info for %s", name)
+                info = _unmapped_model_info_fallback(deployment, resolved_name=name)
+                if isinstance(name, str) and name:
+                    info.setdefault("key", name)
+                return info
+
+        get_router_model_info._model_picker_patch = True  # marker for tests/introspection
+        _Router.get_router_model_info = get_router_model_info
+        logger.debug("model_picker: unmapped-model info fallback installed")
+    except Exception as e:  # noqa: BLE001 — a patch failure must not break the proxy
+        logger.warning("model_picker: could not install unmapped-model info fallback (%s)", e)
+
+
 # Catalog-driven pools inevitably contain listed-but-dead models (a NIM model
 # 404s while still appearing in its catalog). litellm refuses to retry
 # NotFoundError unconditionally, which would end the request on the first dead
@@ -142,6 +220,7 @@ def _retry_not_found_errors() -> None:
 
 _preserve_legacy_max_tokens()
 _retry_not_found_errors()
+_fallback_model_info_for_unmapped_models()
 
 # ---------------------------------------------------------------------------
 # Tier detection

@@ -1133,6 +1133,46 @@ class TestPlugin:
         # unknown names pass through untouched
         assert stats_logger._event_group({"litellm_metadata": {"deployment_model_name": "fast"}}) == "fast"
 
+    def test_unmapped_model_info_fallback_uses_catalog_context(self, mp, fresh):
+        """Discovered models absent from litellm's map get fallback info built
+        from the catalog's published context window (or a conservative default)."""
+        lib, plugin = mp
+        _, _, cfg, stats, manager = fresh
+        # warm snapshot with a known-context candidate and an unknown one
+        manager._snapshot = lib.CatalogSnapshot(
+            candidates=[
+                lib.ModelCandidate(name="pollinations/openai/gpt-6-luna", provider="pollinations",
+                                   context_length=1050000, metricless=False, success_rate=0.99, requests=100),
+                lib.ModelCandidate(name="nvidia_nim/01-ai/yi-large", provider="nvidia_nim",
+                                   context_length=0, metricless=True),
+            ]
+        )
+        # known context: budget = context minus the output reserve
+        known = plugin._unmapped_model_info_fallback(
+            {"model_name": "pollinations/openai/gpt-6-luna", "model_info": None}, manager=manager
+        )
+        assert known["max_input_tokens"] == 1050000 - plugin._FALLBACK_MAX_OUTPUT_TOKENS
+        assert known["litellm_provider"] == "pollinations"
+        # unknown context: conservative default; user model_info wins over the default
+        unknown = plugin._unmapped_model_info_fallback({"model_name": "nvidia_nim/01-ai/yi-large"}, manager=manager)
+        assert unknown["max_input_tokens"] == plugin._FALLBACK_MAX_INPUT_TOKENS
+        tuned = plugin._unmapped_model_info_fallback(
+            {"model_name": "nvidia_nim/01-ai/yi-large", "model_info": {"max_input_tokens": 65536}}, manager=manager
+        )
+        assert tuned["max_input_tokens"] == 65536
+        # cold manager / non-dict deployment: still a sane default
+        cold = plugin._unmapped_model_info_fallback({"model_name": "nvidia_nim/whatever"})
+        assert cold["max_input_tokens"] == plugin._FALLBACK_MAX_INPUT_TOKENS
+        assert plugin._unmapped_model_info_fallback(None)["max_input_tokens"] == plugin._FALLBACK_MAX_INPUT_TOKENS
+
+    def test_unmapped_model_info_patch_installed(self, mp):
+        lib, plugin = mp
+        from litellm.router import Router
+
+        assert getattr(Router.get_router_model_info, "__name__", "") == "get_router_model_info"
+        # the patch wraps the original behind a marker attribute
+        assert getattr(Router.get_router_model_info, "_model_picker_patch", None) is not None
+
     def test_event_group_cold_manager_passes_through(self, mp, fresh):
         lib, plugin = mp
         _, _, cfg, stats, manager = fresh
