@@ -14,13 +14,13 @@ Design (beads workspace-c8o, revised in workspace-4wr):
   catalog API — the pollinations listing (metric-backed; official and
   community both eligible, paid_only/down excluded; its pollen pricing
   discerns free-tier models, which the backend intermittently credit-gates)
-  plus NIM, Ollama and LLM7 listings. NIM and Ollama publish no metrics
+  plus NIM and LLM7 listings. NIM publishes no metrics
   (metric-less; NIM filters non-chat families by id). LLM7 publishes
   availability telemetry, per-token pricing and context windows: only its
   FREE models (zero/absent pricing) are eligible, and those with
   availability telemetry rank as metric-backed on the published health.
   Each provider's listing is served through a wildcard model_list entry
-  (pollinations/*, nvidia_nim/*, ollama/*, llm7/*); a failed provider
+  (pollinations/*, nvidia_nim/*, llm7/*); a failed provider
   refresh keeps that provider's last-known candidates.
 - Ranking classes: UNKNOWN (untried metric-less, favored — ranks above
   everything on the health dimension, except deprioritized providers such as
@@ -67,7 +67,6 @@ logger = logging.getLogger("model_picker")
 
 POLLINATIONS_MODELS_URL = "https://gen.pollinations.ai/v1/models"
 NIM_MODELS_URL = "https://integrate.api.nvidia.com/v1/models"
-OLLAMA_MODELS_URL = "https://ollama.com/v1/models"
 LLM7_MODELS_URL = "https://api.llm7.io/v1/models"
 
 # modelgrep.com aggregates benchmarks for 300+ models (Artificial Analysis,
@@ -100,12 +99,6 @@ DEFAULT_UNTRIED_PRIOR_SCORE = 0.5
 
 CATALOG_FETCH_TIMEOUT_SECONDS = 10.0
 
-# api_base substrings -> provider for static-group discovery. Pollinations
-# groups are handled by the catalog; gemini groups are excluded per spec.
-_STATIC_PROVIDER_BY_API_BASE = (
-    ("ollama.com", "ollama"),
-    ("api.llm7.io", "llm7"),
-)
 
 
 def _env_float(name: str, default: float) -> float:
@@ -160,7 +153,7 @@ class ModelCandidate:
     """One rankable model, normalized across providers."""
 
     name: str  # routable model group name: "pollinations/<id>" or a static group
-    provider: str  # pollinations | nvidia_nim | ollama | llm7
+    provider: str  # pollinations | nvidia_nim | llm7
     context_length: int = 0  # 0 = unknown (bypasses fit filtering)
     metricless: bool = True  # no published metrics -> favored while UNKNOWN
     success_rate: float = 1.0  # published 0..1 (placeholder for metric-less)
@@ -301,26 +294,6 @@ def parse_nim_models(payload: dict | list) -> list[ModelCandidate]:
             ModelCandidate(
                 name=f"nvidia_nim/{model_id}",
                 provider="nvidia_nim",
-                context_length=int(m.get("context_length") or 0),
-                metricless=True,
-                source="prior",
-            )
-        )
-    return out
-
-
-def parse_ollama_models(payload: dict | list) -> list[ModelCandidate]:
-    """Parse Ollama's /v1/models into chat-capable metric-less candidates."""
-    out: list[ModelCandidate] = []
-    for m in _bare_catalog_entries(payload):
-        model_id = str(m["id"])
-        lowered = model_id.lower()
-        if "embed" in lowered:
-            continue
-        out.append(
-            ModelCandidate(
-                name=f"ollama/{model_id}",
-                provider="ollama",
                 context_length=int(m.get("context_length") or 0),
                 metricless=True,
                 source="prior",
@@ -1133,11 +1106,6 @@ async def _fetch_json(url: str, api_key: str | None) -> dict | list:
         return resp.json()
 
 
-async def fetch_pollinations_catalog(cfg: PickerConfig) -> list[ModelCandidate]:
-    payload = await _fetch_json(cfg.pollinations_url, os.environ.get("POLLINATION_API_KEY"))
-    return parse_pollinations_models(payload)
-
-
 async def fetch_provider_models(url: str, api_key_env: str) -> dict | list:
     """Raw /v1/models payload from a provider (parsed by the caller)."""
     return await _fetch_json(url, os.environ.get(api_key_env))
@@ -1158,7 +1126,7 @@ class CatalogSnapshot:
 class CatalogManager:
     """TTL-cached catalog with single-flight refresh and stale/fallback serve.
 
-    Every provider is catalog-driven: pollinations, NIM, Ollama and LLM7
+    Every provider is catalog-driven: pollinations, NIM and LLM7
     models are discovered from their /v1/models listings at refresh time and
     served through the per-provider wildcard model_list entries. A provider
     whose listing fails mid-refresh keeps its previously-known candidates
@@ -1277,7 +1245,7 @@ class CatalogManager:
             try:
                 pollinations = await self._fetch_provider(
                     "pollinations",
-                    lambda: fetch_pollinations_catalog(self.cfg),
+                    lambda: _fetch_json(self.cfg.pollinations_url, os.environ.get("POLLINATION_API_KEY")),
                     parse_pollinations_models,
                 )
                 nim = await self._fetch_provider(
@@ -1285,18 +1253,13 @@ class CatalogManager:
                     lambda: fetch_provider_models(NIM_MODELS_URL, "NIM_API_KEY"),
                     parse_nim_models,
                 )
-                ollama = await self._fetch_provider(
-                    "ollama",
-                    lambda: fetch_provider_models(OLLAMA_MODELS_URL, "OLLAMA_API_KEY"),
-                    parse_ollama_models,
-                )
                 llm7 = await self._fetch_provider(
                     "llm7",
                     lambda: fetch_provider_models(LLM7_MODELS_URL, "LLM7_API_KEY"),
                     parse_llm7_models,
                 )
                 await self._refresh_modelgrep()
-                candidates = pollinations + nim + ollama + llm7
+                candidates = pollinations + nim + llm7
                 candidates = self._enrich_and_gate(candidates)
                 if not candidates:
                     raise RuntimeError("provider catalogs returned no eligible models")

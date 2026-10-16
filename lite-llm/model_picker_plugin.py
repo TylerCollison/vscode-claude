@@ -90,7 +90,7 @@ model_picker = _load_sibling("model_picker")
 # ---------------------------------------------------------------------------
 
 # Every `openai/`-prefixed deployment in this proxy is an OpenAI-COMPATIBLE
-# third party (pollinations, llm7, ollama) — none is actual OpenAI. litellm
+# third party (pollinations, llm7) — none is actual OpenAI. litellm
 # renames max_tokens -> max_completion_tokens for gpt-named models (an OpenAI
 # API requirement), and pollinations' credit gate treats that parameter name
 # punitively (gated at any value, even 1, while the legacy max_tokens passes).

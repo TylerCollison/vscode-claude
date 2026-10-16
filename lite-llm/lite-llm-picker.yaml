@@ -69,16 +69,6 @@ model_list:
     model_info:
       allowed_fails: 1000000
 
-  - model_name: ollama/*
-    litellm_params:
-      model: openai/*
-      api_base: https://ollama.com/v1
-      api_key: os.environ/OLLAMA_API_KEY
-      stream_timeout: 30.0
-      timeout: 180.0
-    model_info:
-      allowed_fails: 1000000
-
   - model_name: llm7/*
     litellm_params:
       model: openai/*
@@ -235,4 +225,4 @@ router_settings:
   num_retries: 64
 
   allowed_fails: 1
-  fallbacks: [{"lite-llm/webSearch": ["gemini-3.1-flash-lite", "nvidia_nim/z-ai/glm-5.3-flash", "ollama/nemotron-3-super", "nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b", "llm7/GLM-5.3-Flash"]}, {"lite-llm/image": ["gemini-3.1-flash-lite", "nvidia_nim/z-ai/glm-5.3-flash"]}]
+  fallbacks: [{"lite-llm/webSearch": ["gemini-3.1-flash-lite", "nvidia_nim/z-ai/glm-5.3-flash", "nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b", "llm7/GLM-5.3-Flash"]}, {"lite-llm/image": ["gemini-3.1-flash-lite", "nvidia_nim/z-ai/glm-5.3-flash"]}]

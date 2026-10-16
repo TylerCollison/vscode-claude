@@ -698,7 +698,7 @@ class TestRubricRanking:
     def test_default_tier_favored_first_then_health_then_context(self, fresh):
         lib, _, cfg, stats, _ = fresh
         favored_big = favored_candidate(lib, "z-ai/glm-5.3", ctx=1048576)
-        favored_small = favored_candidate(lib, "nemotron-3-super:cloud", provider="ollama", ctx=262144)
+        favored_small = favored_candidate(lib, "nvidia/nemotron-3-super", provider="nvidia_nim", ctx=262144)
         strong_metric = metric_candidate(lib, "pollinations/openai/gpt-5.4-nano", 0.9997, 87885)
         weak_metric = metric_candidate(lib, "pollinations/openai/gpt-oss-20b", 0.9, 1000)
         ranked = lib.rank_candidates(
@@ -708,7 +708,7 @@ class TestRubricRanking:
         # chance first (favored, big context tiebreak), then metric by health
         assert order == [
             "z-ai/glm-5.3",
-            "nemotron-3-super:cloud",
+            "nvidia/nemotron-3-super",
             "pollinations/openai/gpt-5.4-nano",
             "pollinations/openai/gpt-oss-20b",
         ]
@@ -907,7 +907,7 @@ class TestRubricRanking:
         huge_request = 500000
         small_metric = metric_candidate(lib, "pollinations/openai/gpt-5.4-nano", 0.9997, 87885, ctx=400000)
         big_metric = metric_candidate(lib, "pollinations/openai/gpt-6-luna", 0.999, 1000, ctx=1048576)
-        unknown_ctx_favored = favored_candidate(lib, "nemotron-3-super:cloud", provider="ollama", ctx=0)
+        unknown_ctx_favored = favored_candidate(lib, "nvidia/nemotron-3-super", provider="nvidia_nim", ctx=0)
         ranked = lib.rank_candidates(
             [small_metric, big_metric, unknown_ctx_favored],
             lib.TIER_DEFAULT,
@@ -918,17 +918,17 @@ class TestRubricRanking:
         names = [r.candidate.name for r in ranked]
         assert "pollinations/openai/gpt-5.4-nano" not in names  # known 400k < 500k estimate
         assert "pollinations/openai/gpt-6-luna" in names
-        assert "nemotron-3-super:cloud" in names  # unknown context bypasses fit
+        assert "nvidia/nemotron-3-super" in names  # unknown context bypasses fit
 
     def test_existence_check_marks_removed_models(self, fresh):
         """Catalog-driven candidates are born from the listing; the manager's
         per-provider stale-serve replaces the old existence-check mechanism."""
         lib, _, cfg, stats, _ = fresh
-        gone = favored_candidate(lib, "old-model", provider="ollama")
+        gone = favored_candidate(lib, "old-model", provider="nvidia_nim")
         gone.available = False
-        present = favored_candidate(lib, "nemotron-3-super", provider="ollama")
+        present = favored_candidate(lib, "z-ai/glm-5.3", provider="nvidia_nim")
         ranked = lib.rank_candidates([gone, present], lib.TIER_DEFAULT, stats, cfg)
-        assert [r.candidate.name for r in ranked] == ["nemotron-3-super"]
+        assert [r.candidate.name for r in ranked] == ["z-ai/glm-5.3"]
 
     def test_sustained_rate_limits_demote_and_recover(self, fresh):
         lib, _, cfg, stats, _ = fresh
@@ -1013,13 +1013,6 @@ class TestProviderCatalogs:
         for c in candidates:
             assert c.provider == "nvidia_nim"
             assert c.metricless is True
-
-    def test_ollama_models_parsed(self, mp):
-        lib, _ = mp
-        payload = {"data": [{"id": "nemotron-3-super"}, {"id": "glm-5.3-flash"}, {"id": "some-embed-model"}]}
-        candidates = lib.parse_ollama_models(payload)
-        assert {c.name for c in candidates} == {"ollama/nemotron-3-super", "ollama/glm-5.3-flash"}
-        assert all(c.provider == "ollama" for c in candidates)
 
     def test_llm7_models_parsed_with_type_endpoint_context(self, mp):
         lib, _ = mp
@@ -1111,7 +1104,10 @@ class TestProviderCatalogs:
             return []
 
         monkeypatch.setattr("model_picker.fetch_modelgrep_catalog", empty_modelgrep)
-        monkeypatch.setattr("model_picker.fetch_pollinations_catalog", bad_fetch)
+        async def bad_raw(url, api_key):
+            raise RuntimeError("pollinations down")
+
+        monkeypatch.setattr("model_picker._fetch_json", bad_raw)
         monkeypatch.setattr("model_picker.fetch_provider_models", good_fetch)
         # first refresh: pollinations fails, NIM succeeds
         snap1 = asyncio.run(manager.get_snapshot())
@@ -1347,7 +1343,11 @@ class TestCatalogManager:
             calls["n"] += 1
             return candidates_from_fixture(lib)
 
-        monkeypatch.setattr("model_picker.fetch_pollinations_catalog", fake_fetch)
+        async def fake_raw_fetch(url, api_key):
+            calls["n"] += 1
+            return json.loads((FIXTURES / "pollinations_models.json").read_text())
+
+        monkeypatch.setattr("model_picker._fetch_json", fake_raw_fetch)
         self._mock_other_providers(monkeypatch)
         snap1 = asyncio.run(manager.get_snapshot())
         snap2 = asyncio.run(manager.get_snapshot())
@@ -1364,13 +1364,21 @@ class TestCatalogManager:
         async def bad_fetch(cfg):
             raise RuntimeError("pollinations down")
 
-        monkeypatch.setattr("model_picker.fetch_pollinations_catalog", good_fetch)
+        async def good_raw(url, api_key):
+            return json.loads((FIXTURES / "pollinations_models.json").read_text())
+
+        monkeypatch.setattr("model_picker._fetch_json", good_raw)
         self._mock_other_providers(monkeypatch)
         snap1 = asyncio.run(manager.get_snapshot())
         time.sleep(0.06)
-        monkeypatch.setattr("model_picker.fetch_pollinations_catalog", bad_fetch)
+        async def bad_raw(url, api_key):
+            raise RuntimeError("pollinations down")
+
+        monkeypatch.setattr("model_picker._fetch_json", bad_raw)
         snap2 = asyncio.run(manager.get_snapshot())
-        assert snap2.stale is True
+        # pollinations failed -> its last-known candidates serve transparently
+        # in a fresh snapshot (stale marks whole-refresh failures only)
+        assert snap2.stale is False
         assert snap2.candidates == snap1.candidates
 
     def test_fallback_snapshot_when_cold_and_down(self, fresh, monkeypatch):
@@ -1379,7 +1387,10 @@ class TestCatalogManager:
         async def bad_fetch(cfg):
             raise RuntimeError("down")
 
-        monkeypatch.setattr("model_picker.fetch_pollinations_catalog", bad_fetch)
+        async def bad_raw(url, api_key):
+            raise RuntimeError("pollinations down")
+
+        monkeypatch.setattr("model_picker._fetch_json", bad_raw)
         self._mock_other_providers(monkeypatch)
         snap = asyncio.run(manager.get_snapshot())
         assert snap.stale is True
@@ -1448,7 +1459,7 @@ class TestConfigDeltas:
         for entry in picker["router_settings"]["fallbacks"]:
             assert not (set(entry[key]) & removed_statics) if (key := list(entry)[0]) else True
         # every picker fallback target resolves through a wildcard or a kept group
-        wildcard_prefixes = ("nvidia_nim/", "ollama/", "llm7/", "pollinations/", "gemini-")
+        wildcard_prefixes = ("nvidia_nim/", "llm7/", "pollinations/", "gemini-")
         for entry in picker["router_settings"]["fallbacks"]:
             for target in entry[list(entry)[0]]:
                 assert target.startswith(wildcard_prefixes), target
@@ -1467,7 +1478,7 @@ class TestConfigDeltas:
         Picker-mode deltas: the provider wildcards replace the hand-maintained
         static provider groups (the picker discovers those catalogs live)."""
         default, picker = self._configs()
-        added_wildcards = {"pollinations/*", "nvidia_nim/*", "ollama/*", "llm7/*"}
+        added_wildcards = {"pollinations/*", "nvidia_nim/*", "llm7/*"}
         removed_statics = {
             "nemotron-3-super:cloud",
             "nemotron-3-ultra:cloud",
