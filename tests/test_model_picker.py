@@ -344,6 +344,136 @@ class TestSoftFailureDetection:
 
 
 # ---------------------------------------------------------------------------
+# Modelgrep enrichment: matching, benchmark composite, gating, ranking
+# ---------------------------------------------------------------------------
+
+
+def _mg_entry(mg_id, maker=None, **aa_scores):
+    """One modelgrep entry with an artificial_analysis block."""
+    return {
+        "id": mg_id,
+        "maker": maker or mg_id.split("/")[0],
+        "benchmarks": {"artificial_analysis": aa_scores or {}},
+    }
+
+
+class TestModelgrepEnrichment:
+    @staticmethod
+    def _index(entries):
+        return lib_modelgrep_index(entries)
+
+    def test_exact_and_normalization_match(self, mp):
+        lib, _ = mp
+        idx = lib.ModelGrepIndex([_mg_entry("openai/gpt-5.4-nano", coding_pct=60)])
+        entry, stage, conf = idx.match("openai/gpt_5.4.nano")  # separators normalize
+        assert entry["id"] == "openai/gpt-5.4-nano"
+        assert stage == "exact" and conf == 1.0
+
+    def test_community_prefix_and_decoration_stripping(self, mp):
+        lib, _ = mp
+        idx = lib.ModelGrepIndex([_mg_entry("z-ai/glm-5.3-flash")])
+        entry, stage, _ = idx.match("community/morriszdweck/glm-5.3-flash-free")
+        assert entry["id"] == "z-ai/glm-5.3-flash"
+
+    def test_maker_aliasing(self, mp):
+        lib, _ = mp
+        idx = lib.ModelGrepIndex([_mg_entry("deepseek/deepseek-v4.1-flash")])
+        entry, _, _ = idx.match("deepseek-ai/deepseek-v4.1-flash")
+        assert entry["id"] == "deepseek/deepseek-v4.1-flash"
+
+    def test_version_guard_rejects_close_versions(self, mp):
+        lib, _ = mp
+        idx = lib.ModelGrepIndex([_mg_entry("z-ai/glm-5.2")])
+        entry, stage, _ = idx.match("z-ai/glm-5.3")
+        assert entry is None  # glm-5.3 must never match glm-5.2
+
+    def test_variant_guard_rejects_variant_drift(self, mp):
+        lib, _ = mp
+        idx = lib.ModelGrepIndex([_mg_entry("z-ai/glm-5.3-flash-lite")])
+        entry, _, _ = idx.match("z-ai/glm-5.3-flash")
+        assert entry is None  # -flash is not -flash-lite
+
+    def test_size_sibling_resolution(self, mp):
+        lib, _ = mp
+        idx = lib.ModelGrepIndex([_mg_entry("nvidia/nemotron-3-ultra-550b-a55b")])
+        entry, stage, conf = idx.match("nvidia/nemotron-3-ultra")
+        assert entry["id"] == "nvidia/nemotron-3-ultra-550b-a55b"
+        assert stage == "family-size-sibling" and conf <= 0.5
+
+    def test_ambiguous_bare_segment_rejected(self, mp):
+        lib, _ = mp
+        idx = lib.ModelGrepIndex([_mg_entry("z-ai/glm-5.3-flash"), _mg_entry("acme/glm-5.3-flash")])
+        entry, _, _ = idx.match("community/user/glm-5.3-flash")
+        assert entry is None  # two makers own this segment -> gate out
+
+    def test_benchmark_composite_pct_preferred_and_scales(self, mp):
+        lib, _ = mp
+        score, ok = lib.modelgrep_benchmark_score(
+            {"benchmarks": {"artificial_analysis": {"coding_pct": 60, "agentic": 38.4, "terminalbench_pct": 95}}}
+        )
+        assert ok
+        assert score == pytest.approx((0.60 + 0.384 + 0.95) / 3, abs=1e-3)
+
+    def test_benchmark_composite_raw_fallbacks_and_partial(self, mp):
+        lib, _ = mp
+        score, ok = lib.modelgrep_benchmark_score(
+            {"benchmarks": {"artificial_analysis": {"coding": 68.8, "tau2": 0.99, "terminalbench": 0.51}}}
+        )
+        assert ok
+        assert score == pytest.approx((0.688 + 0.99 + 0.51) / 3, abs=1e-3)
+        partial, ok2 = lib.modelgrep_benchmark_score(
+            {"benchmarks": {"artificial_analysis": {"terminalbench": 0.4}}}
+        )
+        assert ok2 and partial == pytest.approx(0.4)
+        none_score, none_ok = lib.modelgrep_benchmark_score({"benchmarks": {"artificial_analysis": {}}})
+        assert none_ok is False and none_score == 0.0
+
+    def test_gate_drops_unmatched_and_enriches_matched(self, fresh):
+        lib, _, cfg, stats, manager = fresh
+        manager._modelgrep_entries = [
+            _mg_entry("openai/gpt-5.4-nano", coding_pct=80, agentic_pct=70, terminalbench_pct=60),
+            _mg_entry("z-ai/glm-5.3-flash"),
+        ]
+        candidates = [
+            lib.ModelCandidate(name="pollinations/openai/gpt-5.4-nano", provider="pollinations", metricless=False, success_rate=0.9997, requests=87885),
+            lib.ModelCandidate(name="pollinations/community/user/mystery-model", provider="pollinations", metricless=False, success_rate=0.99, requests=50),
+        ]
+        kept = manager._enrich_and_gate(candidates)
+        assert [c.name for c in kept] == ["pollinations/openai/gpt-5.4-nano"]
+        assert kept[0].benchmarked is True
+        assert kept[0].benchmark_score == pytest.approx((0.80 + 0.70 + 0.60) / 3)
+        assert kept[0].modelgrep_id == "openai/gpt-5.4-nano"
+
+    def test_gate_fail_open_without_modelgrep_data(self, fresh):
+        lib, _, cfg, stats, manager = fresh
+        assert manager._modelgrep_entries is None
+        candidates = [lib.ModelCandidate(name="pollinations/anything", provider="pollinations", metricless=True)]
+        kept = manager._enrich_and_gate(candidates)
+        assert kept == candidates  # cold modelgrep never gates
+
+    def test_benchmarks_break_availability_context_ties(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        weak_bench = lib.ModelCandidate(
+            name="pollinations/weak-bench", provider="pollinations", metricless=False,
+            success_rate=0.9997, requests=87885, context_length=1048576, benchmark_score=0.2, benchmarked=True,
+        )
+        strong_bench = lib.ModelCandidate(
+            name="pollinations/strong-bench", provider="pollinations", metricless=False,
+            success_rate=0.9997, requests=87885, context_length=1048576, benchmark_score=0.8, benchmarked=True,
+        )
+        ranked = lib.rank_candidates([weak_bench, strong_bench], lib.TIER_DEFAULT, stats, cfg)
+        assert ranked[0].candidate.name == "pollinations/strong-bench"
+        # think tier too (same health/class/context -> benchmark decides)
+        ranked = lib.rank_candidates([weak_bench, strong_bench], lib.TIER_THINK, stats, cfg)
+        assert ranked[0].candidate.name == "pollinations/strong-bench"
+
+
+def lib_modelgrep_index(entries):
+    lib = sys.modules["model_picker"]
+    return lib.ModelGrepIndex(entries)
+
+
+# ---------------------------------------------------------------------------
 # Soft-failure retry (the client never sees provider error content)
 # ---------------------------------------------------------------------------
 
@@ -977,6 +1107,10 @@ class TestProviderCatalogs:
         async def bad_fetch(cfg):
             raise RuntimeError("down")
 
+        async def empty_modelgrep(url):
+            return []
+
+        monkeypatch.setattr("model_picker.fetch_modelgrep_catalog", empty_modelgrep)
         monkeypatch.setattr("model_picker.fetch_pollinations_catalog", bad_fetch)
         monkeypatch.setattr("model_picker.fetch_provider_models", good_fetch)
         # first refresh: pollinations fails, NIM succeeds
@@ -1189,7 +1323,7 @@ class TestPlugin:
 class TestCatalogManager:
     @staticmethod
     def _mock_other_providers(monkeypatch, fail=False):
-        """Mock the NIM/Ollama/LLM7 catalog fetches (empty or failing)."""
+        """Mock the NIM/Ollama/LLM7 and modelgrep fetches (empty or failing)."""
 
         async def empty_fetch(url, key_env):
             if fail:
@@ -1197,6 +1331,13 @@ class TestCatalogManager:
             return {"data": []}
 
         monkeypatch.setattr("model_picker.fetch_provider_models", empty_fetch)
+
+        async def empty_modelgrep(url):
+            if fail:
+                raise RuntimeError("modelgrep down")
+            return []
+
+        monkeypatch.setattr("model_picker.fetch_modelgrep_catalog", empty_modelgrep)
 
     def test_fresh_snapshot_reused_within_ttl(self, fresh, monkeypatch):
         lib, _, cfg, stats, manager = fresh

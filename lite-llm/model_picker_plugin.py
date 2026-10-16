@@ -336,7 +336,7 @@ class ModelPickerPlugin:
 
         pick = ranked[0].candidate
         logger.info(
-            "model_picker: tier=%s estimate=%dtok pick=%s (score=%.3f ctx=%s provider=%s free=%s stale=%s attempt_excluded=%s)",
+            "model_picker: tier=%s estimate=%dtok pick=%s (score=%.3f ctx=%s provider=%s free=%s bench=%s stale=%s attempt_excluded=%s)",
             tier,
             estimate,
             pick.name,
@@ -344,6 +344,7 @@ class ModelPickerPlugin:
             pick.context_length or "?",
             pick.provider,
             pick.free,
+            f"{pick.benchmark_score:.2f}" if pick.benchmarked else "-",
             snapshot.stale,
             prior_picks,
         )

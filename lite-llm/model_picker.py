@@ -54,6 +54,7 @@ import asyncio
 import logging
 import math
 import os
+import re
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -68,6 +69,14 @@ POLLINATIONS_MODELS_URL = "https://gen.pollinations.ai/v1/models"
 NIM_MODELS_URL = "https://integrate.api.nvidia.com/v1/models"
 OLLAMA_MODELS_URL = "https://ollama.com/v1/models"
 LLM7_MODELS_URL = "https://api.llm7.io/v1/models"
+
+# modelgrep.com aggregates benchmarks for 300+ models (Artificial Analysis,
+# Design Arena). Keyless, edge-cached ~1h — it 403s default Python
+# User-Agents, so the fetcher must identify itself.
+MODELGREP_MODELS_URL = "https://modelgrep.com/api/v1/models"
+MODELGREP_PAGE_LIMIT = 200
+MODEL_PICKER_MODELGREP_USER_AGENT = "vscode-claude-model-picker/1.0 (catalog enrichment)"
+DEFAULT_BENCHMARK_TTL_SECONDS = 3600.0
 
 DEFAULT_TTL_SECONDS = 300.0
 DEFAULT_MIN_OBS = 3
@@ -131,6 +140,9 @@ class PickerConfig:
             if p.strip()
         )
         self.untried_prior_score = _env_float("MODEL_PICKER_UNTRIED_PRIOR_SCORE", DEFAULT_UNTRIED_PRIOR_SCORE)
+        self.modelgrep_url = os.environ.get("MODEL_PICKER_MODELGREP_URL", MODELGREP_MODELS_URL)
+        self.benchmark_ttl_seconds = _env_float("MODEL_PICKER_BENCHMARK_TTL_SECONDS", DEFAULT_BENCHMARK_TTL_SECONDS)
+        self.benchmarks_enabled = os.environ.get("MODEL_PICKER_BENCHMARKS_OFF", "").strip().lower() not in ("1", "true", "yes", "on")
 
 
 def picker_enabled() -> bool:
@@ -156,6 +168,9 @@ class ModelCandidate:
     available: bool = True  # False when the provider's catalog dropped it
     source: str = "prior"  # pollinations_api | prior
     free: bool = False  # pollinations: no nonzero pollen rate (free tier; credit-gated server-side)
+    benchmark_score: float = 0.0  # 0..1 modelgrep composite (coding, tool calling, SWE)
+    benchmarked: bool = False  # False when modelgrep has no scores for the match
+    modelgrep_id: str = ""  # matched modelgrep entry ("" when unmatched -> gated out)
 
     @property
     def wilson_score(self) -> float:
@@ -382,8 +397,285 @@ def parse_llm7_models(payload: dict | list) -> list[ModelCandidate]:
 
 
 # ---------------------------------------------------------------------------
-# Rolling stats (passive observation)
+# Modelgrep enrichment: benchmark metadata + pool gating
 # ---------------------------------------------------------------------------
+
+
+async def fetch_modelgrep_catalog(url: str) -> list[dict]:
+    """Fetch every model entry from modelgrep (paginated).
+
+    modelgrep 403s default Python User-Agents, so the client must identify
+    itself. Entries are the raw /models list objects (id, benchmarks, ...).
+    """
+    import httpx
+
+    entries: list[dict] = []
+    offset = 0
+    async with httpx.AsyncClient(
+        timeout=CATALOG_FETCH_TIMEOUT_SECONDS,
+        headers={"User-Agent": MODEL_PICKER_MODELGREP_USER_AGENT},
+        follow_redirects=True,
+    ) as client:
+        for _ in range(8):  # hard page cap — 364 models fit in two pages today
+            resp = await client.get(url, params={"limit": MODELGREP_PAGE_LIMIT, "offset": offset})
+            resp.raise_for_status()
+            page = resp.json()
+            data = [m for m in (page.get("data") or []) if isinstance(m, dict) and m.get("id")]
+            entries += data
+            meta = page.get("meta") or {}
+            if not meta.get("has_more") or not data:
+                break
+            offset = int(meta.get("next_offset") or 0)
+    return entries
+
+
+def modelgrep_benchmark_score(entry: dict) -> tuple[float, bool]:
+    """0..1 composite of coding, tool-calling, and software-engineering scores.
+
+    Prefers the *_pct percentile fields (already 0..100 across heterogeneous
+    raw scales); falls back to the raw Artificial Analysis figures, where
+    indexes run 0..100 and fractions (terminalbench, tau2, scicode,
+    livecodebench) run 0..1. Averages whatever components exist; (0.0, False)
+    when the entry has none.
+    """
+    aa = (entry.get("benchmarks") or {}).get("artificial_analysis") or {}
+
+    def pct(v):
+        return v / 100.0 if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+    def raw(v):
+        if not isinstance(v, (int, float)) or isinstance(v, bool):
+            return None
+        return v / 100.0 if v > 1.0 else float(v)
+
+    def first(*values):
+        for v in values:
+            if v is not None:
+                return v
+        return None
+
+    coding = first(pct(aa.get("coding_pct")), raw(aa.get("coding")), raw(aa.get("livecodebench")))
+    tool_calling = first(pct(aa.get("agentic_pct")), raw(aa.get("agentic")), raw(aa.get("tau2")))
+    swe = first(pct(aa.get("terminalbench_pct")), raw(aa.get("terminalbench")), raw(aa.get("scicode")))
+    parts = [p for p in (coding, tool_calling, swe) if p is not None]
+    if not parts:
+        return 0.0, False
+    return sum(parts) / len(parts), True
+
+
+# Name matching. Strict by design: a wrong mapping silently mis-ranks a
+# model, which is worse than dropping it. The pipeline tries alias variants
+# of the candidate's upstream id in decreasing confidence order, then a
+# structured family resolver guarded by version/variant/size equality.
+_NAME_SEPARATORS = re.compile(r"[\s_:]+")
+_NAME_SEPARATORS_KEEPING_DOTS = re.compile(r"[\s_]+")
+_NAME_COLLAPSE = re.compile(r"-{2,}")
+_DATE_STAMP = re.compile(r"-(\d{4})$")
+# serving decorations stripped ONLY when the decorated name has no exact
+# match — flash/lite/mini/nano/ultra etc. are NOT here on purpose: they name
+# different models
+_DECORATION_SUFFIXES = (
+    "free",
+    "instruct",
+    "it",
+    "chat",
+    "latest",
+    "turbo",
+    "bf16",
+    "cloud",
+)
+_MAKER_ALIASES = {
+    "deepseek-ai": "deepseek",
+    "meta": "meta-llama",
+    "xai": "x-ai",
+}
+_SIZE_TOKEN = re.compile(r"^[a-z]?\d+b$")
+
+
+def _norm_name(name: str) -> str:
+    """Canonical comparison form: lowercase, unified separators, collapsed."""
+    lowered = name.strip().lower()
+    lowered = _NAME_SEPARATORS.sub("-", lowered)
+    # versions: dots and dashes are the same model across providers
+    lowered = lowered.replace(".", "-")
+    return _NAME_COLLAPSE.sub("-", lowered)
+
+
+def _strip_decorations(segment: str) -> list[str]:
+    """Progressively less-decorated variants of a model segment (most stripped last)."""
+    variants = [segment]
+    current = segment
+    for _ in range(6):
+        stripped = None
+        m = _DATE_STAMP.search(current)
+        if m:
+            stripped = current[: m.start()] or None
+        else:
+            for suffix in _DECORATION_SUFFIXES:
+                if current.endswith("-" + suffix):
+                    stripped = current[: -(len(suffix) + 1)]
+                    break
+        if not stripped or stripped == current:
+            break
+        current = stripped
+        variants.append(current)
+    return variants
+
+
+def _alias_maker(id_or_segment: str) -> str:
+    parts = id_or_segment.split("/")
+    parts[0] = _MAKER_ALIASES.get(parts[0], parts[0])
+    return "/".join(parts)
+
+
+def _candidate_aliases(upstream_id: str) -> list[tuple[str, float, str]]:
+    """(alias, confidence, stage) variants of the upstream id, best first."""
+    seen: set[str] = set()
+    out: list[tuple[str, float, str]] = []
+
+    def add(alias: str, confidence: float, stage: str) -> None:
+        if alias and alias not in seen:
+            seen.add(alias)
+            out.append((alias, confidence, stage))
+
+    norm = _norm_name(upstream_id)
+    add(norm, 1.0, "exact")
+    add(_norm_name(_alias_maker(upstream_id)), 0.95, "maker-alias")
+
+    # decoration stripping on the full id and its trailing segment
+    segments = upstream_id.split("/")
+    for variant in _strip_decorations(segments[-1]):
+        if len(segments) > 1:
+            add(_norm_name("/".join(segments[:-1] + [variant])), 0.85, "decoration")
+        add(_norm_name(_alias_maker("/".join(segments[:-1] + [variant]))), 0.85, "decoration")
+        add(_norm_name(variant), 0.7, "decoration-segment")
+
+    # community/vendor prefix stripping (community/<user>/<model>, <vendor>/<model>)
+    for drop in (1, 2):
+        if len(segments) > drop:
+            tail = "/".join(segments[drop:])
+            add(_norm_name(tail), 0.6, f"prefix{drop}")
+            add(_norm_name(_alias_maker(tail)), 0.6, f"prefix{drop}")
+            tail_segments = tail.split("/")
+            for variant in _strip_decorations(tail_segments[-1]):
+                if len(tail_segments) > 1:
+                    add(_norm_name("/".join(tail_segments[:-1] + [variant])), 0.6, f"prefix{drop}-decoration")
+                add(_norm_name(variant), 0.55, f"prefix{drop}-decoration-segment")
+    return out
+
+
+def _segment_key(segment: str) -> tuple:
+    """(alpha-tokens, version-tokens, size-tokens) of a normalized segment."""
+    alpha: list[str] = []
+    version: list[str] = []
+    size: list[str] = []
+    for token in _norm_name(segment).split("-"):
+        if not token:
+            continue
+        if _SIZE_TOKEN.match(token):
+            size.append(token)
+        elif any(ch.isdigit() for ch in token):
+            version.append(token)
+        else:
+            alpha.append(token)
+    return tuple(alpha), tuple(version), tuple(size)
+
+
+def _size_rank(size_tokens: tuple[str, ...]) -> float:
+    """Sort key for size-decorated siblings: prefer the biggest parameter count."""
+    best = 0.0
+    for token in size_tokens:
+        m = re.search(r"(\d+)", token)
+        if m:
+            best = max(best, float(m.group(1)))
+    return best
+
+
+class ModelGrepIndex:
+    """Lookup structures over modelgrep entries for candidate matching."""
+
+    def __init__(self, entries: list[dict]) -> None:
+        self._by_id: dict[str, dict] = {}
+        self._by_segment: dict[str, list[dict]] = {}
+        self._by_key: dict[tuple, list[dict]] = {}
+        for entry in entries:
+            mg_id = str(entry.get("id") or "")
+            if not mg_id:
+                continue
+            norm_id = _norm_name(mg_id)
+            self._by_id[norm_id] = entry
+            segment = norm_id.split("/")[-1]
+            self._by_segment.setdefault(segment, []).append(entry)
+            self._by_key.setdefault(_segment_key(segment), []).append(entry)
+
+    def _by_full_id(self, alias: str) -> dict | None:
+        return self._by_id.get(alias)
+
+    def _by_bare_segment(self, alias: str) -> dict | None:
+        """Unique-segment match: bare aliases (community-relayed names) must
+        resolve unambiguously or not at all."""
+        hits = self._by_segment.get(alias.split("/")[-1]) or []
+        return hits[0] if len(hits) == 1 else None
+
+    def match(self, upstream_id: str) -> tuple[dict | None, str, float]:
+        """Match one upstream id -> (entry, stage, confidence).
+
+        entry is None when nothing matches within the guarded rules (the
+        caller gates the candidate out). Version/variant/size equality is
+        enforced in the family stage, so glm-5.3 can never match glm-5.2 and
+        -flash can never match -flash-lite.
+        """
+        for alias, confidence, stage in _candidate_aliases(upstream_id):
+            hit = self._by_full_id(alias) if "/" in alias else None
+            if hit is None:
+                hit = self._by_bare_segment(alias)
+            if hit is not None:
+                return hit, stage, confidence
+        # structured family resolution: exact (alpha, version, size) equality,
+        # with the bare-generation -> size-decorated sibling allowance
+        key = _segment_key(upstream_id.split("/")[-1])
+        hits = self._by_key.get(key) or []
+        hits = self._disambiguate_by_maker(hits, upstream_id)
+        if len(hits) == 1:
+            return hits[0], "family", 0.75
+        if not hits and not key[2]:
+            siblings = self._disambiguate_by_maker(self._entries_with_size(key), upstream_id)
+            if len(siblings) == 1:
+                return siblings[0], "family-size-sibling", 0.5
+            if len(siblings) > 1:
+                # deterministic: prefer the largest parameter count
+                best = max(siblings, key=lambda e: _size_rank(_segment_key(str(e.get("id") or "").split("/")[-1])[2]))
+                return best, "family-size-sibling-multi", 0.45
+        return None, ("ambiguous" if len(hits) > 1 else "unmatched"), 0.0
+
+    @staticmethod
+    def _maker_of(entry: dict) -> str:
+        return str(entry.get("maker") or (str(entry.get("id") or "").split("/")[0]))
+
+    @staticmethod
+    def _candidate_maker(upstream_id: str) -> str | None:
+        parts = upstream_id.split("/")
+        if len(parts) < 2:
+            return None
+        return _MAKER_ALIASES.get(parts[0], parts[0])
+
+    def _disambiguate_by_maker(self, hits: list[dict], upstream_id: str) -> list[dict]:
+        """Prefer hits whose maker matches the candidate's, when it has one."""
+        if len(hits) <= 1:
+            return hits
+        maker = self._candidate_maker(upstream_id)
+        if maker is None:
+            return hits
+        by_maker = [e for e in hits if self._maker_of(e) == maker]
+        return by_maker or hits
+
+    def _entries_with_size(self, key: tuple) -> list[dict]:
+        """Entries sharing alpha+version but carrying size decorations."""
+        out: list[dict] = []
+        for k, entries in self._by_key.items():
+            if k[0] == key[0] and k[1] == key[1] and k[2]:
+                out += entries
+        return out
 
 FAILURE_CLASS_AUTH = "auth"
 FAILURE_CLASS_RATE_LIMIT = "rate_limit"
@@ -797,18 +1089,20 @@ def rank_candidates(
                 latency_demoted_names.add(r.candidate.name)
 
     if tier == TIER_THINK:
-        # Context-first; class breaks context ties (favored > metric > known).
+        # Context-first; class breaks context ties (favored > metric > known),
+        # then health, then modelgrep benchmarks.
         ranked.sort(
             key=lambda r: (
                 -r.candidate.context_length,
                 r.rank_class,
                 -r.health_score,
+                -r.candidate.benchmark_score,
                 r.candidate.name,
             )
         )
-    else:  # TIER_DEFAULT: favored block first (health all equal -> context
-        # tiebreak), then metric + failure-demoted interleaved by evidence
-        # score, with latency-demoted floored below all metric-backed.
+    else:  # TIER_DEFAULT: favored block first, then health (availability),
+        # then context length, then modelgrep benchmarks — name breaks exact
+        # ties. Latency-demoted models carry the health floor.
         def sort_key(r: RankedCandidate):
             favored = 0 if r.rank_class == _CLASS_FAVORED else 1
             effective_score = r.health_score - (1.0 if r.candidate.name in latency_demoted_names else 0.0)
@@ -816,6 +1110,7 @@ def rank_candidates(
                 favored,
                 -effective_score,
                 -r.candidate.context_length,
+                -r.candidate.benchmark_score,
                 r.candidate.name,
             )
 
@@ -875,6 +1170,63 @@ class CatalogManager:
         self._snapshot: CatalogSnapshot | None = None
         self._lock = asyncio.Lock()
         self._last_good: dict[str, list[ModelCandidate]] = {}
+        self._modelgrep_entries: list[dict] | None = None
+        self._modelgrep_fetched_at: float = 0.0
+
+    async def _refresh_modelgrep(self) -> None:
+        """Refresh the modelgrep benchmark catalog (own, slower TTL; fail-soft).
+
+        Sets _modelgrep_entries only on a successful fetch — a failure keeps
+        the last-known data (gating continues on it), and a cold failure
+        leaves None so enrichment/gating is skipped entirely.
+        """
+        if not self.cfg.benchmarks_enabled:
+            return
+        if self._modelgrep_entries is not None and (time.time() - self._modelgrep_fetched_at) < self.cfg.benchmark_ttl_seconds:
+            return
+        try:
+            entries = await fetch_modelgrep_catalog(self.cfg.modelgrep_url)
+            if entries:
+                self._modelgrep_entries = entries
+                self._modelgrep_fetched_at = time.time()
+            else:
+                logger.warning("model_picker: modelgrep returned no entries; keeping last known")
+        except Exception as e:  # noqa: BLE001 — benchmark data must never break routing
+            logger.warning("model_picker: modelgrep refresh failed (%s); using last known", e)
+
+    def _enrich_and_gate(self, candidates: list[ModelCandidate]) -> list[ModelCandidate]:
+        """Join benchmarks from modelgrep and drop unmatched candidates.
+
+        The gate applies only when modelgrep data exists (fresh or last
+        known); a cold, never-fetched state keeps the pool ungated so a
+        modelgrep outage cannot empty the pool outright.
+        """
+        if self._modelgrep_entries is None:
+            logger.warning("model_picker: no modelgrep data; benchmark gating skipped")
+            return candidates
+        index = ModelGrepIndex(self._modelgrep_entries)
+        kept: list[ModelCandidate] = []
+        dropped: list[str] = []
+        stage_counts: dict[str, int] = {}
+        for c in candidates:
+            upstream_id = c.name.split("/", 1)[1] if "/" in c.name else c.name
+            entry, stage, confidence = index.match(upstream_id)
+            stage_counts[stage] = stage_counts.get(stage, 0) + 1
+            if entry is None:
+                dropped.append(c.name)
+                continue
+            c.modelgrep_id = str(entry.get("id") or "")
+            c.benchmark_score, c.benchmarked = modelgrep_benchmark_score(entry)
+            kept.append(c)
+        summary = " ".join(f"{stage}={n}" for stage, n in sorted(stage_counts.items()))
+        logger.info(
+            "model_picker: modelgrep gate kept %d/%d candidates (%s); dropped: %s",
+            len(kept),
+            len(candidates),
+            summary,
+            dropped[:12],
+        )
+        return kept
 
     def _fallback_snapshot(self) -> CatalogSnapshot:
         candidates = [
@@ -943,7 +1295,9 @@ class CatalogManager:
                     lambda: fetch_provider_models(LLM7_MODELS_URL, "LLM7_API_KEY"),
                     parse_llm7_models,
                 )
+                await self._refresh_modelgrep()
                 candidates = pollinations + nim + ollama + llm7
+                candidates = self._enrich_and_gate(candidates)
                 if not candidates:
                     raise RuntimeError("provider catalogs returned no eligible models")
                 self._snapshot = CatalogSnapshot(candidates=candidates)
