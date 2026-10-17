@@ -653,6 +653,24 @@ class TestSoftFailureRetry:
         assert "provider error in response content" in flat
         assert calls["n"] == expected_attempts - 1
 
+    def test_retry_data_routes_through_entry_model(self, mp):
+        """The router rewrites data['model'] to the resolved deployment; retries
+        must re-enter the original tier entry so the picker can advance."""
+        lib, plugin = mp
+        logger = plugin.ModelPickerStatsLogger(stats=lib.StatsRegistry())
+        request_data = {
+            "model": "pollinations/openai/gpt-5.4-nano",  # resolved by the router
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 300,
+            "litellm_metadata": {"model_group": "lite-llm/complexity"},
+        }
+        retry = logger._retry_data(request_data)
+        assert retry["model"] == "lite-llm/complexity"
+        assert retry["stream"] is False
+        # direct (non-tier) calls keep their own model
+        direct = logger._retry_data({"model": "pollinations/openai/gpt-5.4-nano", "messages": [{"role": "user", "content": "hi"}]})
+        assert direct["model"] == "pollinations/openai/gpt-5.4-nano"
+
     def test_streaming_hard_failure_continues_the_walk(self, mp, monkeypatch):
         """One provider erroring hard must not end the retry walk."""
         lib, plugin = mp

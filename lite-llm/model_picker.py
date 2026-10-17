@@ -707,9 +707,56 @@ _SOFT_FAILURE_PREFIXES = (
 )
 
 
+def _anthropic_content_text(content: object) -> str:
+    """Text from anthropic-shaped content blocks (objects, dicts, or strings)."""
+    parts: list[str] = []
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                text = block.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+            else:
+                text = getattr(block, "text", None)
+                if isinstance(text, str):
+                    parts.append(text)
+    return "\n".join(p for p in parts if p)
+
+
 def extract_response_text(response_obj: object) -> str:
-    """Best-effort assistant text from a litellm response object ("" if none)."""
+    """Best-effort assistant text from a litellm response object ("" if none).
+
+    Handles both shapes seen at the proxy boundary: OpenAI-style
+    ``choices[].message.content`` and anthropic-style ``content`` blocks (the
+    /v1/messages route hands post-translation objects to hooks).
+    """
     try:
+        if isinstance(response_obj, dict):
+            # plain-dict responses (the /v1/messages route hands translated
+            # anthropic dicts to hooks) — getattr misses dict keys entirely
+            content = response_obj.get("content")
+            if content is not None:
+                text = _anthropic_content_text(content)
+                if text:
+                    return text
+            for choice in response_obj.get("choices") or []:
+                if not isinstance(choice, dict):
+                    continue
+                message = choice.get("message") or choice.get("delta") or {}
+                if isinstance(message, dict):
+                    text = _anthropic_content_text(message.get("content"))
+                    if text:
+                        return text
+            return ""
+        content = getattr(response_obj, "content", None)
+        if content is not None:
+            text = _anthropic_content_text(content)
+            if text:
+                return text
         parts: list[str] = []
         for choice in getattr(response_obj, "choices", None) or []:
             message = getattr(choice, "message", None) or getattr(choice, "delta", None)

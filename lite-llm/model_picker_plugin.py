@@ -655,13 +655,28 @@ class ModelPickerStatsLogger(CustomLogger):
 
     @staticmethod
     def _retry_data(request_data: dict) -> dict | None:
-        """A non-streaming copy of the request for the retry call."""
+        """A non-streaming copy of the request for the retry call.
+
+        The router rewrites data["model"] to the RESOLVED deployment model
+        (e.g. pollinations/openai/gpt-5.4-nano), so retrying with it would
+        re-hit the same failed model forever. Retries must re-enter the
+        ORIGINAL entry point (lite-llm/complexity) so the picker can exclude
+        the failed model and rank the next candidate; direct (non-tier)
+        calls keep their own model.
+        """
         if not isinstance(request_data, dict) or not request_data.get("messages"):
             return None
         retry: dict = {}
         for key in _RETRY_PASSTHROUGH_KEYS:
             if key in request_data:
                 retry[key] = request_data[key]
+        entry_model = ""
+        for holder in (request_data.get("litellm_metadata"), request_data.get("metadata")):
+            if isinstance(holder, dict) and holder.get("model_group"):
+                entry_model = str(holder["model_group"])
+                break
+        if entry_model:
+            retry["model"] = entry_model
         retry["stream"] = False
         return retry
 
@@ -713,6 +728,8 @@ class ModelPickerStatsLogger(CustomLogger):
             if retry_data is None:
                 break
             attempts += 1
+            if os.environ.get("MODEL_PICKER_DEBUG_HOOKS"):
+                logger.info("model_picker: retry attempt=%d model=%s", attempts, retry_data.get("model"))
             try:
                 retry_resp = await self._router_acompletion(retry_data)
             except Exception as e:  # noqa: BLE001 — one bad provider must not end the walk
@@ -815,13 +832,24 @@ class ModelPickerStatsLogger(CustomLogger):
 
     async def async_post_call_success_hook(self, user_api_key_dict, data, response):
         """Non-streaming twin: swap a soft-failed response for a retried one."""
+        import os as _os
+
+        if _os.environ.get("MODEL_PICKER_DEBUG_HOOKS"):
+            logger.info(
+                "model_picker: success-hook invoked type=%s text=%r",
+                type(response).__name__,
+                model_picker.extract_response_text(response)[:60],
+            )
         text = model_picker.extract_response_text(response)
         if not text or not model_picker.is_soft_failure_content(text):
             return response
+        anthropic_shape = isinstance(response, dict) and isinstance(response.get("content"), list)
         try:
             group = self._failed_group(data if isinstance(data, dict) else {}, response)
             retry_resp, summary = await self._retry_until_clean(data, group)
             if retry_resp is not None:
+                if anthropic_shape:
+                    return self._as_anthropic_dict(response, model_picker.extract_response_text(retry_resp))
                 return retry_resp
             logger.warning(
                 "model_picker: retry walk exhausted after %d attempts (%s); replying with fallback notice",
@@ -832,10 +860,27 @@ class ModelPickerStatsLogger(CustomLogger):
         except Exception as e:  # noqa: BLE001 — hook errors must not fail the request
             logger.warning("model_picker: non-streaming retry error (%s)", e)
             notice_text = _FALLBACK_REPLY.format(tried=1, reason="retry error")
-        # never return the error-bearing original response
+        # never return the error-bearing original response; preserve the
+        # caller's wire shape so anthropic clients keep parsing
+        if anthropic_shape:
+            return self._as_anthropic_dict(response, notice_text)
         return litellm.ModelResponse(
             choices=[{"message": {"role": "assistant", "content": notice_text}, "finish_reason": "stop"}]
         )
+
+    @staticmethod
+    def _as_anthropic_dict(original: dict, text: str) -> dict:
+        """Anthropic-shaped replacement carrying the retry's answer."""
+        return {
+            "id": original.get("id") or "msg_model_picker",
+            "type": "message",
+            "role": "assistant",
+            "model": original.get("model") or "",
+            "content": [{"type": "text", "text": text}],
+            "stop_reason": "end_turn",
+            "stop_sequence": None,
+            "usage": original.get("usage") or {"input_tokens": 0, "output_tokens": 0},
+        }
 
 
 # Module-level instances referenced from lite-llm-picker.yaml.
