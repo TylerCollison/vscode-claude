@@ -121,9 +121,13 @@ def _preserve_legacy_max_tokens() -> None:
 # compaction) go through Router.get_router_model_info, which RAISES
 # ModelNotMappedError for anything unmapped — 500-ing every request that
 # lands on a discovered candidate. Fall back to what the picker already
-# knows: the catalog's published context window, then the deployment's own
-# model_info, then a conservative default.
-_FALLBACK_MAX_INPUT_TOKENS = 32768
+# knows: the catalog's published context window (enriched from modelgrep
+# when the provider publishes none), then the deployment's own model_info,
+# then a default. The default must comfortably exceed client output
+# allowances (Claude Code sends max_tokens=32000): the compaction budget is
+# int(window*0.9) - output, and a window at or below the allowance leaves no
+# budget and 400s the request before it reaches the provider.
+_FALLBACK_MAX_INPUT_TOKENS = 131072
 _FALLBACK_MAX_OUTPUT_TOKENS = 8192
 
 
@@ -193,11 +197,13 @@ def _fallback_model_info_for_unmapped_models() -> None:
 
 
 # Catalog-driven pools inevitably contain listed-but-dead models (a NIM model
-# 404s while still appearing in its catalog). litellm refuses to retry
-# NotFoundError unconditionally, which would end the request on the first dead
-# candidate — but the picker's exclusion walk is exactly the right handler:
-# record the failure, exclude the model, try the next candidate. Let 404s
-# follow the normal retry path.
+# 404s while still appearing in its catalog) and models whose real windows
+# cannot serve a request. litellm refuses to retry NotFoundError
+# unconditionally, and refuses ContextWindowExceededError unless
+# context_window_fallbacks are configured — either way the request would die
+# on the first bad candidate. The picker's exclusion walk is exactly the
+# right handler for both: record the failure, exclude the model, try the next
+# candidate (a larger-context one, once real windows are enriched).
 def _retry_not_found_errors() -> None:
     try:
         import litellm as _litellm
@@ -211,9 +217,12 @@ def _retry_not_found_errors() -> None:
             except _litellm.NotFoundError:
                 logger.info("model_picker: NotFoundError made retryable for the exclusion walk")
                 return True
+            except _litellm.ContextWindowExceededError:
+                logger.info("model_picker: ContextWindowExceededError made retryable for the exclusion walk")
+                return True
 
         router_cls.should_retry_this_error = should_retry_this_error
-        logger.debug("model_picker: NotFoundError retry patch installed")
+        logger.debug("model_picker: NotFoundError/ContextWindow retry patch installed")
     except Exception as e:  # noqa: BLE001 — a patch failure must not break the proxy
         logger.warning("model_picker: could not install NotFoundError retry patch (%s)", e)
 

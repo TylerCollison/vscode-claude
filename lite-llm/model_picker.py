@@ -1185,6 +1185,13 @@ class CatalogManager:
                 continue
             c.modelgrep_id = str(entry.get("id") or "")
             c.benchmark_score, c.benchmarked = modelgrep_benchmark_score(entry)
+            # fill unknown context windows from modelgrep: the router's
+            # context compaction needs a real window, and the fit filter can
+            # only protect requests when the window is known
+            if not c.context_length:
+                mg_ctx = entry.get("context_length")
+                if isinstance(mg_ctx, int) and not isinstance(mg_ctx, bool) and mg_ctx > 0:
+                    c.context_length = mg_ctx
             kept.append(c)
         summary = " ".join(f"{stage}={n}" for stage, n in sorted(stage_counts.items()))
         logger.info(

@@ -348,11 +348,12 @@ class TestSoftFailureDetection:
 # ---------------------------------------------------------------------------
 
 
-def _mg_entry(mg_id, maker=None, **aa_scores):
+def _mg_entry(mg_id, maker=None, context_length=None, **aa_scores):
     """One modelgrep entry with an artificial_analysis block."""
     return {
         "id": mg_id,
         "maker": maker or mg_id.split("/")[0],
+        "context_length": context_length,
         "benchmarks": {"artificial_analysis": aa_scores or {}},
     }
 
@@ -443,6 +444,38 @@ class TestModelgrepEnrichment:
         assert kept[0].benchmarked is True
         assert kept[0].benchmark_score == pytest.approx((0.80 + 0.70 + 0.60) / 3)
         assert kept[0].modelgrep_id == "openai/gpt-5.4-nano"
+
+    def test_modelgrep_fills_unknown_context_windows(self, fresh):
+        """NIM publishes no context windows; modelgrep does. Unknown (0)
+        windows are filled from the matched entry so the fit filter and the
+        router's compaction budget have real data. Known windows win."""
+        lib, _, cfg, stats, manager = fresh
+        manager._modelgrep_entries = [
+            _mg_entry("z-ai/glm-5.3", context_length=1048576),
+            _mg_entry("openai/gpt-5.4-nano", context_length=400000),
+        ]
+        candidates = [
+            lib.ModelCandidate(name="nvidia_nim/z-ai/glm-5.3", provider="nvidia_nim", metricless=True, context_length=0),
+            lib.ModelCandidate(name="pollinations/openai/gpt-5.4-nano", provider="pollinations", metricless=False,
+                               success_rate=0.9997, requests=87885, context_length=128000),
+        ]
+        kept = manager._enrich_and_gate(candidates)
+        by_name = {c.name: c for c in kept}
+        assert by_name["nvidia_nim/z-ai/glm-5.3"].context_length == 1048576  # filled
+        assert by_name["pollinations/openai/gpt-5.4-nano"].context_length == 128000  # provider truth kept
+
+    def test_unknown_context_models_fit_filter_with_enriched_windows(self, fresh):
+        """With real windows, the fit filter protects requests: a 400k-token
+        estimate fits the 1M window and is kept; a 16k window is filtered out."""
+        lib, _, cfg, stats, _ = fresh
+        big_ctx = lib.ModelCandidate(name="nvidia_nim/z-ai/glm-5.3", provider="nvidia_nim", metricless=True,
+                                      context_length=1048576)
+        small_ctx = lib.ModelCandidate(name="nvidia_nim/small/model", provider="nvidia_nim", metricless=True,
+                                        context_length=16384)
+        ranked = lib.rank_candidates([big_ctx, small_ctx], lib.TIER_DEFAULT, stats, cfg, estimate=400000)
+        names = [r.candidate.name for r in ranked]
+        assert "nvidia_nim/small/model" not in names
+        assert "nvidia_nim/z-ai/glm-5.3" in names
 
     def test_gate_fail_open_without_modelgrep_data(self, fresh):
         lib, _, cfg, stats, manager = fresh
