@@ -578,7 +578,7 @@ class ModelPickerStatsLogger(CustomLogger):
         # errors) as HTTP 200 with the error text as message content. Record
         # those as failures so the recency guard and demotion proofs see them.
         text = model_picker.extract_response_text(response_obj)
-        if model_picker.is_soft_failure_content(text):
+        if model_picker.is_soft_failure_response(text, response_obj):
             snippet = " ".join(text.split())[:100]
             logger.info("model_picker: soft failure recorded for %s (content=%r)", group, snippet)
             self.stats.record_failure(group, model_picker.FAILURE_CLASS_SOFT)
@@ -738,7 +738,7 @@ class ModelPickerStatsLogger(CustomLogger):
                 logger.warning("model_picker: retry attempt failed (%s); trying next candidate", e)
                 continue
             text = model_picker.extract_response_text(retry_resp)
-            if model_picker.is_soft_failure_content(text):
+            if model_picker.is_soft_failure_response(text, retry_resp):
                 last_reason = "provider error in response content"
                 group = self._event_group({"litellm_metadata": {"model_group": getattr(retry_resp, "model", "")}})
                 continue
@@ -841,7 +841,7 @@ class ModelPickerStatsLogger(CustomLogger):
                 model_picker.extract_response_text(response)[:60],
             )
         text = model_picker.extract_response_text(response)
-        if not text or not model_picker.is_soft_failure_content(text):
+        if not text or not model_picker.is_soft_failure_response(text, response):
             return response
         anthropic_shape = isinstance(response, dict) and isinstance(response.get("content"), list)
         try:

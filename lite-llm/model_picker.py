@@ -698,12 +698,53 @@ def classify_exception(exc: BaseException | None) -> str:
 # with the error text as the assistant message content, so the callback
 # pipeline reports a "success" and nothing ever demotes the model. The stats
 # logger sniffs these markers and records the event as a failure instead.
+#
+# Single-factor markers are exact phrases that cannot plausibly appear in a
+# legitimate answer, so they alone are conclusive. The two-factor rule below
+# covers everything else: an explicit all-zero usage block (real completions
+# bill tokens) plus any broad error-lexicon word in the content.
 _SOFT_FAILURE_MARKERS = (
     "doesn't have enough credits",  # pollinations account credit gate
     "does not have enough credits",  # straight-apostrophe variant
+    "insufficient credits",
+    "quota exceeded",
+    "please top up",
 )
 _SOFT_FAILURE_PREFIXES = (
     "[error:",  # relayed upstream errors, e.g. "[Error: Z.ai returned 403: ..."
+    "[exception:",
+)
+# Broad error vocabulary for the two-factor rule. Any ONE of these words in
+# the content satisfies the lexical factor — they appear in practically every
+# provider error stub, but a legitimate answer carrying an error word is
+# harmless because the structural factor (zero usage) must also fire.
+_ERROR_LEXICON = (
+    "error",
+    "exception",
+    "credit",
+    "quota",
+    "top up",
+    "top-up",
+    "try again",
+    "unavailable",
+    "api key",
+    "account",
+    "rate limit",
+    "ratelimit",
+    "invalid",
+    "denied",
+    "expired",
+    "exceeded",
+    "forbidden",
+    "billing",
+    "payment",
+    "subscription",
+    "temporarily",
+    "upstream",
+    "returned 4",
+    "returned 5",
+    "http 4",
+    "http 5",
 )
 
 
@@ -782,6 +823,66 @@ def is_soft_failure_content(text: str | None) -> bool:
     if normalized.startswith(_SOFT_FAILURE_PREFIXES):
         return True
     return any(marker in normalized for marker in _SOFT_FAILURE_MARKERS)
+
+
+def _usage_values(usage: object) -> list[float]:
+    """Numeric usage fields from a Usage object or dict ([] when absent)."""
+    values: list[float] = []
+    if usage is None:
+        return values
+    if isinstance(usage, dict):
+        for value in usage.values():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                values.append(float(value))
+        return values
+    for attr in ("prompt_tokens", "completion_tokens", "total_tokens", "input_tokens", "output_tokens"):
+        value = getattr(usage, attr, None)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            values.append(float(value))
+    return values
+
+
+def explicit_zero_usage(response_obj: object) -> bool:
+    """True when the response carries a usage block that is present and all-zero.
+
+    The distinguishing gate signature: providers short-circuit before
+    generation, so the stub reports zero tokens. Usage that is ABSENT (some
+    providers legitimately omit it) does not count.
+    """
+    usage = None
+    if isinstance(response_obj, dict):
+        usage = response_obj.get("usage")
+    else:
+        usage = getattr(response_obj, "usage", None)
+    values = _usage_values(usage)
+    if not values:
+        return False
+    return all(v == 0.0 for v in values)
+
+
+def has_error_lexicon(text: str | None) -> bool:
+    """Broad lexical hint of provider-error content (the 2nd factor)."""
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(word in lowered for word in _ERROR_LEXICON)
+
+
+def is_soft_failure_response(text: str | None, response_obj: object) -> bool:
+    """Two-factor soft-failure check over content text plus response metadata.
+
+    Fires on: a single-factor exact marker, OR the structural anomaly
+    (explicit all-zero usage — real completions bill tokens) combined with
+    any broad error-lexicon word in the content. The two-factor rule needs
+    the full response, so it applies to non-streaming responses and to the
+    success-event log (demotion); streaming interception stays text-only
+    because usage arrives after the content has already been yielded.
+    """
+    if is_soft_failure_content(text):
+        return True
+    if not text:
+        return False
+    return explicit_zero_usage(response_obj) and has_error_lexicon(text)
 
 
 @dataclass

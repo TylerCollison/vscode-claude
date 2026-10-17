@@ -295,6 +295,57 @@ class TestSoftFailureDetection:
         assert lib.extract_response_text(None) == ""
         assert lib.extract_response_text(object()) == ""
 
+    def test_extended_single_factor_markers(self, mp):
+        lib, _ = mp
+        for phrase in ("Insufficient credits for this request.", "Daily quota exceeded", "Please top up your balance"):
+            assert lib.is_soft_failure_content(phrase), phrase
+        assert lib.is_soft_failure_content("[Exception: upstream 500]")
+        assert lib.is_soft_failure_content("[Error: Z.ai returned 403]")
+
+    def test_two_factor_zero_usage_plus_lexicon(self, mp):
+        lib, _ = mp
+        gated = {"usage": {"input_tokens": 0, "output_tokens": 0}, "content": [{"type": "text", "text": "Your request was rate limited by upstream"}]}
+        assert lib.is_soft_failure_response(lib.extract_response_text(gated), gated)
+        # zero usage but clean text -> legitimate short answer, NOT a failure
+        clean = {"usage": {"input_tokens": 0, "output_tokens": 0}, "content": [{"type": "text", "text": "Hello!"}]}
+        assert not lib.is_soft_failure_response(lib.extract_response_text(clean), clean)
+        # error text but real (nonzero) usage -> the model genuinely ran
+        real = {"usage": {"input_tokens": 40, "output_tokens": 8}, "content": [{"type": "text", "text": "The request hit an error and here is why..."}]}
+        assert not lib.is_soft_failure_response(lib.extract_response_text(real), real)
+        # absent usage -> not structural (some providers omit it legitimately)
+        absent = {"content": [{"type": "text", "text": "an error occurred upstream"}]}
+        assert not lib.is_soft_failure_response(lib.extract_response_text(absent), absent)
+
+    def test_two_factor_model_response_object(self, mp):
+        lib, _ = mp
+        gated = litellm.ModelResponse(
+            choices=[{"message": {"role": "assistant", "content": "upstream returned 429, try again"}, "finish_reason": "stop"}],
+            usage={"prompt_tokens": 0, "completion_tokens": 0},
+        )
+        assert lib.is_soft_failure_response(lib.extract_response_text(gated), gated)
+        real = litellm.ModelResponse(
+            choices=[{"message": {"role": "assistant", "content": "you asked about api key errors"}, "finish_reason": "stop"}],
+            usage={"prompt_tokens": 31, "completion_tokens": 9},
+        )
+        assert not lib.is_soft_failure_response(lib.extract_response_text(real), real)
+
+    def test_stats_logger_demotes_on_two_factor_rule(self, mp):
+        """A novel error phrasing with the zero-usage signature still demotes."""
+        lib, plugin = mp
+        stats = lib.StatsRegistry()
+        logger = plugin.ModelPickerStatsLogger(stats=stats)
+        gated = {
+            "id": "resp_x",
+            "type": "message",
+            "content": [{"type": "text", "text": "Upstream capacity limit reached, billing required"}],
+            "usage": {"input_tokens": 0, "output_tokens": 0},
+        }
+        asyncio.run(logger.async_log_success_event(
+            {"litellm_metadata": {"model_group": "pollinations/community/x"}}, gated, None, None
+        ))
+        d = stats.derived("pollinations/community/x")
+        assert d.n_obs == 1 and d.soft_failures == 1
+
     def test_stats_logger_records_soft_failure(self, mp):
         lib, plugin = mp
         stats = lib.StatsRegistry()
