@@ -776,19 +776,67 @@ class ModelPickerStatsLogger(CustomLogger):
         events.append({"type": "message_stop"})
         return events
 
+    @staticmethod
+    def _stream_closing_events(open_block: tuple[int, str] | None) -> list[dict]:
+        """Anthropic SSE events that terminate a stream cleanly.
+
+        Used when the upstream dies mid-response after partial content was
+        already delivered: the client keeps what it received and the turn
+        ends normally instead of on a protocol error frame (which clients
+        surface as 'Server error mid-response' and abort the turn).
+        """
+        events: list[dict] = []
+        if open_block is not None:
+            events.append({"type": "content_block_stop", "index": open_block[0]})
+        events.append(
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                "usage": {},
+            }
+        )
+        events.append({"type": "message_stop"})
+        return events
+
+    @staticmethod
+    def _message_start_event(model: str) -> dict:
+        """A minimal anthropic message_start, for retries before any upstream chunk."""
+        return {
+            "type": "message_start",
+            "message": {
+                "id": "msg_model_picker_retry",
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "model": model,
+                "stop_reason": None,
+                "stop_sequence": None,
+                "usage": {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+            },
+        }
+
     async def async_post_call_streaming_iterator_hook(self, user_api_key_dict, response, request_data):
         """Sniff streamed chunks; on a soft failure, drop the stream and retry.
 
         Clean chunks pass through untouched (zero added latency). The credit
         gate arrives atomically in a single delta chunk, so detection happens
         before that chunk is yielded and the client never sees it.
+
+        Mid-stream upstream failures (connection drops, stream timeouts) are
+        handled in two phases: before any content text has been yielded the
+        request is retried through the walk like a soft failure; after
+        partial content is out, the stream is closed cleanly so the client
+        keeps the partial answer and the turn survives.
         """
         open_block: tuple[int, str] | None = None
         next_index = 0
         accumulated = ""
         soft_text: str | None = None
+        saw_text = False  # content text already delivered to the client
+        saw_any_chunk = False  # anything at all delivered
         try:
             async for chunk in response:
+                saw_any_chunk = True
                 try:
                     text = _event_text(chunk)
                     if text:
@@ -807,9 +855,36 @@ class ModelPickerStatsLogger(CustomLogger):
                         break  # dropped before yield — the client never sees it
                 except Exception as e:  # noqa: BLE001 — sniffing must never break the stream
                     logger.debug("model_picker: stream sniff error (%s)", e)
+                if text:
+                    saw_text = True
                 yield chunk
         except (asyncio.CancelledError, GeneratorExit):
             raise
+        except Exception as e:
+            # the upstream stream itself failed mid-response
+            group = self._failed_group(request_data if isinstance(request_data, dict) else {}, response)
+            logger.warning(
+                "model_picker: upstream stream failed mid-response for %s (%s: %s); saw_text=%s",
+                group,
+                type(e).__name__,
+                str(e)[:120],
+                saw_text,
+            )
+            if saw_text:
+                # partial content is already with the client: close cleanly
+                for event in self._stream_closing_events(open_block):
+                    yield _sse_frame(event)
+                return
+            # nothing visible yet: retry like a soft failure
+            soft_text = soft_text or "mid-stream upstream failure"
+            if not saw_any_chunk:
+                model_name = ""
+                if isinstance(request_data, dict):
+                    model_name = str(request_data.get("model") or "")
+                yield _sse_frame(self._message_start_event(model_name))
+                # leave open_block alone: the synthesis opens its own
+                # content_block_start when none has been streamed yet
+
         if soft_text is None:
             return
 

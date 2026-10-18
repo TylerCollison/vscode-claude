@@ -775,6 +775,72 @@ class TestSoftFailureRetry:
         assert result is good
         assert calls["n"] == 1
 
+    def test_midstream_failure_before_content_retries(self, mp, monkeypatch):
+        """Upstream stream dying before any text was yielded: the walk retries
+        and the client receives a complete, clean answer (message_start + full
+        block), never seeing the failure."""
+        lib, plugin = mp
+        logger = self._make_logger(lib, plugin)
+        good = litellm.ModelResponse(
+            choices=[{"message": {"role": "assistant", "content": "Recovered mid-stream"}, "finish_reason": "stop"}],
+            usage={"prompt_tokens": 3, "completion_tokens": 4},
+        )
+        calls = self._fake_router_acompletion(monkeypatch, logger, [good])
+
+        async def dying_stream():
+            yield {"type": "message_start", "message": {"type": "message_start", "role": "assistant", "model": "m"}}
+            raise RuntimeError("connection reset by peer")
+
+        out = []
+
+        async def run():
+            async for chunk in logger.async_post_call_streaming_iterator_hook(
+                None, dying_stream(), {"model": "lite-llm/complexity", "messages": [{"role": "user", "content": "hi"}], "litellm_metadata": {"model_group": "lite-llm/complexity"}}
+            ):
+                out.append(chunk)
+
+        asyncio.run(run())
+        events = [e for c in out for e in plugin._chunk_events(c)]
+        types = [e.get("type") for e in events]
+        flat = "".join(plugin._event_text(c) for c in out)
+        assert "Recovered mid-stream" in flat
+        assert calls["n"] == 1
+        # a complete stream shape: start -> block -> delta -> stop -> delta -> stop
+        assert types[0] == "message_start"
+        assert types[-2:] == ["message_delta", "message_stop"]
+        assert "content_block_start" in types and "content_block_stop" in types
+
+    def test_midstream_failure_after_content_closes_cleanly(self, mp, monkeypatch):
+        """Upstream stream dying after partial content: the partial is kept and
+        the stream closes cleanly (no error frame, session survives)."""
+        lib, plugin = mp
+        logger = self._make_logger(lib, plugin)
+        calls = self._fake_router_acompletion(monkeypatch, logger, [])
+
+        async def dying_stream():
+            yield {"type": "message_start", "message": {"type": "message_start", "role": "assistant", "model": "m"}}
+            yield {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}
+            yield {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "partial answer "}}
+            raise RuntimeError("connection reset by peer")
+
+        out = []
+
+        async def run():
+            async for chunk in logger.async_post_call_streaming_iterator_hook(
+                None, dying_stream(), {"model": "lite-llm/complexity", "messages": [{"role": "user", "content": "hi"}], "litellm_metadata": {}}
+            ):
+                out.append(chunk)
+
+        asyncio.run(run())
+        events = [e for c in out for e in plugin._chunk_events(c)]
+        types = [e.get("type") for e in events]
+        flat = "".join(plugin._event_text(c) for c in out)
+        assert "partial answer" in flat  # kept
+        assert calls["n"] == 0  # no retry once content is out
+        # clean closure, no error frame material
+        assert types[-3:] == ["content_block_stop", "message_delta", "message_stop"]
+        assert "error" not in flat.lower()
+
     def test_picker_honors_exclude_metadata(self, fresh, env_enabled, monkeypatch):
         lib, test_plugin, cfg, stats, manager = fresh
 
