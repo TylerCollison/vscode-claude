@@ -28,6 +28,13 @@ repeat-detector for pool exhaustion) — then synthesizes the winning answer
 into the same SSE stream; the non-streaming path swaps the response wholesale.
 The user never sees provider error content.
 
+Mid-stream upstream failures — dropped connections, stream timeouts, and the
+in-band error events litellm's Anthropic adapter converts them into — get the
+same treatment in both phases: the failed model is recorded (demoted) and the
+request retries with a different model, the retry's answer continuing the same
+SSE stream after any partial content already delivered. A truncated answer is
+never allowed to end the turn as though it were complete.
+
 litellm's ``get_instance_fn`` exec's this file with spec_from_file_location
 WITHOUT registering it in sys.modules, so a plain ``import model_picker``
 would not resolve, and this file being referenced from both the plugins list
@@ -805,28 +812,6 @@ class ModelPickerStatsLogger(CustomLogger):
         return events
 
     @staticmethod
-    def _stream_closing_events(open_block: tuple[int, str] | None) -> list[dict]:
-        """Anthropic SSE events that terminate a stream cleanly.
-
-        Used when the upstream dies mid-response after partial content was
-        already delivered: the client keeps what it received and the turn
-        ends normally instead of on a protocol error frame (which clients
-        surface as 'Server error mid-response' and abort the turn).
-        """
-        events: list[dict] = []
-        if open_block is not None:
-            events.append({"type": "content_block_stop", "index": open_block[0]})
-        events.append(
-            {
-                "type": "message_delta",
-                "delta": {"stop_reason": "end_turn", "stop_sequence": None},
-                "usage": {},
-            }
-        )
-        events.append({"type": "message_stop"})
-        return events
-
-    @staticmethod
     def _message_start_event(model: str) -> dict:
         """A minimal anthropic message_start, for retries before any upstream chunk."""
         return {
@@ -850,11 +835,13 @@ class ModelPickerStatsLogger(CustomLogger):
         gate arrives atomically in a single delta chunk, so detection happens
         before that chunk is yielded and the client never sees it.
 
-        Mid-stream upstream failures (connection drops, stream timeouts) are
-        handled in two phases: before any content text has been yielded the
-        request is retried through the walk like a soft failure; after
-        partial content is out, the stream is closed cleanly so the client
-        keeps the partial answer and the turn survives.
+        Mid-stream upstream failures (connection drops, stream timeouts, and
+        the in-band error events litellm's adapter converts them into) get
+        the same treatment in BOTH phases: the failed model is recorded and
+        demoted, and the request retries through the walk with that model
+        excluded. The retry's answer continues the same SSE stream — appended
+        after any partial content already delivered — so an incomplete
+        answer never stands as the turn's final answer.
         """
         open_block: tuple[int, str] | None = None
         next_index = 0
@@ -898,55 +885,44 @@ class ModelPickerStatsLogger(CustomLogger):
         except (asyncio.CancelledError, GeneratorExit):
             raise
         except Exception as e:
-            # the upstream stream itself failed mid-response
+            # the upstream stream itself failed mid-response. Treat it exactly
+            # like a soft failure in both phases: the walk below records the
+            # failure (demoting the model) and retries with a different one —
+            # an incomplete answer must never stand as the turn's answer,
+            # not even when partial content is already with the client.
             group = self._failed_group(request_data if isinstance(request_data, dict) else {}, response)
             logger.warning(
-                "model_picker: upstream stream failed mid-response for %s (%s: %s); saw_text=%s",
+                "model_picker: upstream stream failed mid-response for %s (%s: %s); saw_text=%s; retrying",
                 group,
                 type(e).__name__,
                 str(e)[:120],
                 saw_text,
             )
-            if saw_text:
-                # partial content is already with the client: close cleanly
-                for event in self._stream_closing_events(open_block):
-                    yield _sse_frame(event)
-                return
-            # nothing visible yet: retry like a soft failure
             soft_text = soft_text or "mid-stream upstream failure"
-            if not saw_any_chunk:
-                model_name = ""
-                if isinstance(request_data, dict):
-                    model_name = str(request_data.get("model") or "")
-                yield _sse_frame(self._message_start_event(model_name))
-                # leave open_block alone: the synthesis opens its own
-                # content_block_start when none has been streamed yet
 
         if in_band_error:
             # the adapter's error event never reached the client (dropped
-            # above); apply the same two-phase handling as exceptions
+            # above); the walk below applies the same handling as exceptions
             group = self._failed_group(request_data if isinstance(request_data, dict) else {}, response)
             logger.warning(
-                "model_picker: in-band error event intercepted for %s; saw_text=%s",
+                "model_picker: in-band error event intercepted for %s; saw_text=%s; retrying",
                 group,
                 saw_text,
             )
-            if group:
-                self.stats.record_failure(group, model_picker.FAILURE_CLASS_ERROR)
-            if saw_text:
-                for event in self._stream_closing_events(open_block):
-                    yield _sse_frame(event)
-                return
-            # nothing visible yet: retry like a soft failure
             soft_text = soft_text or "in-band error event"
-            if not saw_any_chunk:
-                model_name = ""
-                if isinstance(request_data, dict):
-                    model_name = str(request_data.get("model") or "")
-                yield _sse_frame(self._message_start_event(model_name))
 
         if soft_text is None:
             return
+
+        if not saw_any_chunk:
+            # the stream died before yielding anything: synthesize the
+            # message_start that the tail synthesis below completes
+            model_name = ""
+            if isinstance(request_data, dict):
+                model_name = str(request_data.get("model") or "")
+            yield _sse_frame(self._message_start_event(model_name))
+            # leave open_block alone: the synthesis opens its own
+            # content_block_start when none has been streamed yet
 
         try:
             group = self._failed_group(request_data, response)

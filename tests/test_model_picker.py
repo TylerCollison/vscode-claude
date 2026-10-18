@@ -808,12 +808,18 @@ class TestSoftFailureRetry:
         assert calls["n"] == 1
         assert types[-2:] == ["message_delta", "message_stop"]
 
-    def test_in_band_error_event_after_content_closes_cleanly(self, mp, monkeypatch):
-        """In-band error after partial content: the error frame is stripped and
-        the stream closes cleanly; the client keeps the partial answer."""
+    def test_in_band_error_event_after_content_retries(self, mp, monkeypatch):
+        """In-band error after partial content: the error frame is stripped, the
+        failed model is demoted and excluded, and the walk retries with a
+        different model — the retry's answer continues the stream so a
+        truncated answer never ends the turn as if it were complete."""
         lib, plugin = mp
         logger = self._make_logger(lib, plugin)
-        calls = self._fake_router_acompletion(monkeypatch, logger, [])
+        good = litellm.ModelResponse(
+            choices=[{"message": {"role": "assistant", "content": "Recovered from in-band error"}, "finish_reason": "stop"}],
+            usage={"prompt_tokens": 3, "completion_tokens": 4},
+        )
+        calls = self._fake_router_acompletion(monkeypatch, logger, [good])
 
         async def error_stream():
             yield {"type": "message_start", "message": {"type": "message", "role": "assistant", "model": "m"}}
@@ -821,22 +827,30 @@ class TestSoftFailureRetry:
             yield {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "partial answer "}}
             yield {"type": "error", "error": {"type": "api_error", "message": "Timeout on reading data from socket"}}
 
+        request_data = {
+            "model": "lite-llm/complexity",
+            "messages": [{"role": "user", "content": "hi"}],
+            "litellm_metadata": {"model_group": "pollinations/community/x"},
+        }
         out = []
 
         async def run():
-            async for chunk in logger.async_post_call_streaming_iterator_hook(
-                None, error_stream(), {"model": "lite-llm/complexity", "messages": [{"role": "user", "content": "hi"}], "litellm_metadata": {}}
-            ):
+            async for chunk in logger.async_post_call_streaming_iterator_hook(None, error_stream(), request_data):
                 out.append(chunk)
 
         asyncio.run(run())
         events = [e for c in out for e in plugin._chunk_events(c)]
         types = [e.get("type") for e in events]
         flat = "".join(plugin._event_text(c) for c in out)
-        assert "error" not in types  # stripped
-        assert "partial answer" in flat  # kept
-        assert calls["n"] == 0  # no retry once content is out
-        assert types[-3:] == ["content_block_stop", "message_delta", "message_stop"]
+        assert "error" not in types  # the in-band error never reached the client
+        assert "Timeout on reading data from socket" not in flat
+        assert flat.startswith("partial answer ")  # already delivered, kept
+        assert "Recovered from in-band error" in flat  # the retry's answer continues the stream
+        assert types.count("content_block_start") == 1  # continued in the same block
+        assert calls["n"] == 1  # retried with a different model
+        assert "pollinations/community/x" in request_data["litellm_metadata"]["model_picker_exclude"]
+        assert logger.stats.derived("pollinations/community/x").n_obs >= 1  # demoted
+        assert types[-2:] == ["message_delta", "message_stop"]
 
     def test_in_band_error_sse_frame_string_detected(self, mp):
         lib, plugin = mp
@@ -899,12 +913,62 @@ class TestSoftFailureRetry:
         assert types[-2:] == ["message_delta", "message_stop"]
         assert "content_block_start" in types and "content_block_stop" in types
 
-    def test_midstream_failure_after_content_closes_cleanly(self, mp, monkeypatch):
-        """Upstream stream dying after partial content: the partial is kept and
-        the stream closes cleanly (no error frame, session survives)."""
+    def test_midstream_failure_after_content_retries(self, mp, monkeypatch):
+        """Upstream stream dying after partial content: the failed model is
+        demoted and excluded, and the walk retries with a different model;
+        the retry's answer continues the stream after the partial instead of
+        letting a truncated answer end the turn."""
         lib, plugin = mp
         logger = self._make_logger(lib, plugin)
-        calls = self._fake_router_acompletion(monkeypatch, logger, [])
+        good = litellm.ModelResponse(
+            choices=[{"message": {"role": "assistant", "content": "Recovered mid-stream"}, "finish_reason": "stop"}],
+            usage={"prompt_tokens": 3, "completion_tokens": 4},
+        )
+        calls = self._fake_router_acompletion(monkeypatch, logger, [good])
+
+        async def dying_stream():
+            yield {"type": "message_start", "message": {"type": "message_start", "role": "assistant", "model": "m"}}
+            yield {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}
+            yield {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "partial answer "}}
+            raise RuntimeError("connection reset by peer")
+
+        request_data = {
+            "model": "lite-llm/complexity",
+            "messages": [{"role": "user", "content": "hi"}],
+            "litellm_metadata": {"model_group": "pollinations/community/x"},
+        }
+        out = []
+
+        async def run():
+            async for chunk in logger.async_post_call_streaming_iterator_hook(None, dying_stream(), request_data):
+                out.append(chunk)
+
+        asyncio.run(run())
+        events = [e for c in out for e in plugin._chunk_events(c)]
+        types = [e.get("type") for e in events]
+        flat = "".join(plugin._event_text(c) for c in out)
+        assert flat.startswith("partial answer ")  # already delivered, kept
+        assert "Recovered mid-stream" in flat  # the retry's answer continues the stream
+        assert "connection reset" not in flat
+        assert types.count("content_block_start") == 1  # continued in the same block
+        assert calls["n"] == 1  # retried with a different model
+        assert "pollinations/community/x" in request_data["litellm_metadata"]["model_picker_exclude"]
+        assert logger.stats.derived("pollinations/community/x").n_obs >= 1  # demoted
+        # clean closure, no error frame material
+        assert types[-2:] == ["message_delta", "message_stop"]
+        assert "error" not in flat.lower()
+
+    def test_midstream_failure_after_content_walk_exhausted_appends_notice(self, mp, monkeypatch):
+        """Post-content failure with every retry failing too: the fallback
+        notice is appended after the partial so the client knows the answer is
+        incomplete; the turn still closes cleanly."""
+        lib, plugin = mp
+        logger = self._make_logger(lib, plugin)
+        credits = "The account behind this API key doesn't have enough credits. Please top up."
+        bad = litellm.ModelResponse(choices=[{"message": {"role": "assistant", "content": credits}, "finish_reason": "stop"}])
+        calls = self._fake_router_acompletion(
+            monkeypatch, logger, [bad] * (len(("pollinations/community/x", "pollinations/community/y")) + plugin._RETRY_WALK_SLACK)
+        )
 
         async def dying_stream():
             yield {"type": "message_start", "message": {"type": "message_start", "role": "assistant", "model": "m"}}
@@ -924,11 +988,11 @@ class TestSoftFailureRetry:
         events = [e for c in out for e in plugin._chunk_events(c)]
         types = [e.get("type") for e in events]
         flat = "".join(plugin._event_text(c) for c in out)
-        assert "partial answer" in flat  # kept
-        assert calls["n"] == 0  # no retry once content is out
-        # clean closure, no error frame material
-        assert types[-3:] == ["content_block_stop", "message_delta", "message_stop"]
-        assert "error" not in flat.lower()
+        assert flat.startswith("partial answer ")  # already delivered, kept
+        assert "[model_picker]" in flat  # the notice follows the partial
+        assert "connection reset" not in flat
+        assert calls["n"] >= 1  # the walk did try other models
+        assert types[-2:] == ["message_delta", "message_stop"]
 
     def test_picker_honors_exclude_metadata(self, fresh, env_enabled, monkeypatch):
         lib, test_plugin, cfg, stats, manager = fresh
