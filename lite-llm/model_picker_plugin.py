@@ -496,6 +496,34 @@ def _event_text(chunk: object) -> str:
     return "".join(_delta_text_of(e) for e in _chunk_events(chunk))
 
 
+def _is_in_band_error(chunk: object) -> bool:
+    """Detect provider/litellm errors smuggled INTO the stream as events.
+
+    litellm's Anthropic adapter converts mid-stream exceptions (ReadTimeouts
+    raised as MidStreamFallbackError) into in-band anthropic `error` events
+    and completes the stream normally — no exception ever reaches the hook's
+    iterator. OpenAI-compatible streams do the same with top-level `error`
+    objects. Such chunks must never reach the client.
+    """
+    if isinstance(chunk, dict):
+        if chunk.get("type") == "error" or isinstance(chunk.get("error"), dict):
+            return True
+        return any(e.get("type") == "error" or isinstance(e.get("error"), dict) for e in _chunk_events(chunk))
+    if isinstance(chunk, (str, bytes, bytearray)):
+        for event in _chunk_events(chunk):
+            if event.get("type") == "error" or isinstance(event.get("error"), dict):
+                return True
+        # raw error frames the JSON parser could not complete (truncated streams)
+        if isinstance(chunk, str):
+            return '"type": "error"' in chunk or '"type":"error"' in chunk
+        return b'"type": "error"' in chunk or b'"type":"error"' in chunk
+    # ModelResponseStream-shaped objects: OpenAI-style top-level error objects
+    error = getattr(chunk, "error", None)
+    if isinstance(error, dict):
+        return True
+    return False
+
+
 def _sse_frame(event: dict) -> str:
     """Encode an anthropic event dict as an SSE frame matching the stream."""
     return f"event: {event.get('type', '')}\ndata: {json.dumps(event, separators=(',', ':'))}\n\n"
@@ -832,12 +860,21 @@ class ModelPickerStatsLogger(CustomLogger):
         next_index = 0
         accumulated = ""
         soft_text: str | None = None
+        in_band_error = False  # litellm converted a mid-stream failure into an error event
         saw_text = False  # content text already delivered to the client
         saw_any_chunk = False  # anything at all delivered
         try:
             async for chunk in response:
                 saw_any_chunk = True
                 try:
+                    if _is_in_band_error(chunk):
+                        # litellm's adapter already swallowed the upstream
+                        # exception (e.g. MidStreamFallbackError on a read
+                        # timeout) and emitted an in-band error event; no
+                        # exception will ever reach us. Drop the chunk — the
+                        # client must never see it — and handle it below.
+                        in_band_error = True
+                        break
                     text = _event_text(chunk)
                     if text:
                         accumulated += text
@@ -884,6 +921,29 @@ class ModelPickerStatsLogger(CustomLogger):
                 yield _sse_frame(self._message_start_event(model_name))
                 # leave open_block alone: the synthesis opens its own
                 # content_block_start when none has been streamed yet
+
+        if in_band_error:
+            # the adapter's error event never reached the client (dropped
+            # above); apply the same two-phase handling as exceptions
+            group = self._failed_group(request_data if isinstance(request_data, dict) else {}, response)
+            logger.warning(
+                "model_picker: in-band error event intercepted for %s; saw_text=%s",
+                group,
+                saw_text,
+            )
+            if group:
+                self.stats.record_failure(group, model_picker.FAILURE_CLASS_ERROR)
+            if saw_text:
+                for event in self._stream_closing_events(open_block):
+                    yield _sse_frame(event)
+                return
+            # nothing visible yet: retry like a soft failure
+            soft_text = soft_text or "in-band error event"
+            if not saw_any_chunk:
+                model_name = ""
+                if isinstance(request_data, dict):
+                    model_name = str(request_data.get("model") or "")
+                yield _sse_frame(self._message_start_event(model_name))
 
         if soft_text is None:
             return

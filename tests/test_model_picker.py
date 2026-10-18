@@ -775,6 +775,95 @@ class TestSoftFailureRetry:
         assert result is good
         assert calls["n"] == 1
 
+    def test_in_band_error_event_before_content_retries(self, mp, monkeypatch):
+        """litellm's Anthropic adapter converts mid-stream exceptions into
+        in-band error events; the hook must drop them (never yield) and retry
+        pre-content, so the client never sees an error frame."""
+        lib, plugin = mp
+        logger = self._make_logger(lib, plugin)
+        good = litellm.ModelResponse(
+            choices=[{"message": {"role": "assistant", "content": "Recovered from in-band error"}, "finish_reason": "stop"}],
+            usage={"prompt_tokens": 3, "completion_tokens": 4},
+        )
+        calls = self._fake_router_acompletion(monkeypatch, logger, [good])
+
+        async def error_stream():
+            yield {"type": "message_start", "message": {"type": "message", "role": "assistant", "model": "m"}}
+            yield {"type": "error", "error": {"type": "api_error", "message": "Timeout on reading data from socket"}}
+
+        out = []
+
+        async def run():
+            async for chunk in logger.async_post_call_streaming_iterator_hook(
+                None, error_stream(), {"model": "lite-llm/complexity", "messages": [{"role": "user", "content": "hi"}], "litellm_metadata": {"model_group": "lite-llm/complexity"}}
+            ):
+                out.append(chunk)
+
+        asyncio.run(run())
+        events = [e for c in out for e in plugin._chunk_events(c)]
+        types = [e.get("type") for e in events]
+        flat = "".join(plugin._event_text(c) for c in out)
+        assert "error" not in types  # the in-band error never reached the client
+        assert "Recovered from in-band error" in flat
+        assert calls["n"] == 1
+        assert types[-2:] == ["message_delta", "message_stop"]
+
+    def test_in_band_error_event_after_content_closes_cleanly(self, mp, monkeypatch):
+        """In-band error after partial content: the error frame is stripped and
+        the stream closes cleanly; the client keeps the partial answer."""
+        lib, plugin = mp
+        logger = self._make_logger(lib, plugin)
+        calls = self._fake_router_acompletion(monkeypatch, logger, [])
+
+        async def error_stream():
+            yield {"type": "message_start", "message": {"type": "message", "role": "assistant", "model": "m"}}
+            yield {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}
+            yield {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "partial answer "}}
+            yield {"type": "error", "error": {"type": "api_error", "message": "Timeout on reading data from socket"}}
+
+        out = []
+
+        async def run():
+            async for chunk in logger.async_post_call_streaming_iterator_hook(
+                None, error_stream(), {"model": "lite-llm/complexity", "messages": [{"role": "user", "content": "hi"}], "litellm_metadata": {}}
+            ):
+                out.append(chunk)
+
+        asyncio.run(run())
+        events = [e for c in out for e in plugin._chunk_events(c)]
+        types = [e.get("type") for e in events]
+        flat = "".join(plugin._event_text(c) for c in out)
+        assert "error" not in types  # stripped
+        assert "partial answer" in flat  # kept
+        assert calls["n"] == 0  # no retry once content is out
+        assert types[-3:] == ["content_block_stop", "message_delta", "message_stop"]
+
+    def test_in_band_error_sse_frame_string_detected(self, mp):
+        lib, plugin = mp
+        assert plugin._is_in_band_error('event: error\ndata: {"type":"error","error":{"message":"boom"}}\n\n')
+        assert plugin._is_in_band_error({"type": "error", "error": {"message": "boom"}})
+        assert plugin._is_in_band_error({"error": {"message": "boom"}})
+        assert not plugin._is_in_band_error({"type": "content_block_delta", "delta": {"text": "fine"}})
+        assert not plugin._is_in_band_error('data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}\n\n')
+
+    def test_in_band_error_failure_recorded(self, mp):
+        lib, plugin = mp
+        logger = self._make_logger(lib, plugin)
+
+        async def error_stream():
+            yield {"type": "message_start", "message": {"type": "message", "role": "assistant", "model": "m"}}
+            yield {"type": "error", "error": {"type": "api_error", "message": "upstream drop"}}
+
+        async def run():
+            async for _ in logger.async_post_call_streaming_iterator_hook(
+                None, error_stream(), {"model": "m", "messages": [{"role": "user", "content": "hi"}], "litellm_metadata": {"model_group": "pollinations/x"}}
+            ):
+                pass
+
+        asyncio.run(run())
+        d = logger.stats.derived("pollinations/x")
+        assert d.n_obs >= 1  # the stall demotes the group
+
     def test_midstream_failure_before_content_retries(self, mp, monkeypatch):
         """Upstream stream dying before any text was yielded: the walk retries
         and the client receives a complete, clean answer (message_start + full
