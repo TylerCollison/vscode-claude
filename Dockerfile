@@ -295,9 +295,13 @@ RUN python3 -m venv /opt/build-env-venv \
     && /opt/build-env-venv/bin/pip install /build-env \
     && ln -sf /opt/build-env-venv/bin/build-env /usr/local/bin/build-env
 
-# Install LiteLLM along with proxy features
+# Install LiteLLM along with proxy features.
+# litellm is PINNED: unpinned builds silently drifted between consecutive
+# image builds (1.105.1 -> 1.106.0 inside a four-hour window), shipping
+# unvalidated adapter changes to the picker's deeply-coupled paths. Bump
+# deliberately, with the picker re-verified against the new version.
 RUN pip install --break-system-packages \
-  'litellm[proxy]' \
+  'litellm[proxy]==1.106.0' \
   'fastapi' \
   'semantic-router' \
   'uvicorn' 'appdirs' 'backoff' 'pyyaml' 'rq'

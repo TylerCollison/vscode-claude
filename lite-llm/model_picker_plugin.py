@@ -35,6 +35,14 @@ request retries with a different model, the retry's answer continuing the same
 SSE stream after any partial content already delivered. A truncated answer is
 never allowed to end the turn as though it were complete.
 
+Retries re-enter the routing pipeline through the entry point matching the
+request's shape: /v1/messages bodies stay anthropic-shaped (top-level
+``system``, ``tool_use``/``tool_result`` content blocks) all the way to the
+post-call hooks, so they must go back through the router's anthropic_messages
+entry — handing them to acompletion ships anthropic blocks to OpenAI-format
+providers and 400s every candidate on a payload the provider never saw fit to
+accept.
+
 litellm's ``get_instance_fn`` exec's this file with spec_from_file_location
 WITHOUT registering it in sys.modules, so a plain ``import model_picker``
 would not resolve, and this file being referenced from both the plugins list
@@ -429,17 +437,22 @@ def _event_ttft_seconds(kwargs: dict, start_time: datetime) -> float | None:
 _RETRY_WALK_SLACK = 4
 _RETRY_WALK_SAFETY_CAP = 256
 
-# anthropic /messages SSE event dict keys we synthesize when continuing a
-# stream with a retry's answer.
+# Request fields copied into the non-streaming retry. The anthropic-only
+# fields matter on the /v1/messages route: ``system`` is top-level there (not
+# a message), and dropping it silently stripped the system prompt from every
+# retry; ``stop_sequences``/``thinking`` are anthropic's spellings.
 _RETRY_PASSTHROUGH_KEYS = (
     "model",
     "messages",
+    "system",
     "max_tokens",
     "metadata",
     "temperature",
     "top_p",
     "top_k",
     "stop",
+    "stop_sequences",
+    "thinking",
     "tools",
     "tool_choice",
     "response_format",
@@ -450,6 +463,63 @@ _RETRY_PASSTHROUGH_KEYS = (
     "litellm_metadata",
     "proxy_server_request",
 )
+
+# Content block types that exist ONLY in anthropic message bodies. OpenAI
+# content parts use different names (image_url, input_audio, ...), so any of
+# these marks a request acompletion cannot carry to an OpenAI-format provider.
+_ANTHROPIC_BLOCK_TYPES = (
+    "tool_result",
+    "tool_use",
+    "thinking",
+    "redacted_thinking",
+    "document",
+    "image",
+    "search_result",
+    "server_tool_use",
+    "web_search_tool_result",
+)
+
+# OpenAI finish_reason -> anthropic stop_reason (unknown maps to end_turn).
+_STOP_REASON_MAP = {
+    "stop": "end_turn",
+    "length": "max_tokens",
+    "tool_calls": "tool_use",
+    "function_call": "tool_use",
+    "end_turn": "end_turn",
+    "max_tokens": "max_tokens",
+    "stop_sequence": "stop_sequence",
+    "tool_use": "tool_use",
+}
+
+
+def _is_anthropic_request(request_data: object) -> bool:
+    """True when a request body is anthropic-shaped (the /v1/messages route).
+
+    The tells are unambiguous: a top-level ``system`` field (OpenAI chat
+    carries the system prompt as a message), anthropic-exclusive content
+    block types, or anthropic tool definitions (``input_schema``). Text-only
+    requests are valid in both formats and stay on the openai entry, where
+    acompletion already handles them.
+    """
+    if not isinstance(request_data, dict):
+        return False
+    if request_data.get("system") is not None:
+        return True
+    tools = request_data.get("tools")
+    if isinstance(tools, list) and any(isinstance(t, dict) and "input_schema" in t for t in tools):
+        return True
+    messages = request_data.get("messages")
+    if isinstance(messages, list):
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if isinstance(block, dict) and block.get("type") in _ANTHROPIC_BLOCK_TYPES:
+                    return True
+    return False
 
 _FALLBACK_REPLY = (
     "[model_picker] every available model was tried for this request without success "
@@ -537,23 +607,99 @@ def _sse_frame(event: dict) -> str:
 
 
 def _usage_dict(response_obj: object) -> dict:
+    """input/output token counts from a retry response's usage, any shape.
+
+    OpenAI responses carry usage.prompt_tokens/completion_tokens attributes;
+    anthropic responses are dicts with input_tokens/output_tokens keys.
+    """
     usage = getattr(response_obj, "usage", None)
+    if usage is None and isinstance(response_obj, dict):
+        usage = response_obj.get("usage")
     out: dict = {}
-    prompt = getattr(usage, "prompt_tokens", None) if usage is not None else None
-    completion = getattr(usage, "completion_tokens", None) if usage is not None else None
-    if isinstance(prompt, (int, float)):
+    if isinstance(usage, dict):
+        prompt = usage.get("prompt_tokens", usage.get("input_tokens"))
+        completion = usage.get("completion_tokens", usage.get("output_tokens"))
+    else:
+        prompt = getattr(usage, "prompt_tokens", None)
+        completion = getattr(usage, "completion_tokens", None)
+    if isinstance(prompt, (int, float)) and not isinstance(prompt, bool):
         out["input_tokens"] = int(prompt)
-    if isinstance(completion, (int, float)):
+    if isinstance(completion, (int, float)) and not isinstance(completion, bool):
         out["output_tokens"] = int(completion)
     return out
 
 
-def _finish_reason(response_obj: object) -> str:
+def _finish_reason(response_obj: object, has_tool_uses: bool = False) -> str:
+    """anthropic stop_reason for the synthesized message_delta.
+
+    OpenAI finish_reasons are mapped into anthropic vocabulary — the client
+    parses an anthropic stream, where 'stop' is as foreign as 'end_turn' is
+    to an OpenAI client. A tool-call finish only survives the mapping when
+    tool_use blocks were actually synthesized.
+    """
     try:
-        reason = response_obj.choices[0].finish_reason  # type: ignore[index,union-attr]
+        if isinstance(response_obj, dict):
+            reason = response_obj.get("stop_reason")
+        else:
+            reason = response_obj.choices[0].finish_reason  # type: ignore[index,union-attr]
     except Exception:  # noqa: BLE001 — synthesis must never fail the request
         reason = None
-    return str(reason) if reason else "end_turn"
+    mapped = _STOP_REASON_MAP.get(str(reason or ""), "end_turn")
+    if mapped == "tool_use" and not has_tool_uses:
+        return "end_turn"  # never claim tool_use without the blocks to back it
+    return mapped
+
+
+def _response_tool_uses(response_obj: object) -> list[dict]:
+    """anthropic tool_use blocks from a retry response, any shape.
+
+    Anthropic responses carry tool_use content blocks directly; OpenAI
+    responses carry tool_calls whose function arguments arrive as a JSON
+    string. Returns [{"id", "name", "input"}] for stream synthesis.
+    """
+    out: list[dict] = []
+    try:
+        if isinstance(response_obj, dict):
+            content = response_obj.get("content")
+            for block in content if isinstance(content, list) else []:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    out.append(
+                        {
+                            "id": str(block.get("id") or ""),
+                            "name": str(block.get("name") or ""),
+                            "input": block.get("input") if isinstance(block.get("input"), dict) else {},
+                        }
+                    )
+        else:
+            for choice in getattr(response_obj, "choices", None) or []:
+                message = getattr(choice, "message", None)
+                for call in getattr(message, "tool_calls", None) or []:
+                    function = getattr(call, "function", None)
+                    name = str(getattr(function, "name", "") or "") if function is not None else ""
+                    if not name:
+                        continue
+                    try:
+                        arguments = json.loads(getattr(function, "arguments", None) or "{}")
+                    except Exception:  # noqa: BLE001 — malformed arguments must not break synthesis
+                        arguments = {}
+                    out.append(
+                        {
+                            "id": str(getattr(call, "id", "") or ""),
+                            "name": name,
+                            "input": arguments if isinstance(arguments, dict) else {},
+                        }
+                    )
+    except Exception:  # noqa: BLE001 — synthesis must never fail the request
+        return []
+    return [tool_use for tool_use in out if tool_use["name"]]
+
+
+def _response_model_name(response_obj: object) -> str:
+    """A retry response's model name, attribute- or dict-shaped."""
+    model = getattr(response_obj, "model", None)
+    if model is None and isinstance(response_obj, dict):
+        model = response_obj.get("model")
+    return str(model) if model else ""
 
 
 class ModelPickerStatsLogger(CustomLogger):
@@ -698,6 +844,11 @@ class ModelPickerStatsLogger(CustomLogger):
         ORIGINAL entry point (lite-llm/complexity) so the picker can exclude
         the failed model and rank the next candidate; direct (non-tier)
         calls keep their own model.
+
+        Anthropically-shaped requests (/v1/messages) keep their shape —
+        _retry_entry_call re-dispatches them through the router's
+        anthropic_messages entry, never acompletion — and their top-level
+        system prompt is carried along instead of silently dropped.
         """
         if not isinstance(request_data, dict) or not request_data.get("messages"):
             return None
@@ -715,12 +866,33 @@ class ModelPickerStatsLogger(CustomLogger):
         retry["stream"] = False
         return retry
 
-    @staticmethod
-    async def _router_acompletion(retry_data: dict):
+    async def _router_acompletion(self, retry_data: dict):
+        """One retry through the routing pipeline, shape-matched entry."""
         from litellm.proxy.proxy_server import llm_router
 
-        if llm_router is not None:
-            return await llm_router.acompletion(**retry_data)
+        return await self._retry_entry_call(llm_router, retry_data)
+
+    @staticmethod
+    async def _retry_entry_call(router, retry_data: dict):
+        """Dispatch one retry through the entry point matching the request's
+        shape.
+
+        /v1/messages bodies stay anthropic-shaped all the way to the
+        post-call hooks (top-level ``system``, ``tool_use``/``tool_result``
+        content blocks); handing that body to acompletion ships the blocks
+        to OpenAI-format providers and 400s every candidate ("Invalid user
+        message") — the walk burns the whole pool on a payload no provider
+        ever accepted. The router's anthropic_messages entry (the one the
+        proxy itself dispatches /v1/messages through) applies the
+        per-provider transformation the original request already got.
+        """
+        if _is_anthropic_request(retry_data):
+            entry = getattr(router, "anthropic_messages", None) if router is not None else getattr(litellm, "anthropic_messages", None)
+            if entry is not None:
+                return await entry(**retry_data)
+            logger.warning("model_picker: no anthropic retry entry on this litellm build; retrying through acompletion")
+        if router is not None:
+            return await router.acompletion(**retry_data)
         return await litellm.acompletion(**retry_data)
 
     async def _candidate_cap(self) -> int:
@@ -769,13 +941,13 @@ class ModelPickerStatsLogger(CustomLogger):
                 retry_resp = await self._router_acompletion(retry_data)
             except Exception as e:  # noqa: BLE001 — one bad provider must not end the walk
                 last_reason = f"upstream error ({type(e).__name__})"
-                group = self._event_group({"litellm_metadata": {"model_group": getattr(e, "model", "")}})
+                group = self._event_group({"litellm_metadata": {"model_group": _response_model_name(e)}})
                 logger.warning("model_picker: retry attempt failed (%s); trying next candidate", e)
                 continue
             text = model_picker.extract_response_text(retry_resp)
             if model_picker.is_soft_failure_response(text, retry_resp):
                 last_reason = "provider error in response content"
-                group = self._event_group({"litellm_metadata": {"model_group": getattr(retry_resp, "model", "")}})
+                group = self._event_group({"litellm_metadata": {"model_group": _response_model_name(retry_resp)}})
                 continue
             return retry_resp, {"tried": attempts, "reason": last_reason, "groups": failed_groups}
         return None, {"tried": attempts, "reason": last_reason, "groups": failed_groups}
@@ -787,24 +959,59 @@ class ModelPickerStatsLogger(CustomLogger):
         next_index: int,
         fallback_text: str = "",
     ) -> list[dict]:
-        """Anthropic SSE events continuing the stream with a retry's answer."""
+        """Anthropic SSE events continuing the stream with a retry's answer.
+
+        The retry's text continues the still-open text block (or opens a
+        fresh one), its tool calls are synthesized as tool_use blocks so
+        agent turns recovered mid-flight keep their working tool calls, and
+        the message closes with the retry's stop reason and usage in
+        anthropic vocabulary.
+        """
         text = model_picker.extract_response_text(response_obj) or fallback_text or _FALLBACK_REPLY.format(
             tried=0, reason="unknown"
         )
+        tool_uses = _response_tool_uses(response_obj)
+        for i, tool_use in enumerate(tool_uses):
+            if not tool_use["id"]:
+                tool_use["id"] = f"toolu_model_picker_{i}"
         events: list[dict] = []
-        if open_block is not None and open_block[1] == "text":
-            index = open_block[0]
-        else:
-            if open_block is not None:
-                events.append({"type": "content_block_stop", "index": open_block[0]})
-            index = next_index
-            events.append({"type": "content_block_start", "index": index, "content_block": {"type": "text", "text": ""}})
-        events.append({"type": "content_block_delta", "index": index, "delta": {"type": "text_delta", "text": text}})
-        events.append({"type": "content_block_stop", "index": index})
+        index = next_index
+        if text:
+            if open_block is not None and open_block[1] == "text":
+                index = open_block[0]
+            else:
+                if open_block is not None:
+                    events.append({"type": "content_block_stop", "index": open_block[0]})
+                events.append({"type": "content_block_start", "index": index, "content_block": {"type": "text", "text": ""}})
+            events.append({"type": "content_block_delta", "index": index, "delta": {"type": "text_delta", "text": text}})
+            events.append({"type": "content_block_stop", "index": index})
+            index += 1
+        elif open_block is not None:
+            # nothing to continue the open block with (a text-less tool
+            # answer): close whatever the dead stream left open
+            events.append({"type": "content_block_stop", "index": open_block[0]})
+            index = max(next_index, open_block[0] + 1)
+        for tool_use in tool_uses:
+            events.append(
+                {
+                    "type": "content_block_start",
+                    "index": index,
+                    "content_block": {"type": "tool_use", "id": tool_use["id"], "name": tool_use["name"], "input": {}},
+                }
+            )
+            events.append(
+                {
+                    "type": "content_block_delta",
+                    "index": index,
+                    "delta": {"type": "input_json_delta", "partial_json": json.dumps(tool_use["input"] or {}, separators=(",", ":"))},
+                }
+            )
+            events.append({"type": "content_block_stop", "index": index})
+            index += 1
         events.append(
             {
                 "type": "message_delta",
-                "delta": {"stop_reason": _finish_reason(response_obj), "stop_sequence": None},
+                "delta": {"stop_reason": _finish_reason(response_obj, has_tool_uses=bool(tool_uses)), "stop_sequence": None},
                 "usage": _usage_dict(response_obj),
             }
         )
@@ -960,7 +1167,7 @@ class ModelPickerStatsLogger(CustomLogger):
             retry_resp, summary = await self._retry_until_clean(data, group)
             if retry_resp is not None:
                 if anthropic_shape:
-                    return self._as_anthropic_dict(response, model_picker.extract_response_text(retry_resp))
+                    return self._as_anthropic_dict(response, retry_resp, "")
                 return retry_resp
             logger.warning(
                 "model_picker: retry walk exhausted after %d attempts (%s); replying with fallback notice",
@@ -974,21 +1181,37 @@ class ModelPickerStatsLogger(CustomLogger):
         # never return the error-bearing original response; preserve the
         # caller's wire shape so anthropic clients keep parsing
         if anthropic_shape:
-            return self._as_anthropic_dict(response, notice_text)
+            return self._as_anthropic_dict(response, None, notice_text)
         return litellm.ModelResponse(
             choices=[{"message": {"role": "assistant", "content": notice_text}, "finish_reason": "stop"}]
         )
 
     @staticmethod
-    def _as_anthropic_dict(original: dict, text: str) -> dict:
-        """Anthropic-shaped replacement carrying the retry's answer."""
+    def _as_anthropic_dict(original: dict, retry_obj: object, fallback_text: str) -> dict:
+        """Anthropic-shaped replacement carrying the retry's answer.
+
+        Preserves the caller's wire shape; carries the retry's text AND its
+        tool_use blocks (agent turns recovered mid-flight keep their tool
+        calls) with an anthropic stop_reason.
+        """
+        tool_uses = _response_tool_uses(retry_obj)
+        for i, tool_use in enumerate(tool_uses):
+            if not tool_use["id"]:
+                tool_use["id"] = f"toolu_model_picker_{i}"
+        content: list[dict] = []
+        text = model_picker.extract_response_text(retry_obj) or fallback_text
+        if text:
+            content.append({"type": "text", "text": text})
+        content += [{"type": "tool_use", "id": t["id"], "name": t["name"], "input": t["input"]} for t in tool_uses]
+        if not content:
+            content = [{"type": "text", "text": fallback_text}]
         return {
             "id": original.get("id") or "msg_model_picker",
             "type": "message",
             "role": "assistant",
             "model": original.get("model") or "",
-            "content": [{"type": "text", "text": text}],
-            "stop_reason": "end_turn",
+            "content": content,
+            "stop_reason": "tool_use" if tool_uses else "end_turn",
             "stop_sequence": None,
             "usage": original.get("usage") or {"input_tokens": 0, "output_tokens": 0},
         }

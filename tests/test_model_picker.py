@@ -11,8 +11,13 @@ import json
 import os
 import sys
 import time
+import types
 from datetime import datetime
 from pathlib import Path
+
+import litellm
+import pytest
+import yaml
 
 import litellm
 import pytest
@@ -1008,6 +1013,249 @@ class TestSoftFailureRetry:
         context = make_context(lib, ["lite-llm/default"], metadata=metadata)
         result = asyncio.run(test_plugin.run(context))
         assert result.candidate_models[0] != "pollinations/community/vendouple/deepseek-v4-pro"
+
+
+# ---------------------------------------------------------------------------
+# Anthropically-shaped retries (the /v1/messages walk fix, litellm5.log)
+# ---------------------------------------------------------------------------
+
+
+class TestAnthropicRetryEntry:
+    """The walk must re-dispatch /v1/messages bodies through the anthropic
+    entry: those bodies stay anthropic-shaped (top-level system,
+    tool_use/tool_result content blocks) all the way to the hooks, and
+    acompletion ships the blocks to OpenAI-format providers, which 400 every
+    candidate ("Invalid user message") — burning and demoting the whole pool
+    on a payload no provider ever accepted."""
+
+    def test_is_anthropic_request_detection(self, mp):
+        lib, plugin = mp
+        assert plugin._is_anthropic_request({"system": "Be helpful.", "messages": [{"role": "user", "content": "hi"}]})
+        assert plugin._is_anthropic_request(
+            {"messages": [{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}]}
+        )
+        assert plugin._is_anthropic_request(
+            {"messages": [{"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "f", "input": {}}]}]}
+        )
+        assert plugin._is_anthropic_request(
+            {"messages": [], "tools": [{"name": "f", "description": "d", "input_schema": {}}]}
+        )
+        # text-only bodies are valid in BOTH formats — they stay on the openai entry
+        assert not plugin._is_anthropic_request({"messages": [{"role": "user", "content": "hi"}]})
+        assert not plugin._is_anthropic_request({"messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]})
+        assert not plugin._is_anthropic_request({"messages": [], "tools": [{"type": "function", "function": {"name": "f"}}]})
+        assert not plugin._is_anthropic_request("not a dict")
+
+    def test_retry_entry_dispatches_by_shape(self, mp):
+        lib, plugin = mp
+        calls = []
+
+        class FakeRouter:
+            async def acompletion(self, **kwargs):
+                calls.append(("acompletion", kwargs))
+                return "openai-response"
+
+            async def anthropic_messages(self, **kwargs):
+                calls.append(("anthropic_messages", kwargs))
+                return "anthropic-response"
+
+        router = FakeRouter()
+        anthropic_body = {"model": "m", "system": "s", "messages": [{"role": "user", "content": "hi"}]}
+        assert asyncio.run(plugin.ModelPickerStatsLogger._retry_entry_call(router, anthropic_body)) == "anthropic-response"
+        assert calls[0][0] == "anthropic_messages"
+        openai_body = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
+        assert asyncio.run(plugin.ModelPickerStatsLogger._retry_entry_call(router, openai_body)) == "openai-response"
+        assert calls[1][0] == "acompletion"
+
+    def test_retry_entry_fallbacks(self, mp, monkeypatch):
+        lib, plugin = mp
+
+        class OpenAIOnlyRouter:
+            async def acompletion(self, **kwargs):
+                return "degraded"
+
+        out = asyncio.run(
+            plugin.ModelPickerStatsLogger._retry_entry_call(OpenAIOnlyRouter(), {"model": "m", "system": "s", "messages": []})
+        )
+        assert out == "degraded"  # no anthropic entry on this build: degrade, never crash
+
+        async def fake_anthropic(**kwargs):
+            return "module-anthropic"
+
+        async def fake_openai(**kwargs):
+            return "module-openai"
+
+        monkeypatch.setattr(litellm, "anthropic_messages", fake_anthropic, raising=False)
+        monkeypatch.setattr(litellm, "acompletion", fake_openai, raising=False)
+        assert (
+            asyncio.run(plugin.ModelPickerStatsLogger._retry_entry_call(None, {"model": "m", "system": "s", "messages": []}))
+            == "module-anthropic"
+        )
+        assert asyncio.run(plugin.ModelPickerStatsLogger._retry_entry_call(None, {"model": "m", "messages": []})) == "module-openai"
+
+    def test_retry_data_carries_anthropic_fields(self, mp):
+        lib, plugin = mp
+        logger = plugin.ModelPickerStatsLogger(stats=lib.StatsRegistry())
+        request_data = {
+            "model": "lite-llm/complexity",
+            "messages": [{"role": "user", "content": "hi"}],
+            "system": "You are Claude Code.",  # top-level on /v1/messages
+            "stop_sequences": ["\n\n"],
+            "thinking": {"type": "enabled", "budget_tokens": 1024},
+            "max_tokens": 32000,
+            "litellm_metadata": {"model_group": "lite-llm/complexity"},
+        }
+        retry = logger._retry_data(request_data)
+        assert retry["system"] == "You are Claude Code."  # was silently dropped
+        assert retry["stop_sequences"] == ["\n\n"]
+        assert retry["thinking"] == {"type": "enabled", "budget_tokens": 1024}
+        assert retry["stream"] is False
+        assert retry["model"] == "lite-llm/complexity"
+
+    def test_midstream_failure_anthropic_request_retries_through_anthropic_entry(self, mp, monkeypatch):
+        """The 1.5.96 live failure (litellm5.log): an anthropic request's
+        mid-stream cutoff walked into acompletion retries that 400'd on every
+        candidate. The walk must re-dispatch through the router's
+        anthropic_messages entry, keeping the system prompt, and synthesize
+        the retry's answer into the stream."""
+        lib, plugin = mp
+        logger = TestSoftFailureRetry._make_logger(lib, plugin)
+        router_calls = []
+
+        async def fake_anthropic_messages(**kwargs):
+            router_calls.append(kwargs)
+            return {
+                "id": "msg_retry",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Recovered answer"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 11, "output_tokens": 7},
+            }
+
+        import litellm.proxy.proxy_server as proxy_server_module
+
+        monkeypatch.setattr(
+            proxy_server_module,
+            "llm_router",
+            types.SimpleNamespace(anthropic_messages=fake_anthropic_messages),
+        )
+
+        async def dying_stream():
+            yield {"type": "message_start", "message": {"type": "message", "role": "assistant", "model": "m"}}
+            yield {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}
+            yield {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "partial "}}
+            raise RuntimeError("connection reset by peer")
+
+        request_data = {
+            "model": "lite-llm/complexity",
+            "system": "You are Claude Code.",
+            "messages": [
+                {"role": "user", "content": "run the tests"},
+                {"role": "assistant", "content": [{"type": "tool_use", "id": "tu1", "name": "bash", "input": {"command": "pytest"}}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu1", "content": "3 passed"}]},
+            ],
+            "litellm_metadata": {"model_group": "lite-llm/complexity"},
+        }
+        out = []
+
+        async def run():
+            async for chunk in logger.async_post_call_streaming_iterator_hook(None, dying_stream(), request_data):
+                out.append(chunk)
+
+        asyncio.run(run())
+        # the retry went through the ANTHROPIC entry with the payload intact
+        assert len(router_calls) == 1
+        assert router_calls[0]["system"] == "You are Claude Code."
+        assert router_calls[0]["stream"] is False
+        assert router_calls[0]["model"] == "lite-llm/complexity"
+        assert router_calls[0]["messages"] == request_data["messages"]
+        # the client got the partial plus the retry's answer, closed cleanly
+        events = [e for c in out for e in plugin._chunk_events(c)]
+        types_seen = [e.get("type") for e in events]
+        flat = "".join(plugin._event_text(c) for c in out)
+        assert flat.startswith("partial ")
+        assert "Recovered answer" in flat
+        assert "error" not in types_seen
+        assert types_seen[-2:] == ["message_delta", "message_stop"]
+        # usage and stop reason carried in anthropic vocabulary
+        closing = [e for e in events if e.get("type") == "message_delta"][0]
+        assert closing["delta"]["stop_reason"] == "end_turn"
+        assert closing["usage"] == {"input_tokens": 11, "output_tokens": 7}
+        # the failed model was recorded (demoted)
+        assert logger.stats.derived("lite-llm/complexity").n_obs >= 1
+
+    def test_anthropic_retry_tool_use_synthesized(self, mp):
+        lib, plugin = mp
+        retry_resp = {
+            "content": [
+                {"type": "text", "text": "Running the tests"},
+                {"type": "tool_use", "id": "tu_9", "name": "bash", "input": {"command": "pytest"}},
+            ],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 5, "output_tokens": 6},
+        }
+        events = plugin.ModelPickerStatsLogger._synthesize_tail_events(retry_resp, None, 0)
+        types_seen = [e.get("type") for e in events]
+        tool_start = [e for e in events if e.get("type") == "content_block_start" and e["content_block"]["type"] == "tool_use"]
+        assert len(tool_start) == 1
+        assert tool_start[0]["content_block"]["name"] == "bash"
+        assert tool_start[0]["content_block"]["id"] == "tu_9"
+        delta = [e for e in events if e.get("type") == "content_block_delta" and e["delta"]["type"] == "input_json_delta"]
+        assert json.loads(delta[0]["delta"]["partial_json"]) == {"command": "pytest"}
+        closing = [e for e in events if e.get("type") == "message_delta"][0]
+        assert closing["delta"]["stop_reason"] == "tool_use"
+        assert closing["usage"] == {"input_tokens": 5, "output_tokens": 6}
+        assert types_seen[-1] == "message_stop"
+
+    def test_openai_retry_tool_calls_synthesized(self, mp):
+        lib, plugin = mp
+        retry_resp = litellm.ModelResponse(
+            choices=[
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "Calling the tool",
+                        "tool_calls": [{"id": "tc1", "function": {"name": "bash", "arguments": "{\"command\": \"ls\"}"}}],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+            usage={"prompt_tokens": 2, "completion_tokens": 3},
+        )
+        events = plugin.ModelPickerStatsLogger._synthesize_tail_events(retry_resp, None, 0)
+        tool_start = [e for e in events if e.get("type") == "content_block_start" and e["content_block"]["type"] == "tool_use"]
+        assert tool_start[0]["content_block"]["name"] == "bash"
+        delta = [e for e in events if e.get("type") == "content_block_delta" and e["delta"]["type"] == "input_json_delta"]
+        assert json.loads(delta[0]["delta"]["partial_json"]) == {"command": "ls"}
+        closing = [e for e in events if e.get("type") == "message_delta"][0]
+        assert closing["delta"]["stop_reason"] == "tool_use"
+        assert closing["usage"] == {"input_tokens": 2, "output_tokens": 3}
+
+    def test_finish_reason_vocabulary_mapping(self, mp):
+        lib, plugin = mp
+        openai_stop = litellm.ModelResponse(choices=[{"message": {"role": "assistant", "content": "x"}, "finish_reason": "stop"}])
+        assert plugin._finish_reason(openai_stop) == "end_turn"  # not the openai 'stop'
+        openai_length = litellm.ModelResponse(choices=[{"message": {"role": "assistant", "content": "x"}, "finish_reason": "length"}])
+        assert plugin._finish_reason(openai_length) == "max_tokens"
+        openai_tools = litellm.ModelResponse(choices=[{"message": {"role": "assistant", "content": "x"}, "finish_reason": "tool_calls"}])
+        assert plugin._finish_reason(openai_tools) == "end_turn"  # no synthesized blocks: never claim tool_use
+        assert plugin._finish_reason(openai_tools, has_tool_uses=True) == "tool_use"
+        assert plugin._finish_reason({"stop_reason": "max_tokens"}) == "max_tokens"
+        assert plugin._finish_reason(None) == "end_turn"
+
+    def test_non_streaming_anthropic_swap_carries_tools(self, mp):
+        lib, plugin = mp
+        retry_resp = {
+            "content": [{"type": "tool_use", "id": "tu1", "name": "bash", "input": {"command": "ls"}}],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+        out = plugin.ModelPickerStatsLogger._as_anthropic_dict({"id": "msg1", "model": "m"}, retry_resp, "")
+        assert out["content"] == [{"type": "tool_use", "id": "tu1", "name": "bash", "input": {"command": "ls"}}]
+        assert out["stop_reason"] == "tool_use"
+        notice = plugin.ModelPickerStatsLogger._as_anthropic_dict({"id": "msg1", "model": "m"}, None, "notice text")
+        assert notice["content"] == [{"type": "text", "text": "notice text"}]
+        assert notice["stop_reason"] == "end_turn"
 
 
 # ---------------------------------------------------------------------------
