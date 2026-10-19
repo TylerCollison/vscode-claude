@@ -46,6 +46,7 @@ STARTUP_SCRIPTS=(
     "/108-start-prompt-session"
     "/110-start-mr-pr-dispatch"
     "/109-start-mr-pr-sync"
+    "/112-start-worker-reaper"
 )
 
 log "Starting master startup sequence..."

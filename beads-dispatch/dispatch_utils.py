@@ -448,6 +448,12 @@ def worker_exists(name, swarm):
     return rc == 0
 
 
+# Label the dispatchers stamp on every dispatched worker, so the worker reaper
+# can identify fleet workers by label rather than by container/service name
+# alone. Keep in sync with worker_reaper.py (the consumer).
+WORKER_LABEL = "dispatch.worker"
+
+
 # The only volume the worker gets: the host docker socket, so the replicated
 # container can drive the host daemon too. No other mounts are replicated.
 # Check for docker socket at both common locations

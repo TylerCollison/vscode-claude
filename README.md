@@ -338,6 +338,14 @@ In stealth mode (when `BEADS_DIR` is set), data lives at `$BEADS_DIR` instead �
 | `MR_PR_SYNC_INTERVAL` | `300` | Polling interval in seconds for the sync daemon |
 | `MR_PR_SYNC_RUN_ON_START` | `true` | Run initial sync on container startup |
 
+### Worker Reaper Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WORKER_REAPER` | *(not set)* | Set to `true` to enable the worker reaper on container startup |
+| `WORKER_REAPER_INTERVAL` | `60` | Reconciliation interval in seconds |
+| `WORKER_REAPER_STATE_DIR` | `/config/.worker-reaper` | Where the observed-up state file lives |
+
 ### Auto Start Prompt Configuration
 
 | Variable | Default | Description |
@@ -526,6 +534,38 @@ environment:
 
 > **Prerequisites:** Docker socket mounted, `gh`/`glab` authenticated for the `abc` user, `GIT_REPO_URL` set, and the container must be able to push to the repo origin (for the dispatcher to sync branch state if needed).
 
+### Worker Reaper (remove dispatched workers once they have completed)
+
+Dispatched workers (from **Beads Dispatch** and **MR/PR Dispatch**) are created with `--restart no` / `--restart-condition none`, so they run to completion and never come back — but their Swarm services and local containers linger on the node forever. The reaper is a background daemon that periodically removes them.
+
+**Safety property:** a worker is removed **only** when the reaper has previously observed it **UP** (running task / running container) and it is now **DOWN** (no running tasks / container exited). Workers don't restart, so seen-up-then-down means the worker ran to completion (or definitively died). A worker that has never been observed UP is **never** removed — a freshly created service whose task has not started yet, or a container still in `created` state, is left alone so work is never killed before it begins. Workers are identified by dispatch labels (`dispatch.worker=true`, stamped on every worker by both dispatchers, plus `mr_pr.id`/`beads.issue`), with the dispatcher name shape (`beads-*` / `mr-pr-*` ending in the 20-digit dispatch timestamp) as a fallback for workers dispatched before labels existed.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WORKER_REAPER` | *(unset)* | Set to `true` to enable the reaper on container startup |
+| `WORKER_REAPER_INTERVAL` | `60` | Reconciliation interval in seconds |
+| `WORKER_REAPER_STATE_DIR` | `/config/.worker-reaper` | Where the observed-up state file (`state.json`) lives — must be on a persistent volume so observations survive restarts |
+
+**Usage:**
+
+```yaml
+environment:
+  - WORKER_REAPER=true
+  - WORKER_REAPER_INTERVAL=60           # Optional
+  - BEADS_DISPATCH=true                 # The reaper cleans up what these dispatchers leave behind
+  - MR_PR_DISPATCH=true
+```
+
+**How it works:**
+
+1. Every interval, the reaper enumerates the workers dispatched on this node — `docker service ls` on a swarm manager (services), `docker ps -a` otherwise (local containers). Workers are identified by label and/or name shape; swarm task containers are never touched in local mode (their lifecycle belongs to the service, which the swarm manager's reaper removes via `docker service rm`).
+2. Each worker observed **UP** is recorded in `state.json` (first-seen timestamp). State lives under `/config` next to the dispatchers' seen-set state, so it survives container restarts.
+3. A worker recorded UP and now **DOWN** is removed: `docker service rm` (swarm) / `docker rm` (local), with the service's task state double-checked before removal. Each removal is logged with the worker name and reason; the state entry is dropped after successful removal.
+4. Workers that disappear out-of-band (removed by hand) simply have their state entries dropped. If the Docker socket is unavailable, the cycle is skipped and retried on the next tick.
+5. Workers created mid-scan are safe: they are not in the enumeration, and unique timestamped names mean a worker is only ever removed if it was seen UP in an earlier cycle.
+
+> **Note:** the reaper is disabled inside dispatched workers (`WORKER_REAPER=false` is set in worker env, like the other dispatch daemons) — the node's parent container owns worker cleanup.
+
 ### Knowledge Repository Integration
 | Variable | Description |
 |----------|-------------|
@@ -608,6 +648,9 @@ services:
       - MR_PR_DISPATCH_PORT_BASE=8100     # Optional
       - MR_PR_SYNC_INTERVAL=300           # Optional
       - GH_TOKEN=your-github-token        # Required for GitHub (or GITLAB_TOKEN for GitLab)
+      # Worker Reaper — remove dispatched workers once they complete (optional)
+      - WORKER_REAPER=true
+      - WORKER_REAPER_INTERVAL=60         # Optional
     ports:
       - "8443:8443" # VSCode UI
       - "3005:3005" # Happier UI
