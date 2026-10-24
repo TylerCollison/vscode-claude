@@ -347,6 +347,7 @@ COPY start-beads-sync.sh /107-start-beads-sync
 COPY start-prompt-session.sh /108-start-prompt-session
 COPY start-mr-pr-sync.sh /109-start-mr-pr-sync
 COPY start-mr-pr-dispatch.sh /110-start-mr-pr-dispatch
+COPY start-worker-reaper.sh /112-start-worker-reaper
 COPY shutdown.sh /111-shutdown
 COPY happier-tls-tunnel.js /app/happier-tls-tunnel.js
 
@@ -356,6 +357,9 @@ COPY beads-dispatch/dispatch_utils.py /usr/local/bin/dispatch_utils.py
 
 # Install the MR/PR responder dispatcher
 COPY mr_pr_dispatch.py /usr/local/bin/mr_pr_dispatch.py
+
+# Install the worker reaper (removes dispatched workers once they completed)
+COPY worker_reaper.py /usr/local/bin/worker_reaper.py
 
 # Copy master startup script to cont-init.d (so it runs automatically)
 COPY master-startup.sh /etc/cont-init.d/90-master-startup
@@ -391,11 +395,13 @@ RUN chmod +x /92-configure-code-server-theme \
     /107-start-beads-sync \
     /109-start-mr-pr-sync \
     /110-start-mr-pr-dispatch \
+    /112-start-worker-reaper \
     /111-shutdown \
     /108-start-prompt-session \
     /usr/local/bin/beads-dispatch \
     /usr/local/bin/dispatch_utils.py \
-    /usr/local/bin/mr_pr_dispatch.py
+    /usr/local/bin/mr_pr_dispatch.py \
+    /usr/local/bin/worker_reaper.py
 
 # Remove build toolchain packages no longer needed at runtime
 # (gcc, g++, binutils, and their dev headers were only needed to compile

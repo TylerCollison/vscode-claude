@@ -268,6 +268,10 @@ def compose_worker_env(parent_env, branch, repo_url, beads_remote=None, dispatch
     env.append("ENABLE_SCOTTY=false")
     env = [e for e in env if not e.startswith("MR_PR_DISPATCH=")]
     env.append("MR_PR_DISPATCH=false")
+    # No nested reaper: workers are single-task agents; the node's parent
+    # container owns worker cleanup.
+    env = [e for e in env if not e.startswith("WORKER_REAPER=")]
+    env.append("WORKER_REAPER=false")
 
     # Override HAPPIER_MODE to "agent" if parent has it set (don't add if parent doesn't have it)
     parent_has_happier_mode = any(e.startswith("HAPPIER_MODE=") for e in parent_env)
@@ -358,16 +362,22 @@ def dispatch_worker(issue, cfg, self_info):
         du.log("Worker %s already exists for %s — skipping." % (worker, issue_id))
         return True  # treated as handled (dedup)
 
+    # Stamp the worker so the reaper can identify it by label (not name alone)
+    # and knows which issue it was dispatched for.
+    labels = {"beads.issue": issue_id, du.WORKER_LABEL: "true"}
+
     if swarm:
         du.log("Swarm manager detected — dispatching service %s for %s (branch %s)"
             % (worker, issue_id, branch))
         rc, out, err = du.dispatch_swarm(worker, self_info["image"], env_vars, port,
-                                      cfg.worker_port, issue_id, net=self_info)
+                                      cfg.worker_port, issue_id, net=self_info,
+                                      labels=labels)
     else:
         du.log("Local mode — dispatching container %s for %s (branch %s)"
             % (worker, issue_id, branch))
         rc, out, err = du.dispatch_local(worker, self_info["image"], env_vars, port,
-                                      cfg.worker_port, issue_id, net=self_info)
+                                      cfg.worker_port, issue_id, net=self_info,
+                                      labels=labels)
 
     if rc != 0:
         du.log("ERROR: dispatch failed for %s: %s" % (issue_id, err or out))

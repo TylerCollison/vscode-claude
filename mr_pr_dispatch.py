@@ -104,6 +104,10 @@ def compose_worker_env(parent_env, branch, repo_url, mr_pr_id, dispatch_prompt=N
     env.append("ENABLE_SCOTTY=false")
     env = [e for e in env if not e.startswith("MR_PR_DISPATCH=")]
     env.append("MR_PR_DISPATCH=false")
+    # No nested reaper: workers are single-task agents; the node's parent
+    # container owns worker cleanup.
+    env = [e for e in env if not e.startswith("WORKER_REAPER=")]
+    env.append("WORKER_REAPER=false")
 
     # Override HAPPIER_MODE to "agent" if parent has it set (don't add if parent doesn't have it)
     parent_has_happier_mode = any(e.startswith("HAPPIER_MODE=") for e in parent_env)
@@ -182,19 +186,23 @@ def dispatch_mr_pr_worker(mr_pr_info, cfg, self_info):
                                   dispatch_prompt=dispatch_prompt)
 
     swarm = du.is_swarm_manager()
+    # Stamp the worker so the reaper can identify it by label (not name alone)
+    # and knows which MR/PR it was dispatched for.
+    labels = {"mr_pr.id": mr_pr_id, "mr_pr.provider": provider,
+              du.WORKER_LABEL: "true"}
     if swarm:
         du.log("Swarm manager detected — dispatching service %s for MR/PR #%s (branch %s)"
             % (worker, mr_pr_id, branch))
         rc, out, err = du.dispatch_swarm(worker, self_info["image"], env_vars, port,
                                           cfg.worker_port, mr_pr_id, net=self_info,
-                                          labels={"mr_pr.id": mr_pr_id, "mr_pr.provider": provider})
+                                          labels=labels)
     else:
         du.log("Local mode — dispatching container %s for MR/PR #%s (branch %s)"
             % (worker, mr_pr_id, branch))
         rc, out, err = du.dispatch_local(worker, self_info["image"], env_vars, port,
                                           cfg.worker_port, self_info.get("restart_policy", ""),
                                           mr_pr_id, net=self_info,
-                                          labels={"mr_pr.id": mr_pr_id, "mr_pr.provider": provider})
+                                          labels=labels)
 
     if rc != 0:
         du.log("ERROR: dispatch failed for MR/PR #%s: %s" % (mr_pr_id, err or out))
