@@ -12,13 +12,18 @@ Design (beads workspace-c8o, revised in workspace-4wr):
 
 - Candidates: chat-capable models discovered live from every provider's
   catalog API — the pollinations listing (metric-backed; official and
-  community both eligible, paid_only/down excluded; its pollen pricing
-  discerns free-tier models, which the backend intermittently credit-gates)
-  plus NIM and LLM7 listings. NIM publishes no metrics
-  (metric-less; NIM filters non-chat families by id). LLM7 publishes
-  availability telemetry, per-token pricing and context windows: only its
-  FREE models (zero/absent pricing) are eligible, and those with
-  availability telemetry rank as metric-backed on the published health.
+  community both eligible, paid_only/down excluded, and only FREE models
+  admitted: a nonzero pollen rate drops the model at parse time, exactly
+  like llm7's free-only pool) plus NIM and LLM7 listings. NIM publishes no
+  metrics and no pricing (metric-less; NIM filters non-chat families by
+  id); all NIM models are treated as free, per the operator's assumption.
+  LLM7 publishes availability telemetry, per-token pricing and context
+  windows: only its FREE models (zero/absent pricing) are eligible, and
+  those with availability telemetry rank as metric-backed on the
+  published health. The picker only selects free models: parsers admit
+  only free candidates, and rank_candidates additionally drops any
+  non-free candidate, so a stale snapshot, the fallback snapshot, or a
+  future provider cannot leak a paid model into a pick.
   Each provider's listing is served through a wildcard model_list entry
   (pollinations/*, nvidia_nim/*, llm7/*); a failed provider
   refresh keeps that provider's last-known candidates.
@@ -186,7 +191,10 @@ class ModelCandidate:
     requests: int = 0  # published sample size
     available: bool = True  # False when the provider's catalog dropped it
     source: str = "prior"  # pollinations_api | prior
-    free: bool = False  # pollinations: no nonzero pollen rate (free tier; credit-gated server-side)
+    free: bool = False  # True when the model is free-tier: pollinations zero
+    # pollen rate, all NIM models (no pricing in NIM's catalog; treated as
+    # free per the operator's assumption), llm7 zero pricing. Unknown or
+    # priced models default to not-free and are never picked.
     benchmark_score: float = 0.0  # 0..1 modelgrep composite (coding, tool calling, SWE)
     benchmarked: bool = False  # False when modelgrep has no scores for the match
     modelgrep_id: str = ""  # matched modelgrep entry ("" when unmatched -> gated out)
@@ -235,8 +243,10 @@ def parse_pollinations_models(payload: dict) -> list[ModelCandidate]:
     Official and community models are both eligible; the catalog's pricing
     metadata discerns free-tier models (no nonzero pollen rate), which the
     pollinations backend currently gates behind account credits — sometimes
-    even spuriously. The ``free`` flag is surfaced for observability; the
-    soft-failure sniffing in the stats logger handles the gating dynamically.
+    even spuriously. Only free-tier models are admitted: a nonzero pollen
+    rate drops the model here, not just flags it — the picker only selects
+    free models, and the soft-failure sniffing in the stats logger handles
+    the credit gating dynamically for the free models that remain.
     """
     out: list[ModelCandidate] = []
     for m in (payload or {}).get("data") or []:
@@ -246,6 +256,8 @@ def parse_pollinations_models(payload: dict) -> list[ModelCandidate]:
         if not model_id:
             continue
         if m.get("paid_only"):
+            continue
+        if not has_free_pricing(m.get("pricing")):
             continue
         output_modalities = m.get("output_modalities") or []
         input_modalities = m.get("input_modalities") or []
@@ -310,7 +322,12 @@ def _bare_catalog_entries(payload: dict | list) -> list[dict]:
 
 
 def parse_nim_models(payload: dict | list) -> list[ModelCandidate]:
-    """Parse NIM's /v1/models into chat-capable metric-less candidates."""
+    """Parse NIM's /v1/models into chat-capable metric-less candidates.
+
+    NIM's catalog carries no pricing, so every admitted model is treated
+    as free (operator assumption): the picker only selects free models,
+    and NIM is the free-tier provider in this deployment.
+    """
     out: list[ModelCandidate] = []
     for m in _bare_catalog_entries(payload):
         model_id = str(m["id"])
@@ -323,6 +340,7 @@ def parse_nim_models(payload: dict | list) -> list[ModelCandidate]:
                 context_length=int(m.get("context_length") or 0),
                 metricless=True,
                 source="prior",
+                free=True,
             )
         )
     return out
@@ -1297,6 +1315,13 @@ def rank_candidates(
     pool: list[tuple[ModelCandidate, DerivedStats]] = []
     for c in candidates:
         if not c.available:
+            continue
+        # Free-only: the picker only selects free models. Parsers admit
+        # only free candidates, and this rank-time filter is the backstop
+        # for stale snapshots, the (paid) fallback snapshot, and future
+        # providers — a non-free candidate can never be picked, even if
+        # it somehow reaches the snapshot.
+        if not c.free:
             continue
         # Context fit: only enforced where the context length is actually known;
         # metric-less groups with unknown context bypass fit (the in-request

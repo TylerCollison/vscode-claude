@@ -85,6 +85,18 @@ def candidates_from_fixture(lib):
     return lib.parse_pollinations_models(pollinations_fixture())
 
 
+def free_plugin_pool(lib):
+    """Small free-only pool for plugin/manager tests (the real fixture's
+    models are all paid, so it now parses to nothing)."""
+    return [
+        metric_candidate(lib, "pollinations/openai/gpt-6-luna", 0.9997, 87885, ctx=1048576),
+        metric_candidate(lib, "pollinations/z-ai/glm-5.3", 0.99, 100, ctx=1048576),
+        metric_candidate(lib, "pollinations/deepseek/deepseek-v4-flash", 0.99, 100, ctx=1048576),
+        metric_candidate(lib, "pollinations/community/vendouple/deepseek-v4-pro", 0.99, 100, ctx=1048576),
+        metric_candidate(lib, "pollinations/openai/gpt-5.4-nano", 0.9997, 87885, ctx=400000),
+    ]
+
+
 def metric_candidate(lib, name, success, requests, ctx=100000):
     return lib.ModelCandidate(
         name=name,
@@ -94,11 +106,12 @@ def metric_candidate(lib, name, success, requests, ctx=100000):
         success_rate=success,
         requests=requests,
         source="pollinations_api",
+        free=True,
     )
 
 
 def favored_candidate(lib, name, provider="nvidia_nim", ctx=0):
-    return lib.ModelCandidate(name=name, provider=provider, context_length=ctx, metricless=True)
+    return lib.ModelCandidate(name=name, provider=provider, context_length=ctx, metricless=True, free=True)
 
 
 # ---------------------------------------------------------------------------
@@ -107,24 +120,25 @@ def favored_candidate(lib, name, provider="nvidia_nim", ctx=0):
 
 
 class TestCatalogParsing:
-    def test_official_and_community_models_kept(self, mp):
+    def test_fixture_paid_models_excluded(self, mp):
         lib, _ = mp
-        candidates = candidates_from_fixture(lib)
-        names = {c.name for c in candidates}
-        # official and community models are both eligible
-        assert "pollinations/openai/gpt-5.4-nano" in names
-        assert "pollinations/openai/gpt-oss-20b" in names
-        assert "pollinations/z-ai/glm-5.3" in names
-        assert "pollinations/community/vendouple/deepseek-v4-pro" in names
-        assert "pollinations/community/vendouple/glm-5.3-flash" in names
-        assert "pollinations/community/sharktide/inferenceport-ai-lightning-text-v2" in names
+        names = {c.name for c in candidates_from_fixture(lib)}
+        # Every non-down model in the fixture carries a nonzero pollen rate,
+        # so the free-only parser admits none of them; the one rate-less
+        # model (ling-3.1-flash) is down and excluded on health instead.
+        assert "pollinations/openai/gpt-5.4-nano" not in names
+        assert "pollinations/openai/gpt-oss-20b" not in names
+        assert "pollinations/z-ai/glm-5.3" not in names
+        assert "pollinations/community/vendouple/deepseek-v4-pro" not in names
+        assert "pollinations/community/vendouple/glm-5.3-flash" not in names
+        assert "pollinations/community/sharktide/inferenceport-ai-lightning-text-v2" not in names
 
     def test_zero_pollen_rate_marked_free(self, mp):
         lib, _ = mp
         by_name = {c.name: c for c in candidates_from_fixture(lib)}
-        # models with nonzero pollen rates are charged
-        assert by_name["pollinations/openai/gpt-5.4-nano"].free is False
-        assert by_name["pollinations/community/vendouple/deepseek-v4-pro"].free is False
+        # models with nonzero pollen rates are charged, and now dropped
+        assert "pollinations/openai/gpt-5.4-nano" not in by_name
+        assert "pollinations/community/vendouple/deepseek-v4-pro" not in by_name
         payload = {
             "data": [
                 {
@@ -156,6 +170,20 @@ class TestCatalogParsing:
         assert parsed["pollinations/openai/free-model"].free is True
         assert parsed["pollinations/openai/zero-model"].free is True
         assert parsed["pollinations/openai/no-pricing-model"].free is True
+        # a nonzero pollen rate drops the model entirely, not just flags it
+        paid_payload = {
+            "data": [
+                {
+                    "id": "openai/paid-model",
+                    "input_modalities": ["text"],
+                    "output_modalities": ["text"],
+                    "supported_endpoints": ["/v1/chat/completions"],
+                    "health": {"status": "healthy", "success_rate": 100, "requests": 10},
+                    "pricing": {"currency": "pollen", "promptTextTokens": "0.00000015"},
+                }
+            ]
+        }
+        assert lib.parse_pollinations_models(paid_payload) == []
 
     def test_paid_only_excluded(self, mp):
         lib, _ = mp
@@ -217,8 +245,23 @@ class TestCatalogParsing:
 
     def test_degraded_and_unknown_kept(self, mp):
         lib, _ = mp
-        by_name = {c.name: c for c in candidates_from_fixture(lib)}
-        assert by_name["pollinations/community/sharktide/inferenceport-ai-lightning-text-v2"].success_rate == pytest.approx(0.9)
+        # degraded health is still a candidate when the model is free; the
+        # fixture's degraded model is paid, so it no longer parses at all
+        payload = {
+            "data": [
+                {
+                    "id": "community/someone/degraded-free",
+                    "community": True,
+                    "input_modalities": ["text"],
+                    "output_modalities": ["text"],
+                    "supported_endpoints": ["/v1/chat/completions"],
+                    "health": {"status": "degraded", "success_rate": 90, "requests": 10},
+                    "pricing": {"currency": "pollen"},
+                }
+            ]
+        }
+        parsed = {c.name: c for c in lib.parse_pollinations_models(payload)}
+        assert parsed["pollinations/community/someone/degraded-free"].success_rate == pytest.approx(0.9)
         # unknown health / zero requests -> zero published score, still a candidate
         payload = {
             "data": [
@@ -367,9 +410,9 @@ class TestSoftFailureDetection:
         for _ in range(cfg.min_obs - 1):
             asyncio.run(logger.async_log_success_event(group_kwargs, _response_with_content(credits), None, None))
         # the now-broken group ranks below a healthy metric-backed candidate
-        gated = lib.ModelCandidate(name=group, provider="pollinations", metricless=True)
+        gated = lib.ModelCandidate(name=group, provider="pollinations", metricless=True, free=True)
         healthy = lib.ModelCandidate(
-            name="pollinations/openai/healthy", provider="pollinations", metricless=False, success_rate=0.9997, requests=87885
+            name="pollinations/openai/healthy", provider="pollinations", metricless=False, success_rate=0.9997, requests=87885, free=True
         )
         now = time.time() + cfg.recency_window_seconds + 1
         ranked = lib.rank_candidates([gated, healthy], lib.TIER_DEFAULT, stats, cfg, now=now)
@@ -524,7 +567,7 @@ class TestModelgrepEnrichment:
         """With real windows, the fit filter protects requests: a 400k-token
         estimate fits the 1M window and is kept; a 16k window is filtered out."""
         lib, _, cfg, stats, _ = fresh
-        big_ctx = lib.ModelCandidate(name="nvidia_nim/z-ai/glm-5.3", provider="nvidia_nim", metricless=True,
+        big_ctx = lib.ModelCandidate(name="nvidia_nim/z-ai/glm-5.3", provider="nvidia_nim", metricless=True, free=True,
                                       context_length=1048576)
         small_ctx = lib.ModelCandidate(name="nvidia_nim/small/model", provider="nvidia_nim", metricless=True,
                                         context_length=16384)
@@ -543,11 +586,11 @@ class TestModelgrepEnrichment:
     def test_benchmarks_break_availability_context_ties(self, fresh):
         lib, _, cfg, stats, _ = fresh
         weak_bench = lib.ModelCandidate(
-            name="pollinations/weak-bench", provider="pollinations", metricless=False,
+            name="pollinations/weak-bench", provider="pollinations", metricless=False, free=True,
             success_rate=0.9997, requests=87885, context_length=1048576, benchmark_score=0.2, benchmarked=True,
         )
         strong_bench = lib.ModelCandidate(
-            name="pollinations/strong-bench", provider="pollinations", metricless=False,
+            name="pollinations/strong-bench", provider="pollinations", metricless=False, free=True,
             success_rate=0.9997, requests=87885, context_length=1048576, benchmark_score=0.8, benchmarked=True,
         )
         ranked = lib.rank_candidates([weak_bench, strong_bench], lib.TIER_DEFAULT, stats, cfg)
@@ -1003,7 +1046,7 @@ class TestSoftFailureRetry:
         lib, test_plugin, cfg, stats, manager = fresh
 
         async def fake_snapshot(ml=None):
-            return snapshot_with(lib, candidates_from_fixture(lib))
+            return snapshot_with(lib, free_plugin_pool(lib))
 
         monkeypatch.setattr(manager, "get_snapshot", fake_snapshot)
         metadata = {
@@ -1727,7 +1770,7 @@ class TestPlugin:
     @staticmethod
     def _fake_snapshot(monkeypatch, lib, manager):
         async def fake_snapshot(ml=None):
-            return snapshot_with(lib, candidates_from_fixture(lib))
+            return snapshot_with(lib, free_plugin_pool(lib))
 
         monkeypatch.setattr(manager, "get_snapshot", fake_snapshot)
 
@@ -1941,7 +1984,18 @@ class TestCatalogManager:
             raise RuntimeError("pollinations down")
 
         async def good_raw(url, api_key):
-            return json.loads((FIXTURES / "pollinations_models.json").read_text())
+            return {
+                "data": [
+                    {
+                        "id": "openai/gpt-6-luna",
+                        "input_modalities": ["text"],
+                        "output_modalities": ["text"],
+                        "supported_endpoints": ["/v1/chat/completions"],
+                        "health": {"status": "healthy", "success_rate": 99.97, "requests": 87885},
+                        "pricing": {"currency": "pollen"},
+                    }
+                ]
+            }
 
         monkeypatch.setattr("model_picker._fetch_json", good_raw)
         self._mock_other_providers(monkeypatch)
@@ -2227,3 +2281,37 @@ class TestPersistentAttributionAndDefaultHealth:
             "litellm_metadata": {"model_group": "nvidia_nim/*"},
         }
         assert logger._failed_group(request_data, response) == "nvidia_nim/z-ai/glm-5.3"
+
+
+# ---------------------------------------------------------------------------
+# Free-only selection
+# ---------------------------------------------------------------------------
+
+
+class TestFreeOnlySelection:
+    def test_nim_models_are_free(self, mp):
+        lib, _ = mp
+        payload = {"data": [{"id": "z-ai/glm-5.3"}, {"id": "nvidia/embed-qa-4"}]}
+        parsed = {c.name: c for c in lib.parse_nim_models(payload)}
+        # chat model admitted and free; embedding family still filtered out
+        assert parsed["nvidia_nim/z-ai/glm-5.3"].free is True
+        assert "nvidia_nim/nvidia/embed-qa-4" not in parsed
+
+    def test_rank_candidates_never_picks_a_paid_model(self, mp):
+        lib, _ = mp
+        cfg = lib.PickerConfig()
+        stats = lib.StatsRegistry()
+        paid = lib.ModelCandidate(
+            name="pollinations/openai/paid",
+            provider="pollinations",
+            context_length=1000000,
+            metricless=False,
+            success_rate=1.0,
+            requests=100000,
+            free=False,
+        )
+        free = favored_candidate(lib, "nvidia_nim/z-ai/glm-5.3", ctx=100000)
+        ranked = lib.rank_candidates([paid, free], lib.TIER_THINK, stats, cfg, now=time.time())
+        assert [r.candidate.name for r in ranked] == ["nvidia_nim/z-ai/glm-5.3"]
+        # a pool of only paid models ranks to nothing, never to the paid model
+        assert lib.rank_candidates([paid], lib.TIER_DEFAULT, stats, cfg, now=time.time()) == []
