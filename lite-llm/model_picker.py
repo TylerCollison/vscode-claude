@@ -48,9 +48,11 @@ Design (beads workspace-c8o, revised in workspace-4wr):
   (busy-but-working) but do weigh down the tracked score.
 - Rubric: default tier sorts known-strong health first, then untried
   models, then known-but-not-strong health, then demoted models; think
-  tiers sort context-first then health (class only breaks ties, so untried
-  models are still tried first there — but only until they have
-  observations, at which point they compete on tracked health). Latency-
+  tiers sort context first, then modelgrep benchmark, then the same
+  health blocks (known-strong, untried, known-weak, demoted), then
+  health. So on equal context and equal benchmark, demonstrated good
+  health beats an unmeasured model; a higher-benchmark untried model
+  still wins over a lower-benchmark known-strong one. Latency-
   demoted models carry a class floor below all metric-backed candidates in
   the default tier.
 - Learned health is durable: StatsRegistry can persist its per-group event
@@ -1364,15 +1366,38 @@ def rank_candidates(
             if d.ttft_n >= cfg.min_obs and d.ttft_mean > cfg.demote_ttft_seconds:
                 latency_demoted_names.add(r.candidate.name)
 
+    # Shared health blocks, used by both tiers: a model that has
+    # *demonstrated* strong health beats an unmeasured one, and an
+    # unmeasured one still beats a model known to be weak; demoted models
+    # sort last. An untried model's nominal health is 1.0, so health alone
+    # cannot implement "known-good beats unknown" — the block must come
+    # before health whenever the two are meant to compete.
+    def block_for(r: RankedCandidate) -> int:
+        if r.rank_class == _CLASS_KNOWN:
+            return 3
+        if r.rank_class == _CLASS_FAVORED:
+            return 1
+        if r.health_score >= cfg.strong_health_threshold:
+            return 0
+        return 2
+
+    def effective_score(r: RankedCandidate) -> float:
+        return r.health_score - (1.0 if r.candidate.name in latency_demoted_names else 0.0)
+
     if tier == TIER_THINK:
-        # Context-first; class breaks context ties (favored > metric > known),
-        # then health, then modelgrep benchmarks.
+        # Context first, then modelgrep benchmark (capability), then the
+        # health blocks, then health, then name. So a higher-benchmark
+        # untried model still beats a lower-benchmark known-strong one
+        # (exploration by capability), but on equal context *and* equal
+        # benchmark, demonstrated good health beats being unmeasured —
+        # equally capable models are decided by evidence, not novelty.
+        # Demoted models still sort last within their context/benchmark.
         ranked.sort(
             key=lambda r: (
                 -r.candidate.context_length,
-                r.rank_class,
-                -r.health_score,
                 -r.candidate.benchmark_score,
+                block_for(r),
+                -effective_score(r),
                 r.candidate.name,
             )
         )
@@ -1381,25 +1406,15 @@ def rank_candidates(
         # block, health, then context length, then modelgrep benchmarks —
         # name breaks exact ties. Latency-demoted models carry the health
         # floor. This is the availability-over-capability order the default
-        # tier is for: a model that has *demonstrated* good health beats an
-        # unmeasured one, and an unmeasured one still beats a model known
-        # to be weak. Think tiers keep the old favored-first order (below)
-        # so higher-complexity requests keep trying unmeasured models —
-        # but only until they have observations, when they leave FAVORED
-        # for METRIC tracked health.
+        # tier is for. Think tiers use the same health blocks, but only
+        # after context and benchmark, so higher-complexity requests keep
+        # trying unmeasured models with better capability — but only
+        # until they have observations, when they leave FAVORED for
+        # METRIC tracked health.
         def sort_key(r: RankedCandidate):
-            if r.rank_class == _CLASS_KNOWN:
-                block = 3
-            elif r.rank_class == _CLASS_FAVORED:
-                block = 1
-            elif r.health_score >= cfg.strong_health_threshold:
-                block = 0
-            else:
-                block = 2
-            effective_score = r.health_score - (1.0 if r.candidate.name in latency_demoted_names else 0.0)
             return (
-                block,
-                -effective_score,
+                block_for(r),
+                -effective_score(r),
                 -r.candidate.context_length,
                 -r.candidate.benchmark_score,
                 r.candidate.name,

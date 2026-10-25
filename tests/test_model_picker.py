@@ -1357,9 +1357,19 @@ class TestRubricRanking:
         metric_small = metric_candidate(lib, "pollinations/openai/gpt-5.4-nano", 0.9997, 87885, ctx=400000)
         ranked = lib.rank_candidates([metric_small, metric_1m, favored_1m], lib.TIER_THINK, stats, cfg)
         order = [r.candidate.name for r in ranked]
-        # 1M models first; the favored one wins the context tie
-        assert order.index("z-ai/glm-5.3") < order.index("pollinations/openai/gpt-6-luna")
-        assert order[-1] == "pollinations/openai/gpt-5.4-nano"
+        # 1M models first; on equal context and equal benchmark (both 0.0
+        # here), demonstrated strong health beats being unmeasured.
+        assert order == [
+            "pollinations/openai/gpt-6-luna",
+            "z-ai/glm-5.3",
+            "pollinations/openai/gpt-5.4-nano",
+        ]
+        # But a higher benchmark still beats the health block: capability
+        # is prioritized immediately after context.
+        favored_1m.benchmark_score = 0.9
+        metric_1m.benchmark_score = 0.5
+        ranked = lib.rank_candidates([metric_1m, favored_1m], lib.TIER_THINK, stats, cfg)
+        assert ranked[0].candidate.name == "z-ai/glm-5.3"
 
     def test_failure_demotion_after_min_obs(self, fresh):
         lib, _, cfg, stats, _ = fresh
@@ -2184,20 +2194,43 @@ class TestPersistentAttributionAndDefaultHealth:
             "pollinations/openai/weak",
         ]
 
-    def test_think_still_favors_untried_until_metrics_discovered(self, mp):
-        """Think tiers keep exploration: same-context untried wins, but
-        once it has observations it leaves FAVORED for tracked health."""
+    def test_think_benchmark_then_known_health(self, mp):
+        """Think tiers: context, then benchmark, then health blocks.
+
+        On equal context and equal benchmark, a model known to have good
+        health beats an unmeasured one (equally capable, so evidence
+        decides); a higher-benchmark unmeasured model still wins over a
+        lower-benchmark known-strong one; and an unmeasured model still
+        beats a known-weak one. Once the untried model has observations
+        it competes on tracked health, not on being new.
+        """
         lib, _plugin = mp
         cfg = lib.PickerConfig()
         stats = lib.StatsRegistry()
         untried = favored_candidate(lib, "nvidia_nim/z-ai/glm-5.3", ctx=100000)
         strong = metric_candidate(lib, "pollinations/openai/healthy", 0.9997, 87885, ctx=100000)
+        weak = metric_candidate(lib, "pollinations/openai/weak", 0.20, 1000, ctx=100000)
+        # Higher benchmark wins even though the other model is known-strong.
+        untried.benchmark_score = 0.9
+        strong.benchmark_score = 0.5
         ranked = lib.rank_candidates(
             [untried, strong], lib.TIER_THINK, stats, cfg, now=time.time()
         )
         assert ranked[0].candidate.name == "nvidia_nim/z-ai/glm-5.3"
-        # Three successes: tracked health is high, but the model is no
-        # longer FAVORED — it now competes on evidence, not on being new.
+        # Equal benchmark: known-strong health beats unmeasured.
+        untried.benchmark_score = 0.5
+        ranked = lib.rank_candidates(
+            [untried, strong], lib.TIER_THINK, stats, cfg, now=time.time()
+        )
+        assert ranked[0].candidate.name == "pollinations/openai/healthy"
+        # Equal benchmark: unmeasured still beats known-weak.
+        ranked = lib.rank_candidates(
+            [untried, weak], lib.TIER_THINK, stats, cfg, now=time.time()
+        )
+        assert ranked[0].candidate.name == "nvidia_nim/z-ai/glm-5.3"
+        # Three successes: tracked health is high (0.8, strong block), but
+        # the model now competes on evidence — the 0.999-healthy model
+        # wins on equal benchmark.
         now = time.time()
         for _ in range(3):
             stats.record_success("nvidia_nim/z-ai/glm-5.3", 1.0, now=now)
