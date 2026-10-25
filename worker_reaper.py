@@ -186,13 +186,21 @@ def list_swarm_workers():
 
 
 def swarm_service_running(name):
-    """True/False by task state, or None when it cannot be determined."""
+    """True/False by task state, or None when it cannot be determined.
+
+    ``docker service ps --format "{{.CurrentState}}"`` renders the state
+    with its duration attached ("Running 5 minutes ago", "Shutdown 2
+    minutes ago"), never the bare state word — so match the leading word,
+    not the whole string. An exact ``== "Running"`` comparison silently
+    reports every running task as down, and the reaper then removes a
+    live worker's service on a transient 0/1 replicas snapshot.
+    """
     rc, out, _ = du.run(["docker", "service", "ps", name,
                          "--format", "{{.CurrentState}}"])
     if rc != 0:
         return None
     states = [state.strip() for state in out.splitlines() if state.strip()]
-    return any(state == "Running" for state in states)
+    return any(state.startswith("Running") for state in states)
 
 
 def list_local_workers():
