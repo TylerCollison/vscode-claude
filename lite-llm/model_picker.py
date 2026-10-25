@@ -41,9 +41,21 @@ Design (beads workspace-c8o, revised in workspace-4wr):
   model+account, so one observation is conclusive); or an AuthenticationError
   (dead until a success). Rate-limit failures never fire the hard proof
   (busy-but-working) but do weigh down the tracked score.
-- Rubric: default tier sorts health-first then context; think tiers sort
-  context-first then health (class only breaks ties). Latency-demoted models
-  carry a class floor below all metric-backed candidates in the default tier.
+- Rubric: default tier sorts known-strong health first, then untried
+  models, then known-but-not-strong health, then demoted models; think
+  tiers sort context-first then health (class only breaks ties, so untried
+  models are still tried first there — but only until they have
+  observations, at which point they compete on tracked health). Latency-
+  demoted models carry a class floor below all metric-backed candidates in
+  the default tier.
+- Learned health is durable: StatsRegistry can persist its per-group event
+  logs to disk (MODEL_PICKER_STATS_PATH, or /config/.model-picker/ in the
+  code-server container), so a LiteLLM restart does not reset a model to
+  "untried". Per-request attempt exclusion still resets per request — that
+  list is "models already tried in this request" — but a model that failed
+  stays excluded in practice across turns because its persisted stats
+  demote it; a literal forever ban on one transient failure would be wrong
+  for a flaky upstream, so demotion still recovers on successes / decay.
 - Recency guard: a candidate whose most recent observation is a failure within
   the recency window is skipped; one success restores eligibility.
 """
@@ -51,6 +63,7 @@ Design (beads workspace-c8o, revised in workspace-4wr):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import os
@@ -96,6 +109,16 @@ DEFAULT_DEPRIORITIZED_PROVIDERS = "llm7"
 # Score an untried deprioritized-provider group competes with: below healthy
 # metric-backed candidates (published wilson > 0.5), above zero-evidence ones.
 DEFAULT_UNTRIED_PRIOR_SCORE = 0.5
+# Health at or above this is "known strong" for the default tier: well above
+# the neutral 0.5 prior, so a model has to have actually demonstrated good
+# health (published Wilson bound, or tracked success rate) to outrank an
+# untried model there. Untried models still outrank known-but-weak health.
+DEFAULT_STRONG_HEALTH_THRESHOLD = 0.75
+# Default durable stats location in the code-server container, where /config
+# is the persistent volume. Overridden by MODEL_PICKER_STATS_PATH; when
+# neither applies (local dev, tests), StatsRegistry stays in-memory unless
+# a path is passed explicitly.
+DEFAULT_STATS_PATH = "/config/.model-picker/model_picker_stats.json"
 
 CATALOG_FETCH_TIMEOUT_SECONDS = 10.0
 
@@ -133,6 +156,9 @@ class PickerConfig:
             if p.strip()
         )
         self.untried_prior_score = _env_float("MODEL_PICKER_UNTRIED_PRIOR_SCORE", DEFAULT_UNTRIED_PRIOR_SCORE)
+        self.strong_health_threshold = _env_float(
+            "MODEL_PICKER_STRONG_HEALTH_THRESHOLD", DEFAULT_STRONG_HEALTH_THRESHOLD
+        )
         self.modelgrep_url = os.environ.get("MODEL_PICKER_MODELGREP_URL", MODELGREP_MODELS_URL)
         self.benchmark_ttl_seconds = _env_float("MODEL_PICKER_BENCHMARK_TTL_SECONDS", DEFAULT_BENCHMARK_TTL_SECONDS)
         self.benchmarks_enabled = os.environ.get("MODEL_PICKER_BENCHMARKS_OFF", "").strip().lower() not in ("1", "true", "yes", "on")
@@ -980,12 +1006,110 @@ class GroupStats:
         )
 
 
-class StatsRegistry:
-    """Per-group rolling stats shared by the plugin and the stats logger."""
+def default_stats_path() -> str | None:
+    """Durable stats path for this deployment, or None for in-memory only.
 
-    def __init__(self, half_life_seconds: float = DEFAULT_HALF_LIFE_SECONDS) -> None:
+    Explicit env wins; otherwise the code-server container's persistent
+    /config volume is used when present. Anywhere else (local dev, tests)
+    the default is in-memory, so nothing is written to the repo by accident.
+    """
+    env_path = os.environ.get("MODEL_PICKER_STATS_PATH", "").strip()
+    if env_path:
+        return env_path
+    if os.path.isdir("/config"):
+        return DEFAULT_STATS_PATH
+    return None
+
+
+class StatsRegistry:
+    """Per-group rolling stats shared by the plugin and the stats logger.
+
+    Optionally durable: when ``path`` is set (explicitly, or via
+    ``default_stats_path()`` for the shared registry), every recorded event
+    is flushed to a JSON file atomically (temp file + os.replace), and the
+    file is reloaded on construction. Persistence is fail-soft — a bad path
+    or corrupt file logs a warning and falls back to in-memory stats, never
+    breaking routing. The file holds only per-model aggregate event data
+    (timestamps, success/failure class, TTFT); no prompts, responses, or
+    credentials.
+    """
+
+    def __init__(
+        self,
+        half_life_seconds: float = DEFAULT_HALF_LIFE_SECONDS,
+        path: str | None = None,
+    ) -> None:
         self.half_life_seconds = half_life_seconds
+        self.path = path
         self._groups: dict[str, GroupStats] = {}
+        if path:
+            self._load()
+
+    def _load(self) -> None:
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                payload = json.load(f)
+            groups = payload.get("groups") if isinstance(payload, dict) else None
+            if not isinstance(groups, dict):
+                return
+            for name, data in groups.items():
+                if not isinstance(name, str) or not isinstance(data, dict):
+                    continue
+                stats = GroupStats(self.half_life_seconds)
+                events = data.get("events") or []
+                for event in events:
+                    if not isinstance(event, list) or len(event) != 4:
+                        continue
+                    ts, ok, ttft, failure_class = event
+                    if not isinstance(ts, (int, float)) or not isinstance(ok, bool):
+                        continue
+                    stats._events.append(
+                        (
+                            float(ts),
+                            ok,
+                            float(ttft) if isinstance(ttft, (int, float)) else None,
+                            str(failure_class) if isinstance(failure_class, str) else None,
+                        )
+                    )
+                stats.dead = bool(data.get("dead", False))
+                stats.demoted = bool(data.get("demoted", False))
+                last_ts = data.get("last_obs_ts")
+                stats.last_obs_ts = float(last_ts) if isinstance(last_ts, (int, float)) else None
+                stats.last_obs_was_failure = bool(data.get("last_obs_was_failure", False))
+                self._groups[name] = stats
+        except FileNotFoundError:
+            pass
+        except Exception as e:  # noqa: BLE001 — corrupt stats must never break routing
+            logger.warning("model_picker: stats file %s unreadable (%s); starting fresh", self.path, e)
+
+    def _save(self) -> None:
+        if not self.path:
+            return
+        try:
+            parent = os.path.dirname(self.path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            payload = {
+                "version": 1,
+                "groups": {
+                    name: {
+                        "events": [
+                            [ts, ok, ttft, failure_class] for ts, ok, ttft, failure_class in stats._events
+                        ],
+                        "dead": stats.dead,
+                        "demoted": stats.demoted,
+                        "last_obs_ts": stats.last_obs_ts,
+                        "last_obs_was_failure": stats.last_obs_was_failure,
+                    }
+                    for name, stats in self._groups.items()
+                },
+            }
+            tmp_path = f"{self.path}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+            os.replace(tmp_path, self.path)
+        except Exception as e:  # noqa: BLE001 — persistence must never break routing
+            logger.warning("model_picker: could not save stats to %s (%s)", self.path, e)
 
     def group(self, name: str) -> GroupStats:
         stats = self._groups.get(name)
@@ -995,10 +1119,16 @@ class StatsRegistry:
         return stats
 
     def record_success(self, name: str, ttft_seconds: float | None = None, now: float | None = None) -> None:
+        if not name:
+            return
         self.group(name).record_success(time.time() if now is None else now, ttft_seconds)
+        self._save()
 
     def record_failure(self, name: str, failure_class: str, now: float | None = None) -> None:
+        if not name:
+            return
         self.group(name).record_failure(time.time() if now is None else now, failure_class)
+        self._save()
 
     def derived(self, name: str, now: float | None = None) -> DerivedStats:
         return self.group(name).derived(time.time() if now is None else now)
@@ -1221,14 +1351,29 @@ def rank_candidates(
                 r.candidate.name,
             )
         )
-    else:  # TIER_DEFAULT: favored block first, then health (availability),
-        # then context length, then modelgrep benchmarks — name breaks exact
-        # ties. Latency-demoted models carry the health floor.
+    else:  # TIER_DEFAULT: known-strong health first, then untried models,
+        # then known-but-not-strong health, then demoted models; within a
+        # block, health, then context length, then modelgrep benchmarks —
+        # name breaks exact ties. Latency-demoted models carry the health
+        # floor. This is the availability-over-capability order the default
+        # tier is for: a model that has *demonstrated* good health beats an
+        # unmeasured one, and an unmeasured one still beats a model known
+        # to be weak. Think tiers keep the old favored-first order (below)
+        # so higher-complexity requests keep trying unmeasured models —
+        # but only until they have observations, when they leave FAVORED
+        # for METRIC tracked health.
         def sort_key(r: RankedCandidate):
-            favored = 0 if r.rank_class == _CLASS_FAVORED else 1
+            if r.rank_class == _CLASS_KNOWN:
+                block = 3
+            elif r.rank_class == _CLASS_FAVORED:
+                block = 1
+            elif r.health_score >= cfg.strong_health_threshold:
+                block = 0
+            else:
+                block = 2
             effective_score = r.health_score - (1.0 if r.candidate.name in latency_demoted_names else 0.0)
             return (
-                favored,
+                block,
                 -effective_score,
                 -r.candidate.context_length,
                 -r.candidate.benchmark_score,
@@ -1467,7 +1612,7 @@ def get_shared_manager() -> CatalogManager:
 def get_shared_stats() -> StatsRegistry:
     global _shared_stats
     if _shared_stats is None:
-        _shared_stats = StatsRegistry()
+        _shared_stats = StatsRegistry(path=default_stats_path())
     return _shared_stats
 
 
