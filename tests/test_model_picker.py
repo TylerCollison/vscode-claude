@@ -2077,32 +2077,37 @@ class TestConfigDeltas:
         )
         assert crc["plugins"] == ["model_picker_plugin.picker"]
 
-    def test_picker_config_drops_complexity_path_fallbacks(self):
+    def test_picker_config_fallback_net_for_nonretryable_errors(self):
+        """Picker tiers carry a last-resort fallback net — not the primary
+        path (retries + the picker walk are), but the only path for
+        non-retryable errors: a context_length 400 is not retried by
+        LiteLLM, never maps to ContextWindowExceededError when the
+        provider message is a bare "Invalid request", and with no fallback
+        entry surfaced to the client, which treats 400 as terminal (unlike
+        408s, which it retries). The 2026-10-25 session died exactly this
+        way. Lookup groups for a complexity-routed request start with the
+        tier, so the net is keyed by tier (plus complexity itself); targets
+        are concrete models because fallback attempts bypass the picker
+        plugin and the tier groups' own deployments are placeholders."""
         default, picker = self._configs()
-        removed_groups = {
-            "lite-llm/router",
-            "lite-llm/default",
-            "lite-llm/think",
-            "lite-llm/ultra-think",
-            "lite-llm/longContext",
-            "lite-llm/complexity",
-        }
-        default_fb = {list(f)[0] for f in default["router_settings"]["fallbacks"]}
-        picker_fb = {list(f)[0] for f in picker["router_settings"]["fallbacks"]}
-        assert removed_groups <= default_fb
-        assert not (removed_groups & picker_fb)
-        assert {"lite-llm/webSearch", "lite-llm/image"} <= picker_fb
-        # the removed static groups must not appear as fallback targets
-        removed_statics = {"minimax-m2.7", "z-ai/glm-5.3-flash", "nemotron-3-super:cloud",
-                           "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3",
-                           "default", "fast"}
-        for entry in picker["router_settings"]["fallbacks"]:
-            assert not (set(entry[key]) & removed_statics) if (key := list(entry)[0]) else True
+        picker_fb = {list(f)[0]: list(f.values())[0] for f in picker["router_settings"]["fallbacks"]}
+        assert {"lite-llm/webSearch", "lite-llm/image"} <= set(picker_fb)
+        net_groups = {"lite-llm/think", "lite-llm/ultra-think", "lite-llm/default", "lite-llm/complexity"}
+        assert net_groups <= set(picker_fb)
+        expected_chain = ["nvidia_nim/z-ai/glm-5.3", "nvidia_nim/stepfun-ai/step-5-preview"]
+        for group in net_groups:
+            assert picker_fb[group] == expected_chain
         # every picker fallback target resolves through a wildcard or a kept group
         wildcard_prefixes = ("nvidia_nim/", "llm7/", "pollinations/", "gemini-")
         for entry in picker["router_settings"]["fallbacks"]:
             for target in entry[list(entry)[0]]:
                 assert target.startswith(wildcard_prefixes), target
+        # the old static tier-group targets must not reappear as fallbacks
+        removed_statics = {"minimax-m2.7", "z-ai/glm-5.3-flash", "nemotron-3-super:cloud",
+                           "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3",
+                           "default", "fast"}
+        for entry in picker["router_settings"]["fallbacks"]:
+            assert not (set(entry[list(entry)[0]]) & removed_statics)
 
     def test_picker_config_retry_settings(self):
         default, picker = self._configs()
@@ -2348,3 +2353,154 @@ class TestFreeOnlySelection:
         assert [r.candidate.name for r in ranked] == ["nvidia_nim/z-ai/glm-5.3"]
         # a pool of only paid models ranks to nothing, never to the paid model
         assert lib.rank_candidates([paid], lib.TIER_DEFAULT, stats, cfg, now=time.time()) == []
+
+
+class TestContextOverflow:
+    """The 2026-10-25 session that died on a 400: minimax-m3.1-flash
+    served ~70 turns, then the request's real size (265,267 tokens)
+    exceeded its real window (262,144) while the picker believed the
+    estimate was 7,329 and the window was 1,048,576. Both measurements
+    were wrong in the direction that hides an overflow."""
+
+    def test_estimate_counts_nested_tool_result_text(self, mp):
+        lib, _ = mp
+        # Anthropic-shaped messages: the bulk of a coding session lives
+        # inside tool_result content blocks, nested one level deeper than
+        # top-level text parts.
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": "x" * 1000}]},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t1",
+                        "content": [{"type": "text", "text": "y" * 4000}],
+                    }
+                ],
+            },
+            # Image payloads are not prompt text and must not inflate it.
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "data": "z" * 10000},
+                    }
+                ],
+            },
+        ]
+        assert lib.estimate_tokens(messages) == (1000 + 4000) // 4
+
+    def test_estimate_counts_openai_string_content(self, mp):
+        lib, _ = mp
+        messages = [
+            {"role": "system", "content": "s" * 400},
+            {"role": "tool", "content": "t" * 1200},
+        ]
+        assert lib.estimate_tokens(messages) == (400 + 1200) // 4
+
+    def test_extract_context_limit_from_provider_body(self, mp):
+        lib, _ = mp
+
+        class FakeBadRequest(Exception):
+            def __init__(self):
+                super().__init__("Invalid request")
+                self.body = {
+                    "message": "Invalid request",
+                    "type": "Bad Request",
+                    "code": 400,
+                    "details": {"type": "context_length", "limit": 262144, "actual": 265267},
+                }
+
+        assert lib.extract_context_limit(FakeBadRequest()) == 262144
+        # Unrelated errors carry no limit, even with a body.
+        assert lib.extract_context_limit(ValueError("boom")) is None
+
+        class Chained(Exception):
+            pass
+
+        chained = Chained("outer")
+        chained.__cause__ = RuntimeError("context_length limit: 131072 exceeded")
+        assert lib.extract_context_limit(chained) == 131072
+
+    def test_learned_window_overrides_catalog_in_fit(self, mp):
+        lib, _ = mp
+        cfg = lib.PickerConfig()
+        stats = lib.StatsRegistry()
+        minimax = favored_candidate(lib, "nvidia_nim/minimaxai/minimax-m3.1-flash", ctx=1048576)
+        other = favored_candidate(lib, "nvidia_nim/z-ai/glm-5.3", ctx=1048576)
+        # Before learning, a 300k-token request fits both (catalog 1M).
+        ranked = lib.rank_candidates(
+            [minimax, other], lib.TIER_THINK, stats, cfg, estimate=300000, now=time.time()
+        )
+        assert len(ranked) == 2
+        # After one context_length 400 proves minimax's real window, the
+        # same request must not pick it — even though the catalog still
+        # claims 1,048,576.
+        stats.record_context_limit("nvidia_nim/minimaxai/minimax-m3.1-flash", 262144)
+        ranked = lib.rank_candidates(
+            [minimax, other], lib.TIER_THINK, stats, cfg, estimate=300000, now=time.time()
+        )
+        assert [r.candidate.name for r in ranked] == ["nvidia_nim/z-ai/glm-5.3"]
+        # A smaller request still fits the learned window: the model is
+        # not bricked, it is just excluded for oversized requests.
+        ranked = lib.rank_candidates(
+            [minimax, other], lib.TIER_THINK, stats, cfg, estimate=200000, now=time.time()
+        )
+        assert len(ranked) == 2
+
+    def test_fit_empty_keeps_all_instead_of_passing_through(self, mp):
+        lib, _ = mp
+        cfg = lib.PickerConfig()
+        stats = lib.StatsRegistry()
+        minimax = favored_candidate(lib, "nvidia_nim/minimaxai/minimax-m3.1-flash", ctx=1048576)
+        stats.record_context_limit("nvidia_nim/minimaxai/minimax-m3.1-flash", 262144)
+        # Nothing fits a 2M-token request; ranking must still return the
+        # candidate (best effort) rather than [] (which makes the plugin
+        # pass the tier pool through to the router's arbitrary selection).
+        ranked = lib.rank_candidates(
+            [minimax], lib.TIER_THINK, stats, cfg, estimate=2000000, now=time.time()
+        )
+        assert [r.candidate.name for r in ranked] == ["nvidia_nim/minimaxai/minimax-m3.1-flash"]
+
+    def test_learned_window_survives_registry_restart(self, mp, tmp_path):
+        lib, _ = mp
+        path = str(tmp_path / "stats.json")
+        first = lib.StatsRegistry(path=path)
+        first.record_context_limit("nvidia_nim/minimaxai/minimax-m3.1-flash", 262144)
+        second = lib.StatsRegistry(path=path)
+        assert second.learned_window("nvidia_nim/minimaxai/minimax-m3.1-flash") == 262144
+        # A later, smaller proven limit wins; a larger one never widens it.
+        second.record_context_limit("nvidia_nim/minimaxai/minimax-m3.1-flash", 300000)
+        assert second.learned_window("nvidia_nim/minimaxai/minimax-m3.1-flash") == 262144
+
+    def test_failure_event_learns_context_window(self, mp, fresh):
+        """The plugin's failure hook records the proven limit from the
+        mapped BadRequestError's provider body."""
+        lib, plugin = mp
+        _lib, _test_plugin, _cfg, stats, manager = fresh
+        logger = plugin.ModelPickerStatsLogger(stats=stats, manager=manager)
+        manager._snapshot = lib.CatalogSnapshot(
+            candidates=[favored_candidate(lib, "nvidia_nim/minimaxai/minimax-m3.1-flash", ctx=1048576)]
+        )
+
+        class FakeBadRequest(Exception):
+            def __init__(self):
+                super().__init__("Invalid request")
+                self.body = {
+                    "details": {"type": "context_length", "limit": 262144, "actual": 265267}
+                }
+
+        import asyncio
+
+        asyncio.run(
+            logger.async_log_failure_event(
+                {"litellm_metadata": {"model_group": "nvidia_nim/minimaxai/minimax-m3.1-flash"},
+                 "exception": FakeBadRequest()},
+                None,
+                None,
+                None,
+            )
+        )
+        assert stats.learned_window("nvidia_nim/minimaxai/minimax-m3.1-flash") == 262144

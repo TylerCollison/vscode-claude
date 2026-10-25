@@ -813,6 +813,15 @@ class ModelPickerStatsLogger(CustomLogger):
             return
         exception = kwargs.get("exception")
         self.stats.record_failure(group, model_picker.classify_exception(exception))
+        # A context_length 400 proves the model's real window, which the
+        # catalog overstated (minimax-m3.1-flash: catalog 1,048,576, NIM
+        # 262,144). Learn it so the fit filter never picks this model for
+        # an oversized request again — the lie costs one failure, not
+        # every oversized request until the session is compacted.
+        limit = model_picker.extract_context_limit(exception)
+        if limit is not None:
+            self.stats.record_context_limit(group, limit)
+            logger.info("model_picker: learned context window for %s: %d tokens", group, limit)
 
     # -- soft-failure interception ------------------------------------------
 

@@ -1062,6 +1062,13 @@ class StatsRegistry:
         self.half_life_seconds = half_life_seconds
         self.path = path
         self._groups: dict[str, GroupStats] = {}
+        # Upstream-proven context windows, per group: a catalog window is
+        # a claim, and catalogs lie (minimax-m3.1-flash claims 1,048,576
+        # while NIM serves it at 262,144). A context_length 400 proves the
+        # real limit, so it is recorded here and used as the fit filter's
+        # effective window from then on — the lie costs one failed
+        # request per model, not every oversized request forever.
+        self._learned_windows: dict[str, int] = {}
         if path:
             self._load()
 
@@ -1097,6 +1104,11 @@ class StatsRegistry:
                 stats.last_obs_ts = float(last_ts) if isinstance(last_ts, (int, float)) else None
                 stats.last_obs_was_failure = bool(data.get("last_obs_was_failure", False))
                 self._groups[name] = stats
+            learned = payload.get("learned_windows") if isinstance(payload, dict) else None
+            if isinstance(learned, dict):
+                for name, limit in learned.items():
+                    if isinstance(name, str) and isinstance(limit, int) and not isinstance(limit, bool) and limit > 0:
+                        self._learned_windows[name] = limit
         except FileNotFoundError:
             pass
         except Exception as e:  # noqa: BLE001 — corrupt stats must never break routing
@@ -1111,6 +1123,7 @@ class StatsRegistry:
                 os.makedirs(parent, exist_ok=True)
             payload = {
                 "version": 1,
+                "learned_windows": dict(self._learned_windows),
                 "groups": {
                     name: {
                         "events": [
@@ -1150,6 +1163,32 @@ class StatsRegistry:
         self.group(name).record_failure(time.time() if now is None else now, failure_class)
         self._save()
 
+    def record_context_limit(self, name: str, limit: int) -> None:
+        """Record an upstream-proven context window for a group.
+
+        The minimum wins: if a provider ever reports a smaller limit,
+        that is the binding constraint for fit filtering.
+        """
+        if not name or not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+            return
+        previous = self._learned_windows.get(name)
+        if previous is None or limit < previous:
+            self._learned_windows[name] = limit
+            self._save()
+
+    def learned_window(self, name: str) -> int | None:
+        return self._learned_windows.get(name)
+
+    def effective_window(self, candidate: "ModelCandidate") -> int:
+        """Window the fit filter trusts: the smaller of catalog and learned.
+
+        A learned window never widens a catalog window — upstream proved
+        the smaller number, and a catalog claim above it is exactly the
+        lie that 400s oversized requests.
+        """
+        windows = [w for w in (candidate.context_length, self._learned_windows.get(candidate.name)) if w]
+        return min(windows) if windows else 0
+
     def derived(self, name: str, now: float | None = None) -> DerivedStats:
         return self.group(name).derived(time.time() if now is None else now)
 
@@ -1185,21 +1224,103 @@ def tracked_health_score(stats: DerivedStats) -> float:
     return (stats.successes + 1.0) / (stats.successes + stats.failures + 2.0)
 
 
+def extract_context_limit(exc: BaseException | None) -> int | None:
+    """Upstream context limit carried by a context_length failure, if any.
+
+    NVIDIA's 400 for an over-window request reads just "Invalid request"
+    to LiteLLM, so it maps to a generic BadRequestError — but the mapped
+    error keeps the provider body's ``details`` (``{"type":
+    "context_length", "limit": 262144, "actual": 265267}``). Walk the
+    exception chain and any body/response payloads for that shape; fall
+    back to a ``context_length ... limit N`` pattern in the message text.
+    Returns None for unrelated errors and for context errors that carry
+    no usable limit.
+    """
+    import re as _re
+
+    seen: set[int] = set()
+    queue: list[object] = [exc]
+    while queue:
+        current = queue.pop(0)
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        for attr in ("body", "response"):
+            payload = getattr(current, attr, None)
+            limit = _context_limit_from_payload(payload)
+            if limit is not None:
+                return limit
+        text = str(current)
+        match = _re.search(
+            r"context_length[^0-9]{0,40}?limit['\"]?\s*[:=]\s*(\d+)", text, _re.IGNORECASE
+        )
+        if match:
+            try:
+                return int(match.group(1))
+            except ValueError:
+                pass
+        for attr in ("__cause__", "__context__"):
+            nxt = getattr(current, attr, None)
+            if nxt is not None:
+                queue.append(nxt)
+    return None
+
+
+def _context_limit_from_payload(payload: object) -> int | None:
+    import json as _json
+
+    if isinstance(payload, str):
+        try:
+            payload = _json.loads(payload)
+        except Exception:
+            return None
+    if not isinstance(payload, dict):
+        return None
+    details = payload.get("details")
+    if isinstance(details, dict) and details.get("type") in (
+        "context_length",
+        "context_length_exceeded",
+    ):
+        limit = details.get("limit")
+        if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0:
+            return limit
+    return None
+
+
+def _countable_chars(value: object) -> int:
+    """Chars that count toward a prompt-size estimate, recursively.
+
+    Anthropic-shaped messages nest the bulk of a coding session inside
+    tool_result blocks (``{"type": "tool_result", "content": [{"type":
+    "text", "text": ...}]}``) — a counter that only reads top-level
+    ``text`` parts sees ~7k tokens of a 265k-token request and the fit
+    filter passes a model whose real window the request already exceeds.
+    Count every string under a message's content, recursing into nested
+    content lists/dicts (tool results, tool inputs). Image blocks are
+    skipped: their base64 ``source``/``data`` is not prompt text.
+    """
+    if isinstance(value, str):
+        return len(value)
+    if isinstance(value, list):
+        return sum(_countable_chars(item) for item in value)
+    if isinstance(value, dict):
+        if value.get("type") in ("image", "image_url"):
+            return 0
+        return sum(
+            _countable_chars(item)
+            for key, item in value.items()
+            if key not in ("source", "data", "type", "tool_use_id")
+        )
+    return 0
+
+
 def estimate_tokens(messages: list[dict]) -> int:
-    """Cheap chars/4 token estimate over OpenAI-shaped messages."""
+    """Cheap chars/4 token estimate over OpenAI- or Anthropic-shaped messages."""
     total_chars = 0
     for msg in messages or []:
         if not isinstance(msg, dict):
             continue
-        content = msg.get("content")
-        if isinstance(content, str):
-            total_chars += len(content)
-        elif isinstance(content, list):
-            for part in content:
-                if isinstance(part, dict):
-                    text = part.get("text")
-                    if isinstance(text, str):
-                        total_chars += len(text)
+        total_chars += _countable_chars(msg.get("content"))
     return total_chars // 4
 
 
@@ -1314,7 +1435,17 @@ def rank_candidates(
     # "below". Auth and latency proofs remain active.
     best_metric_score = max(metric_scores) if metric_scores else 0.0
 
+    # Context fit: only enforced where the context length is actually known;
+    # metric-less groups with unknown context bypass fit. The window
+    # used is the effective one — the smaller of the catalog claim and
+    # any upstream-proven learned limit — because a catalog claim above
+    # the real window is exactly what 400s an oversized request.
+    # If fit empties the pool, keep all: an oversized request is still
+    # better served by the best-ranked (largest-window, healthiest)
+    # candidate than by passing the tier pool through to the router's
+    # arbitrary selection. This mirrors the recency guard below.
     pool: list[tuple[ModelCandidate, DerivedStats]] = []
+    fit_dropped: list[tuple[ModelCandidate, DerivedStats]] = []
     for c in candidates:
         if not c.available:
             continue
@@ -1325,12 +1456,14 @@ def rank_candidates(
         # it somehow reaches the snapshot.
         if not c.free:
             continue
-        # Context fit: only enforced where the context length is actually known;
-        # metric-less groups with unknown context bypass fit (the in-request
-        # retry mechanism backstops a genuine overflow).
-        if c.context_length and estimate > c.context_length:
+        entry = (c, stats_registry.derived(c.name, now))
+        window = stats_registry.effective_window(c)
+        if window and estimate > window:
+            fit_dropped.append(entry)
             continue
-        pool.append((c, stats_registry.derived(c.name, now)))
+        pool.append(entry)
+    if not pool and fit_dropped:
+        pool = fit_dropped
 
     ranked: list[RankedCandidate] = []
     for c, dstats in pool:
