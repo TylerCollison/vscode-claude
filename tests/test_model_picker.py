@@ -537,6 +537,60 @@ class TestModelgrepEnrichment:
         entry, _, _ = idx.match("CloudCompile/nvidia-nemotron-3-ultra-550b-a55b:free")
         assert entry is None
 
+    def test_dashless_matches_camelcase_concatenation(self, mp):
+        # Word boundaries differ only in separators/casing: the dashed
+        # forms never align, but the dashless forms are identical.
+        lib, _ = mp
+        idx = lib.ModelGrepIndex([_mg_entry("nvidia/nemotron-3.5-lightning", coding_pct=34)])
+        entry, stage, conf = idx.match("Nemotron3.5Lightning")
+        assert entry["id"] == "nvidia/nemotron-3.5-lightning"
+        assert stage == "dashless" and conf == 0.9
+
+    def test_dashless_matches_concatenated_decorated_relay(self, mp):
+        # Fully concatenated, plus a colon-suffixed :free relay suffix:
+        # the stripped normalized bare segment is what dashless-matches.
+        lib, _ = mp
+        idx = lib.ModelGrepIndex([_mg_entry("nvidia/nemotron-3.5-lightning", coding_pct=34)])
+        entry, stage, _ = idx.match("Nemotron3.5Lightning:free")
+        assert entry["id"] == "nvidia/nemotron-3.5-lightning"
+        assert stage == "dashless"
+        entry, stage, _ = idx.match("nemotron35lightning")
+        assert entry["id"] == "nvidia/nemotron-3.5-lightning"
+        assert stage == "dashless"
+
+    def test_dashless_ambiguous_collision_gates_out(self, mp):
+        # The version-boundary collapse dashless introduces (3-1 vs 31)
+        # must gate out when two entries collide, never pick one.
+        lib, _ = mp
+        idx = lib.ModelGrepIndex([_mg_entry("acme/llama-3-1-8b"), _mg_entry("other/llama-31-8b")])
+        entry, stage, _ = idx.match("llama318b")
+        assert entry is None
+        assert stage == "ambiguous"
+
+    def test_dashless_never_overrides_strict_stages(self, mp):
+        # The alias loop runs first: an exact hit wins even when the
+        # dashless segment index is ambiguous for the same candidate.
+        lib, _ = mp
+        idx = lib.ModelGrepIndex([_mg_entry("acme/foo-bar"), _mg_entry("other/foobar")])
+        entry, stage, _ = idx.match("foo-bar")
+        assert entry["id"] == "acme/foo-bar"
+        assert stage == "exact"
+
+    def test_gate_keeps_dashless_matched_candidate(self, fresh):
+        lib, _, cfg, stats, manager = fresh
+        manager._modelgrep_entries = [
+            _mg_entry("nvidia/nemotron-3.5-lightning", coding_pct=34, agentic_pct=51, context_length=1000000),
+        ]
+        candidates = [
+            lib.ModelCandidate(name="pollinations/Nemotron3.5Lightning",
+                               provider="pollinations", metricless=False, success_rate=1.0, requests=50,
+                               context_length=1000000, free=True),
+        ]
+        kept = manager._enrich_and_gate(candidates)
+        assert [c.name for c in kept] == ["pollinations/Nemotron3.5Lightning"]
+        assert kept[0].modelgrep_id == "nvidia/nemotron-3.5-lightning"
+        assert kept[0].benchmarked is True
+
     def test_gate_keeps_substring_matched_relay(self, fresh):
         lib, _, cfg, stats, manager = fresh
         manager._modelgrep_entries = [

@@ -497,6 +497,15 @@ def modelgrep_benchmark_score(entry: dict) -> tuple[float, bool]:
 # claim an ambiguous model — and it relaxes the variant guard by design:
 # a bare -flash relay now matches a -flash-lite entry when that is the
 # unique substring hit.
+# Dashless equality runs between the alias loop and the family stage: a
+# candidate alias form and an entry id/segment are compared with dashes
+# removed, so a provider spelling with different word boundaries
+# (Nemotron3.5Lightning) still equals its entry. It is equality, not
+# containment, so the variant guard survives (flash != flash-lite) and
+# the dashed tokenization the family stage depends on is untouched.
+# Unique-hit-only, with maker disambiguation for segment hits, so a
+# dashless collision across entries (3-1 vs 31) gates out instead of
+# picking one arbitrarily.
 _NAME_SEPARATORS = re.compile(r"[\s_:]+")
 _NAME_SEPARATORS_KEEPING_DOTS = re.compile(r"[\s_]+")
 _NAME_COLLAPSE = re.compile(r"-{2,}")
@@ -529,6 +538,11 @@ def _norm_name(name: str) -> str:
     # versions: dots and dashes are the same model across providers
     lowered = lowered.replace(".", "-")
     return _NAME_COLLAPSE.sub("-", lowered)
+
+
+def _dashless(name: str) -> str:
+    """Separator-free comparison form: _norm_name with dashes removed."""
+    return _norm_name(name).replace("-", "")
 
 
 def _strip_decorations(segment: str) -> list[str]:
@@ -644,6 +658,8 @@ class ModelGrepIndex:
     def __init__(self, entries: list[dict]) -> None:
         self._by_id: dict[str, dict] = {}
         self._by_segment: dict[str, list[dict]] = {}
+        self._by_dashless_id: dict[str, list[dict]] = {}
+        self._by_dashless_segment: dict[str, list[dict]] = {}
         self._by_key: dict[tuple, list[dict]] = {}
         self._entry_forms: list[tuple[dict, str, str]] = []
         for entry in entries:
@@ -654,6 +670,8 @@ class ModelGrepIndex:
             self._by_id[norm_id] = entry
             segment = norm_id.split("/")[-1]
             self._by_segment.setdefault(segment, []).append(entry)
+            self._by_dashless_id.setdefault(_dashless(norm_id), []).append(entry)
+            self._by_dashless_segment.setdefault(_dashless(segment), []).append(entry)
             self._by_key.setdefault(_segment_key(segment), []).append(entry)
             self._entry_forms.append((entry, segment, norm_id))
 
@@ -672,6 +690,9 @@ class ModelGrepIndex:
         entry is None when nothing matches within the guarded rules (the
         caller gates the candidate out). Version/variant/size equality is
         enforced in the family stage, so glm-5.3 can never match glm-5.2.
+        The dashless-equality stage runs after the whole alias loop, so
+        it can never override an exact, decoration, or prefix hit, and
+        before family, so a true equality beats a family resemblance.
         The substring fallback runs last, after every strict stage, and
         matches bidirectionally on token boundaries — so a -flash relay
         can match a -flash-lite entry when that is the unique substring
@@ -683,6 +704,13 @@ class ModelGrepIndex:
                 hit = self._by_bare_segment(alias)
             if hit is not None:
                 return hit, stage, confidence
+        # Dashless equality: same model spelled with different word
+        # boundaries or casing (Nemotron3.5Lightning -> the
+        # nemotron-3.5-lightning entry). Unique-hit-only, with maker
+        # disambiguation for segment hits; ambiguity gates out.
+        dash, dash_ambiguous = self._dashless_match(upstream_id)
+        if dash is not None:
+            return dash, "dashless", 0.9
         # structured family resolution: exact (alpha, version, size) equality,
         # with the bare-generation -> size-decorated sibling allowance
         key = _segment_key(upstream_id.split("/")[-1])
@@ -705,7 +733,47 @@ class ModelGrepIndex:
         sub, sub_ambiguous = self._substring_match(upstream_id)
         if sub is not None:
             return sub, "substring", 0.4
-        return None, ("ambiguous" if len(hits) > 1 or sub_ambiguous else "unmatched"), 0.0
+        return None, ("ambiguous" if len(hits) > 1 or dash_ambiguous or sub_ambiguous else "unmatched"), 0.0
+
+    def _dashless_match(self, upstream_id: str) -> tuple[dict | None, bool]:
+        """Dashless equality on the candidate's alias forms.
+
+        Each form is compared with dashes removed, against both the
+        entry's dashless full id (when the form carries a path) and its
+        dashless bare segment. Full-id hits must be unique; segment hits
+        may be narrowed by maker, otherwise ambiguity gates out.
+        Forms are the alias loop's aliases plus decoration-stripped
+        variants of the normalized bare segment — stripping after
+        normalization, so a colon-suffixed :free relay strips correctly
+        too (the alias loop strips the raw segment, where :free is not
+        a -free suffix). Returns (entry, ambiguous).
+        """
+        forms: list[str] = []
+        seen: set[str] = set()
+        for alias, _confidence, _stage in _candidate_aliases(upstream_id):
+            if alias not in seen:
+                seen.add(alias)
+                forms.append(alias)
+        bare = _norm_name(upstream_id.split("/")[-1])
+        for variant in _strip_decorations(bare):
+            if variant not in seen:
+                seen.add(variant)
+                forms.append(variant)
+        ambiguous = False
+        for form in forms:
+            if "/" in form:
+                hits = self._by_dashless_id.get(_dashless(form)) or []
+                if len(hits) == 1:
+                    return hits[0], False
+                if len(hits) > 1:
+                    ambiguous = True
+            seg_hits = self._by_dashless_segment.get(_dashless(form.split("/")[-1])) or []
+            if seg_hits:
+                narrowed = self._disambiguate_by_maker(seg_hits, upstream_id)
+                if len(narrowed) == 1:
+                    return narrowed[0], False
+                ambiguous = True
+        return None, ambiguous
 
     def _substring_match(self, upstream_id: str) -> tuple[dict | None, bool]:
         """Bidirectional token-boundary substring match on the bare segment.
