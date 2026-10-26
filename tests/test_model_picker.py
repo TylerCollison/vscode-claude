@@ -2022,9 +2022,9 @@ class TestConfigDeltas:
         assert not (removed_groups & picker_fb)
         assert {"lite-llm/webSearch", "lite-llm/image"} <= picker_fb
         # the removed static groups must not appear as fallback targets
-        removed_statics = {"minimax-m2.7", "z-ai/glm-5.3-flash", "nemotron-3-super:cloud",
-                           "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3",
-                           "default", "fast"}
+        removed_statics = {"nvidia/nemotron-3.5-lightning-30b-a3b", "minimaxai/minimax-m3.1-flash",
+                           "nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3",
+                           "z-ai/glm-5.3-flash"}
         for entry in picker["router_settings"]["fallbacks"]:
             assert not (set(entry[key]) & removed_statics) if (key := list(entry)[0]) else True
         # every picker fallback target resolves through a wildcard or a kept group
@@ -2049,14 +2049,11 @@ class TestConfigDeltas:
         default, picker = self._configs()
         added_wildcards = {"pollinations/*", "nvidia_nim/*", "llm7/*"}
         removed_statics = {
-            "nemotron-3-super:cloud",
-            "nemotron-3-ultra:cloud",
+            "nvidia/nemotron-3.5-lightning-30b-a3b",
+            "minimaxai/minimax-m3.1-flash",
+            "nvidia/nemotron-3-ultra-550b-a55b",
             "z-ai/glm-5.3",
             "z-ai/glm-5.3-flash",
-            "nvidia/nemotron-3-ultra-550b-a55b",
-            "default",
-            "fast",
-            "minimax-m2.7",
         }
         picker_groups = set(self._group_names(picker))
         assert added_wildcards <= picker_groups

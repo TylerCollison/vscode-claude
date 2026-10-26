@@ -22,10 +22,11 @@ This Docker image bundles a web-based IDE (VS Code Server), Claude Code, a LiteL
 
 - **LiteLLM Router** - Advanced model routing and provider proxy
   - [LiteLLM Documentation](https://docs.litellm.ai)
-  - Multi-provider support (Google AI Studio, NVIDIA NIM, Mistral, OpenCode Zen, Cerebras, EXA AI)
+  - Multi-provider support (NVIDIA NIM, Google AI Studio, EXA AI web search)
   - Content-aware routing (images → vision model, web search → search-capable model, complexity-based tiering)
-  - Automatically routes requests to a curated collection of the most capable free models available based on API keys set (see "LiteLLM Router Configuration")
+  - Automatically routes requests to a curated collection of capable free models based on the API keys set (see "LiteLLM Router Configuration")
   - Fallback chains to overcome server side errors, availability, and rate limits
+  - Optional model picker mode (`MODEL_PICKER_ENABLED=true`): discovers free chat models live from the Pollinations, NVIDIA NIM, and LLM7 catalogs and serves each request from the best-ranked candidate (see "LiteLLM Router")
 
 - **Claude Threads** - Real-time chat integration for Mattermost
   - [GitHub Repository](https://github.com/anneschuth/claude-threads)
@@ -80,15 +81,11 @@ docker run -d \
   -e SUDO_PASSWORD=password \
   -e DEFAULT_WORKSPACE=/workspace \
   -e PWA_APPNAME=code-server \
-  -e NIM_API_KEY=your-nvidia-nim-api-key \
   -e GOOGLE_API_KEY=your-google-ai-studio-api-key \
-  -e MISTRAL_API_KEY=your-mistral-api-key \
-  -e CEREBRAS_API_KEY=your-cerebras-api-key \
-  -e OPENCODE_ZEN_API_KEY=your-opencode-zen-api-key \
+  -e NIM_API_KEY=your-nvidia-nim-api-key \
   -e EXA_API_KEY=your-exa-api-key \
   -p 8443:8443 \
   -p 3005:3005 \
-  -p 4000:4000 \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /path/to/your/code:/workspace \
   --restart unless-stopped \
@@ -96,6 +93,8 @@ docker run -d \
 
 # Access at http://localhost:8443
 ```
+
+You can also add `-e MODEL_PICKER_ENABLED=true` to route through the model picker, which discovers free models from the Pollinations, NVIDIA NIM, and LLM7 catalogs (see "LiteLLM Router"). Its provider keys — `POLLINATION_API_KEY` and `LLM7_API_KEY` — are optional.
 
 ## Environment Variables Reference
 
@@ -111,6 +110,7 @@ This container supports extensive configuration through environment variables.
 | `DEFAULT_WORKSPACE` | Default workspace directory |
 | `PWA_APPNAME` | Progressive Web App name |
 | `VSCODE_THEME` | Default VS Code color theme (e.g., `Dark Modern`, `Monokai`) |
+| `LOGGING` | Set to `verbose` for detailed startup script logging |
 
 ### Authentication & Access Control
 | Variable | Description |
@@ -138,6 +138,17 @@ One set of variables makes full plugins available across **all agent harnesses**
 
 When `PLUGINS` is set without `PLUGINS_MARKETPLACES`, the marketplace bundled with the image at `/marketplace` is used (falling back to the workspace checkout when it is a marketplace). Each plugin is installed from the first marketplace that lists it. Standard plugin source types are supported — relative paths plus `github`/`git-subdir`/`url` objects with optional `ref` pinning, and `npm` packages.
 
+**Plugins bundled with this image** (installable by name from the bundled marketplace):
+
+| Plugin | Purpose |
+|--------|---------|
+| `claude-conx-build-env` | Use the build-env persistent build environment manager |
+| `claude-conx-cconx` | Manage ClaudeConX Docker instances with the cconx CLI |
+| `claude-conx-dispatch-beads` | Manually trigger the Beads Dispatch daemon (`dispatch-beads`) |
+| `claude-conx-happier` | Use the Happier CLI for agent orchestration |
+| `claude-conx-litellm-health-check` | Run the LiteLLM health check (`litellm-health-check`) |
+| `claude-conx-shutdown` | Gracefully shut down the container with cleanup (`shutdown`) |
+
 **Usage:**
 
 ```yaml
@@ -151,23 +162,24 @@ environment:
 ### LiteLLM Router Configuration
 | Variable | Description |
 |----------|-------------|
-| `NIM_API_KEY` | Nvidia NIM API key (enables Nvidia NIM models, if set) |
-| `GOOGLE_API_KEY` | Google AI Studio API key (enables Google AI Studio models, if set)  |
-| `MISTRAL_API_KEY` | Mistral AI API key (enables Mistral models, if set)  |
-| `CEREBRAS_API_KEY` | Cerebras API key (enables Cerebras models, if set)  |
-| `OPENCODE_ZEN_API_KEY` | OpenCode Zen API key (enables OpenCode Zen models, if set)  |
-| `EXA_API_KEY` | EXA AI web search API key (enables EXA AI web search, if set)  |
+| `GOOGLE_API_KEY` | Google AI Studio API key (enables Gemini models for the web-search and vision tiers, if set) |
+| `NIM_API_KEY` | Nvidia NIM API key (enables the Nvidia NIM models used by every other tier, if set) |
+| `EXA_API_KEY` | EXA AI web search API key (enables EXA AI web search, if set) |
+| `MODEL_PICKER_ENABLED` | Set to `true` to enable model picker mode (dynamic catalog discovery and health-ranked model selection; see "LiteLLM Router") |
+| `POLLINATION_API_KEY` | Pollinations API key — **model picker mode only**. Lets the picker rank and serve Pollinations community models; the catalog is public and can be listed without it, but request routing needs the key |
+| `LLM7_API_KEY` | LLM7 API key — **model picker mode only**. Lets the picker rank and serve LLM7 models; like Pollinations, the catalog can be listed without it |
 
 Claude Code is pre-configured to route all requests through the LiteLLM proxy at `http://127.0.0.1:5090`. The router automatically selects models based on request content:
 
-| Model Group | Purpose | Default Provider |
-|-------------|---------|-----------------|
+| Model Group | Purpose | Routing |
+|-------------|---------|---------|
 | `lite-llm/router` | Main entry point — multi-stage routing pipeline | Auto-routed |
-| `lite-llm/default` | Standard chat and coding tasks | OpenCode Zen  (DeepSeek v4 Flash) |
-| `lite-llm/think` | Complex reasoning and deep analysis | NVIDIA NIM  (DeepSeek v4 Pro) |
-| `lite-llm/webSearch` | Queries requiring web search | Google AI Studio (Gemini 3.5 Flash) |
-| `lite-llm/image` | Image analysis and vision tasks | Google AI Studio (Gemini 3.5 Flash) |
-| `lite-llm/longContext` | Long-context tasks | NVIDIA NIM (DeepSeek v4 Pro) |
+| `lite-llm/default` | Standard chat and coding tasks | NVIDIA NIM (Nemotron 3.5 Lightning 30B), with NVIDIA NIM fallbacks |
+| `lite-llm/think` | Complex reasoning and deep analysis | NVIDIA NIM (MiniMax M3.1 Flash), with NVIDIA NIM fallbacks |
+| `lite-llm/ultra-think` | Deepest reasoning tier (extended 600s timeouts) | NVIDIA NIM (Nemotron 3 Ultra 550B), with NVIDIA NIM fallbacks |
+| `lite-llm/longContext` | Long-context tasks | NVIDIA NIM (Nemotron 3 Ultra 550B, 1M context), with NVIDIA NIM fallbacks |
+| `lite-llm/webSearch` | Queries requiring web search | Google AI Studio (Gemini 3.5 Flash-Lite) |
+| `lite-llm/image` | Image analysis and vision tasks | Google AI Studio (Gemini 3.5 Flash-Lite) |
 
 ### Claude Threads Configuration
 | Variable | Description |
@@ -238,6 +250,7 @@ This pairs the container's Happier CLI with the cloud relay, enabling you to app
 |----------|-------------|
 | `GIT_REPO_URL` | Repository URL to clone on startup |
 | `GIT_BRANCH_NAME` | Branch name |
+| `GIT_CHECKOUT_BASE_BRANCH` | Base branch to create a new `GIT_BRANCH_NAME` from when the target branch doesn't exist (defaults to the repository's default branch/HEAD) |
 
 ### BuildKit Builder Configuration
 | Variable | Default | Description |
@@ -296,9 +309,9 @@ environment:
 
 Then inside the container:
 ```bash
-bd remote add origin dolthub://user/repo
-bd push origin main
-bd pull origin main
+bd dolt remote add origin dolthub://user/repo
+bd dolt push
+bd dolt pull
 ```
 
 **Data Persistence:**
@@ -314,6 +327,20 @@ In stealth mode (when `BEADS_DIR` is set), data lives at `$BEADS_DIR` instead �
 | `ENABLE_SCOTTY` | *(not set)* | Set to `true` to start the Beads web UI (Scotty) on container startup |
 | `SCOTTY_PORT` | `3000` | Port the Scotty web UI listens on |
 
+**Scotty (Bead UI) Usage:**
+
+Scotty is a five-column kanban board for Beads issues (Backlog · Ready · In Progress · Blocked · Done) with drag-and-drop, epics, a dependency graph, comments, and create/edit. It shells out to the `bd` CLI, which stays the single source of truth.
+
+```yaml
+environment:
+  - ENABLE_SCOTTY=true
+  - SCOTTY_PORT=3000 # Optional
+```
+
+Then open `http://localhost:3000` in your browser. The workspace (which contains the `.beads` database) is registered automatically as a project. If you also set `BEADS_DIR` (stealth mode), Scotty links the workspace's `.beads` to `BEADS_DIR` and passes the variable through to `bd`, so the database is found there.
+
+*Note: the UI reads the database via the `bd` CLI, so set `BEADS_ENABLED=true` (or run `bd init` yourself) so a database exists.*
+
 ### Beads Sync Configuration
 
 | Variable | Default | Description |
@@ -321,6 +348,7 @@ In stealth mode (when `BEADS_DIR` is set), data lives at `$BEADS_DIR` instead �
 | `BEADS_SYNC_PROVIDERS` | *(not set)* | Comma-separated list of providers to sync: `jira,github,gitlab,linear,dolt` |
 | `BEADS_SYNC_INTERVAL` | `300` | Sync interval in seconds |
 | `BEADS_SYNC_RUN_ON_START` | `true` | Run sync immediately on container startup |
+| `BEADS_SYNC_DISPATCH` | *(not set)* | Set to `true` to trigger the Beads Dispatcher after each sync cycle (also requires `BEADS_DISPATCH=true`) |
 
 ### MR/PR Dispatch Configuration
 
@@ -353,20 +381,6 @@ In stealth mode (when `BEADS_DIR` is set), data lives at `$BEADS_DIR` instead �
 | `PROMPT` | *(not set)* | Prompt to send to Claude Code on container startup. If set, a session is started automatically. |
 | `HAPPIER_MODE` | *(not set)* | If set (`server` or `agent`), starts the session via Happier for web UI access. If unset, runs regular `claude -p`. |
 
-**Scotty (Bead UI) Usage:**
-
-Scotty is a five-column kanban board for Beads issues (Backlog · Ready · In Progress · Blocked · Done) with drag-and-drop, epics, a dependency graph, comments, and create/edit. It shells out to the `bd` CLI, which stays the single source of truth.
-
-```yaml
-environment:
-  - ENABLE_SCOTTY=true
-  - SCOTTY_PORT=3000 # Optional
-```
-
-Then open `http://localhost:3000` in your browser. The workspace (which contains the `.beads` database) is registered automatically as a project. If you also set `BEADS_DIR` (stealth mode), Scotty links the workspace's `.beads` to `BEADS_DIR` and passes the variable through to `bd`, so the database is found there.
-
-*Note: the UI reads the database via the `bd` CLI, so set `BEADS_ENABLED=true` (or run `bd init` yourself) so a database exists.*
-
 ### Beads Dispatch (auto-provision workers for ready tasks on commit)
 
 Every time you **commit** in the workspace repo, the dispatcher checks the Beads ready set (open issues with no active blockers) and creates a **worker** for each ready task not yet dispatched — a container/service from the running image with `GIT_BRANCH_NAME` set to a branch named after the task. On a swarm manager node the worker is started as a swarm service; otherwise as a local Docker container. Workers mount **no volumes** (ephemeral — `git-repo-setup.sh` clones `GIT_REPO_URL` and creates/checks out the branch on boot).
@@ -395,13 +409,13 @@ environment:
 
 When you commit and a task is ready (e.g. `probe-n5h`, "Task A"), the dispatcher:
 1. derives the branch name `task/probe-n5h-task-a` and passes it via `GIT_BRANCH_NAME`,
-2. starts a worker named `<container>-<issue-id>` (e.g. `claude-dev-probe-n5h`),
+2. starts a worker named `beads-<title-slug>-<issue-id>-<timestamp>` (e.g. `beads-task-a-probe-n5h-20261024120500123456`),
 3. with code-server at `http://localhost:<free-port>` (first free port ≥ `BEADS_DISPATCH_PORT_BASE`),
 4. as a **swarm service** if the node is a swarm manager, else a **local container**.
 5. The worker (via `git-repo-setup.sh`) clones the repo and **automatically creates the branch off the default branch** (typically `main`) if it doesn't exist, or checks it out if it does. Submodules are initialized recursively on the active branch after checkout (the boot fails fast if a submodule can't be initialized).
 6. The dispatched agent is instructed (via the injected prompt) to **claim the task** (`bd update <issue-id> --claim` — assigns itself and sets it in-progress) and run `bd dolt push` before starting on the work, so the in-progress state is visible on the remote.
 
-The worker inherits the full environment (API keys, providers) but sets `BEADS_DISPATCH=false`, `BEADS_ENABLED=false`, `ENABLE_SCOTTY=false`, `MR_PR_DISPATCH=false`, so workers never dispatch their own workers, enable Beads, start Scotty, or respond to MRs/PRs. Workers do get `BEADS_REMOTE` (the parent's `BEADS_REMOTE` when set, else the repo URL) and bootstrap the Beads task DB from it on startup — the gate carve-out described in the Beads Configuration section — so `bd list` shows the parent's dispatched task. If the parent container has `HAPPIER_MODE` set (to `server` or `agent`), the worker receives `HAPPIER_MODE=agent` to enable web UI access via Happier. Each task is dispatched once — a later commit won't duplicate it (state is tracked in `/config/.beads-dispatch/state.json`).
+The worker inherits the full environment (API keys, providers) but sets `BEADS_DISPATCH=false`, `BEADS_ENABLED=false`, `ENABLE_SCOTTY=false`, `MR_PR_DISPATCH=false`, and `WORKER_REAPER=false`, so workers never dispatch their own workers, enable Beads, start Scotty, respond to MRs/PRs, or reap other workers. Workers do get `BEADS_REMOTE` (the parent's `BEADS_REMOTE` when set, else the repo URL) and bootstrap the Beads task DB from it on startup — the gate carve-out described in the Beads Configuration section — so `bd list` shows the parent's dispatched task. If the parent container has `HAPPIER_MODE` set (to `server` or `agent`), the worker receives `HAPPIER_MODE=agent` to enable web UI access via Happier. Each task is dispatched once — a later commit won't duplicate it (state is tracked in `/config/.beads-dispatch/state.json`).
 
 > **Prerequisite:** the parent container must be able to sync the Dolt DB to its origin (a credential helper / token), or to `BEADS_REMOTE` when set — otherwise the dispatcher logs a clear error and skips the task.
 
@@ -414,6 +428,7 @@ Periodically syncs tasks from external issue trackers into the local Beads datab
 | `BEADS_SYNC_PROVIDERS` | *(unset)* | Comma-separated list of providers: `jira,github,gitlab,linear,dolt` |
 | `BEADS_SYNC_INTERVAL` | `300` | Sync interval in seconds |
 | `BEADS_SYNC_RUN_ON_START` | `true` | Run sync immediately on container startup |
+| `BEADS_SYNC_DISPATCH` | *(unset)* | Set to `true` to trigger the Beads Dispatcher after each sync cycle (also requires `BEADS_DISPATCH=true`) |
 
 **Usage:**
 
@@ -422,27 +437,37 @@ environment:
   - BEADS_SYNC_PROVIDERS=github,gitlab,dolt # Comma-separated
   - BEADS_SYNC_INTERVAL=300                 # Optional (default 5 minutes)
   - BEADS_SYNC_RUN_ON_START=true            # Optional
+  - BEADS_SYNC_DISPATCH=true                # Optional (dispatch newly-ready tasks after each sync)
   - BEADS_ENABLED=true                      # Required (or run bd init)
   - GIT_REPO_URL=https://github.com/user/repo.git # Required for github/gitlab
 ```
 
 **External provider setup (run once inside the container):**
 
+Providers are configured through `bd config set` (or the equivalent environment variables):
+
 ```bash
-# GitHub
-bd github auth login   # opens browser / device flow
+# GitHub (or set GITHUB_TOKEN / GITHUB_REPOSITORY)
+bd config set github.token your-github-token
+bd config set github.repository owner/repo
 bd github sync --directory /workspace
 
-# GitLab
-bd gitlab auth login
+# GitLab (or set GITLAB_TOKEN / GITLAB_URL / GITLAB_PROJECT_ID)
+bd config set gitlab.token your-gitlab-token
+bd config set gitlab.url https://gitlab.com
+bd config set gitlab.project_id owner/repo
 bd gitlab sync --directory /workspace
 
 # Jira
-bd jira auth login
+bd config set jira.url https://company.atlassian.net
+bd config set jira.project PROJ
+bd config set jira.api_token your-jira-api-token
+bd config set jira.username your_email@company.com
 bd jira sync --directory /workspace
 
-# Linear
-bd linear auth login
+# Linear (or set LINEAR_API_KEY / LINEAR_TEAM_ID)
+bd config set linear.api_key your-linear-api-key
+bd config set linear.team_id TEAM_ID
 bd linear sync --directory /workspace
 
 # Dolt (DoltHub / DoltLab)
@@ -450,9 +475,9 @@ bd dolt remote add origin dolthub://user/repo
 bd dolt pull --directory /workspace
 ```
 
-After initial auth, the daemon runs sync automatically on the interval. On each successful sync, it triggers the **Beads Dispatcher** (if `BEADS_DISPATCH=true`) so new ready tasks are immediately dispatched as workers.
+After the providers are configured, the daemon runs sync automatically on the interval. On each sync cycle, it triggers the **Beads Dispatcher** (when both `BEADS_DISPATCH=true` and `BEADS_SYNC_DISPATCH=true`) so new ready tasks are immediately dispatched as workers.
 
-> **Note:** The `dolt` provider requires a configured Dolt remote (`bd dolt remote add origin ...`). Other providers require the respective CLI auth to be set up once.
+> **Note:** The `dolt` provider requires a configured Dolt remote (`bd dolt remote add origin ...`). Other providers require their credentials to be configured once as shown above.
 
 ### MR/PR Dispatch (auto-dispatch worker for assigned MRs/PRs)
 
@@ -566,7 +591,7 @@ environment:
 
 > **Note:** the reaper is disabled inside dispatched workers (`WORKER_REAPER=false` is set in worker env, like the other dispatch daemons) — the node's parent container owns worker cleanup.
 
-### Knowledge Repository Integration
+### Knowledge Repository Configuration
 | Variable | Description |
 |----------|-------------|
 | `KNOWLEDGE_REPOS` | Git repos with markdown files to load into CLAUDE.md (format: `URL[:branch]:file1,file2;...`) |
@@ -576,7 +601,7 @@ environment:
 ```yaml
 services:
   claude-dev:
-    image: tylercollison2089/claude-conx:latest
+    image: tylercollison2089/vscode-claude:latest
     container_name: claude-dev
     environment:
       - PUID=1000
@@ -593,11 +618,8 @@ services:
       - VSCODE_THEME=Dark Modern # Optional
       - CLAUDE_CODE_PERMISSION_MODE=acceptEdits
       # API Key Configuration
-      - NIM_API_KEY=your-nvidia-nim-api-key # Required to use NIM models
       - GOOGLE_API_KEY=your-google-ai-studio-api-key # Required to use Google models
-      - MISTRAL_API_KEY=your-mistral-api-key # Required to use Mistral models
-      - CEREBRAS_API_KEY=your-cerebras-api-key # Required to use Cerebras models
-      - OPENCODE_ZEN_API_KEY=your-opencode-zen-api-key # Required to use OpenCode Zen models
+      - NIM_API_KEY=your-nvidia-nim-api-key # Required to use NIM models
       - EXA_API_KEY=your-exa-api-key # Required for EXA AI websearch
       # Plugins Marketplace (optional)
       - PLUGINS_MARKETPLACES=https://github.com/TylerCollison/vscode-claude.git,anthropics/claude-plugins-official
@@ -654,7 +676,6 @@ services:
     ports:
       - "8443:8443" # VSCode UI
       - "3005:3005" # Happier UI
-      - "4000:4000" # LiteLLM UI
       - "3000:3000" # Scotty (Beads UI) — only if ENABLE_SCOTTY=true
       - "8000-8100:8000-8100" # Beads/MR-PR Dispatch workers — port range for worker code-server access
     volumes:
@@ -689,22 +710,22 @@ environment:
 
 Claude Code is pre-configured to route all requests through the LiteLLM proxy at `http://127.0.0.1:5090`. No additional setup is needed — just open the terminal in VS Code and run `claude`.
 
-To override the default routing and use a specific model directly, set the model environment variable to the desired model or model group:
+To override the default routing and use a specific model directly, set the model environment variable to any model name or model group from the LiteLLM config (see "LiteLLM Router"):
 
 ```yaml
 environment:
-  - ANTHROPIC_DEFAULT_OPUS_MODEL="claude-opus-5" # Bypass litellm
-  - ANTHROPIC_DEFAULT_SONNET_MODEL=lite-llm/think # Use complex-reasoning tier
-  - ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-ai/deepseek-v4-flash # Use a fast model
+  - ANTHROPIC_DEFAULT_OPUS_MODEL=z-ai/glm-5.3 # Call a specific configured model directly (bypasses the routing tiers)
+  - ANTHROPIC_DEFAULT_SONNET_MODEL=lite-llm/think # Use the complex-reasoning tier
+  - ANTHROPIC_DEFAULT_HAIKU_MODEL=lite-llm/default # Use the standard tier
 ```
 
 ### LiteLLM Router
 
 The LiteLLM proxy provides a three-stage routing pipeline:
 
-1. **Image detection** — requests with image data automatically route to `lite-llm/image` (Google Gemini 3.5 Flash)
-2. **Web search detection** — requests with web search tools route to `lite-llm/webSearch` (Google Gemini 3.5 Flash)
-3. **Complexity routing** — all other requests are scored by complexity and routed to either `lite-llm/default` (OpenCode Zen DeepSeek v4 Flash) for simple tasks or `lite-llm/think` (NVIDIA NIM DeepSeek v4 Pro) for complex reasoning
+1. **Image detection** — requests with image data automatically route to `lite-llm/image` (Google Gemini 3.5 Flash-Lite)
+2. **Web search detection** — requests with web search tools route to `lite-llm/webSearch` (Google Gemini 3.5 Flash-Lite)
+3. **Complexity routing** — all other requests are scored by complexity and routed to `lite-llm/default` for simple/medium tasks, `lite-llm/think` for complex reasoning, or `lite-llm/ultra-think` for deep-reasoning tasks
 
 The routing configuration lives in `/lite-llm/lite-llm-default.yaml`. All configured models and model groups:
 
@@ -712,38 +733,32 @@ The routing configuration lives in `/lite-llm/lite-llm-default.yaml`. All config
 
 | Group | Primary Model | Provider | Purpose |
 |-------|---------------|----------|---------|
-| `lite-llm/router` | DeepSeek V4 Flash (OpenCode Zen) | OpenCode Zen | **Main entry point** — multi-stage routing pipeline (content → complexity) |
-| `lite-llm/complexity` | Auto-router | — | Complexity-based router (SIMPLE/MEDIUM → default, COMPLEX/REASONING → think) |
-| `lite-llm/default` | DeepSeek V4 Flash | OpenCode Zen | Standard chat and coding tasks |
-| `lite-llm/think` | DeepSeek V4 Pro | NVIDIA NIM | Complex reasoning and deep analysis |
-| `lite-llm/longContext` | DeepSeek V4 Pro | NVIDIA NIM | Long-context tasks |
-| `lite-llm/webSearch` | Gemini 3.5 Flash | Google AI Studio | Queries requiring web search (EXA AI) |
-| `lite-llm/image` | Gemini 3.5 Flash | Google AI Studio | Image analysis and vision tasks |
+| `lite-llm/router` | Nemotron 3.5 Lightning 30B | NVIDIA NIM | **Main entry point** — multi-stage routing pipeline (content → complexity) |
+| `lite-llm/complexity` | Auto-router | — | Complexity-based router (SIMPLE/MEDIUM → default, COMPLEX → think, REASONING → ultra-think) |
+| `lite-llm/default` | Nemotron 3.5 Lightning 30B | NVIDIA NIM | Standard chat and coding tasks |
+| `lite-llm/think` | MiniMax M3.1 Flash | NVIDIA NIM | Complex reasoning and deep analysis |
+| `lite-llm/ultra-think` | Nemotron 3 Ultra 550B | NVIDIA NIM | Deepest reasoning tier (extended 600s stream/timeout budget) |
+| `lite-llm/longContext` | Nemotron 3 Ultra 550B | NVIDIA NIM | Long-context tasks (1M context window) |
+| `lite-llm/webSearch` | Gemini 3.5 Flash-Lite | Google AI Studio | Queries requiring web search (EXA AI) |
+| `lite-llm/image` | Gemini 3.5 Flash-Lite | Google AI Studio | Image analysis and vision tasks |
 
 #### Underlying Models (Deployments)
 
 | Model Name | Provider | API Key Required |
 |------------|----------|------------------|
-| `gemini-3.5-flash` | Google AI Studio | `GOOGLE_API_KEY` |
-| `gemini-3-flash-preview` | Google AI Studio | `GOOGLE_API_KEY` |
-| `gemini-2.5-flash` | Google AI Studio | `GOOGLE_API_KEY` |
-| `gemini-embedding-2` | Google AI Studio | `GOOGLE_API_KEY` |
-| `gemini-embedding-001` | Google AI Studio | `GOOGLE_API_KEY` |
-| `zai-glm-4.7` | Cerebras | `CEREBRAS_API_KEY` |
-| `minimaxai/minimax-m3` | NVIDIA NIM | `NIM_API_KEY` |
-| `moonshotai/kimi-k2.6` | NVIDIA NIM | `NIM_API_KEY` |
-| `deepseek-ai/deepseek-v4-flash` | NVIDIA NIM | `NIM_API_KEY` |
-| `deepseek-ai/deepseek-v4-pro` | NVIDIA NIM | `NIM_API_KEY` |
-| `z-ai/glm-5.1` | NVIDIA NIM | `NIM_API_KEY` |
-| `nvidia/nv-embed-v1` | NVIDIA NIM | `NIM_API_KEY` |
-| `nemotron-3-ultra-free` | OpenCode Zen | `OPENCODE_ZEN_API_KEY` |
-| `big-pickle` | OpenCode Zen | `OPENCODE_ZEN_API_KEY` |
-| `deepseek-v4-flash-free` | OpenCode Zen | `OPENCODE_ZEN_API_KEY` |
-| `mistral-medium-latest` | Mistral | `MISTRAL_API_KEY` |
-| `mistral-large-latest` | Mistral | `MISTRAL_API_KEY` |
-| `mistral-embed` | Mistral | `MISTRAL_API_KEY` |
+| `nvidia/nemotron-3.5-lightning-30b-a3b` | NVIDIA NIM | `NIM_API_KEY` |
+| `minimaxai/minimax-m3.1-flash` | NVIDIA NIM | `NIM_API_KEY` |
+| `nvidia/nemotron-3-ultra-550b-a55b` | NVIDIA NIM | `NIM_API_KEY` |
+| `z-ai/glm-5.3` | NVIDIA NIM | `NIM_API_KEY` |
+| `z-ai/glm-5.3-flash` | NVIDIA NIM | `NIM_API_KEY` |
+| `gemini-3.5-flash-lite` | Google AI Studio | `GOOGLE_API_KEY` |
+| `gemini-3.1-flash-lite` | Google AI Studio | `GOOGLE_API_KEY` |
 
 Each model group has a fallback chain defined in the YAML config, so if the primary model is unavailable, traffic routes to alternative providers automatically.
+
+**Model picker mode** (`MODEL_PICKER_ENABLED=true`): the proxy loads `/lite-llm/lite-llm-picker.yaml` instead of the default config. A routing plugin discovers free chat-capable models live from the Pollinations, NVIDIA NIM, and LLM7 catalogs, ranks them by published and self-tracked health (latency, failure and rate-limit history), and serves each request from the best-ranked candidate for its tier — retrying in-request through the next-ranked model when a provider fails or truncates mid-stream, so a partial answer is never returned as if complete.
+
+**Health checks:** run `litellm-health-check` inside the container to probe every configured model through the router and produce console, Markdown, and JSON health reports.
 
 ### Claude Threads
 
@@ -897,7 +912,7 @@ docker run -d \
   -e USE_BUILDKIT_BUILDER=true \
   ...
   -v /var/run/docker.sock:/var/run/docker.sock \
-  tylercollison2089/claude-conx
+  tylercollison2089/vscode-claude
 ```
 
 This creates a persistent [BuildKit](https://github.com/moby/buildkit) builder container (`buildkit-builder`) managed by the host Docker daemon. It avoids the expensive layer-export step that the default `docker` builder incurs, significantly speeding up `docker build` and `docker buildx build` commands.
@@ -942,15 +957,18 @@ docker build -t tylercollison2089/vscode-claude:latest .
 
 ### Running the Test Suite
 
-The Python test suite runs with [pytest](https://docs.pytest.org/) and covers the `cconx` CLI package (`cconx/tests/`) and the top-level dispatch scripts (`tests/`). No Docker daemon is required — the docker client is mocked in `cconx/conftest.py`.
+The Python test suite runs with [pytest](https://docs.pytest.org/) and covers the `cconx` CLI package (`cconx/tests/`) and the top-level scripts (`tests/`, including the dispatchers, worker reaper, model picker, and shutdown). No Docker daemon is required — the docker client is mocked in `cconx/conftest.py`.
 
 ```bash
-# From the repository root
-pip install pytest pyyaml
+# From the repository root — install the test dependencies
+# (the LiteLLM proxy dependencies match the Dockerfile's pinned set)
+pip install pytest pyyaml 'litellm[proxy]==1.106.0' fastapi semantic-router uvicorn appdirs backoff rq
+
+# Run the suite (testpaths = tests cconx/tests, see pytest.ini)
 python -m pytest
 ```
 
-Some tests in `cconx/tests/` currently fail against the current implementation (test/code contract drift); this is tracked as issue `workspace-658` in the Beads tracker.
+The `build-env` and `beads-dispatch` packages have their own test directories (`build-env/tests/`, `beads-dispatch/tests/`) that are not part of the default repo-wide run.
 
 ## Troubleshooting
 
@@ -1025,7 +1043,7 @@ docker exec claude-dev curl -I http://localhost:3000
 - Check the daemon log: `docker exec claude-dev cat /tmp/beads-dispatch.log`
 - Confirm the post-commit hook is installed: `docker exec claude-dev cat /workspace/.git/hooks/post-commit`
 - Inspect the seen-set state: `docker exec claude-dev cat /config/.beads-dispatch/state.json`
-- List dispatched workers: `docker service ls --filter label=beads.task` (swarm) or `docker ps --filter label=beads.task` (local)
+- List dispatched workers: `docker service ls --filter label=beads.issue` (swarm) or `docker ps --filter label=beads.issue` (local)
 - If you committed but no worker appeared: check the log for "Commit trigger received" and any "could not push branch" error (the parent needs git push credentials for its origin)
 - Ensure `BEADS_DISPATCH=true`, the docker socket is mounted, and `GIT_REPO_URL` (or a workspace git origin) is set
 - **Manual trigger**: Run `docker exec claude-dev dispatch-beads` to manually trigger the dispatcher (requires daemon running)
@@ -1059,15 +1077,6 @@ docker exec claude-dev curl -I http://localhost:3000
 - For regular Claude Code: verify `claude` command works (`docker exec claude-dev claude --version`)
 
 ## Credits
-- Verify the daemon is running: `docker exec claude-dev ps aux | grep beads-dispatch`
-- Check the daemon log: `docker exec claude-dev cat /tmp/beads-dispatch.log`
-- Confirm the post-commit hook is installed: `docker exec claude-dev cat /workspace/.git/hooks/post-commit`
-- Inspect the seen-set state: `docker exec claude-dev cat /config/.beads-dispatch/state.json`
-- List dispatched workers: `docker service ls --filter label=beads.task` (swarm) or `docker ps --filter label=beads.task` (local)
-- If you committed but no worker appeared: check the log for "Commit trigger received" and any "could not push branch" error (the parent needs git push credentials for its origin)
-- Ensure `BEADS_DISPATCH=true`, the docker socket is mounted, and `GIT_REPO_URL` (or a workspace git origin) is set
-
-## Credits
 
 - **[linuxserver/code-server](https://hub.docker.com/r/linuxserver/code-server)** — Base VS Code Server environment
 - **[Anthropic Claude Code](https://code.claude.com/docs/en/overview)** — AI coding assistant
@@ -1087,8 +1096,8 @@ docker exec claude-dev curl -I http://localhost:3000
 - **Claude Threads**: [Claude Threads GitHub](https://github.com/anneschuth/claude-threads)
 - **Happier**: [Happier documentation](https://docs.happier.dev/)
 - **Scotty (Bead UI)**: [bead-me-up-scotty GitHub](https://github.com/brendan-appstart/bead-me-up-scotty)
-- **cconx**: [cconx GitHub](https://github.com/TylerCollison/vscode-claude/tree/main)
-- **build-env**: [build-env GitHub](https://github.com/TylerCollison/vscode-claude/tree/main)
+- **cconx**: [cconx GitHub](https://github.com/TylerCollison/vscode-claude/tree/main/cconx)
+- **build-env**: [build-env GitHub](https://github.com/TylerCollison/vscode-claude/tree/main/build-env)
 - **tylercollison2089/vscode-claude**: [ClaudeConX GitHub](https://github.com/TylerCollison/vscode-claude/tree/main)
 
 ### Issues
