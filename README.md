@@ -26,7 +26,7 @@ This Docker image bundles a web-based IDE (VS Code Server), Claude Code, a LiteL
   - Content-aware routing (images → vision model, web search → search-capable model, complexity-based tiering)
   - Automatically routes requests to a curated collection of capable free models based on the API keys set (see "LiteLLM Router Configuration")
   - Fallback chains to overcome server side errors, availability, and rate limits
-  - Optional model picker mode (`MODEL_PICKER_ENABLED=true`): discovers free chat models live from provider catalogs and serves each request from the best-ranked candidate (see "LiteLLM Router")
+  - Optional model picker mode (`MODEL_PICKER_ENABLED=true`): discovers free chat models live from the Pollinations, NVIDIA NIM, and LLM7 catalogs and serves each request from the best-ranked candidate (see "LiteLLM Router")
 
 - **Claude Threads** - Real-time chat integration for Mattermost
   - [GitHub Repository](https://github.com/anneschuth/claude-threads)
@@ -93,6 +93,8 @@ docker run -d \
 
 # Access at http://localhost:8443
 ```
+
+You can also add `-e MODEL_PICKER_ENABLED=true` to route through the model picker, which discovers free models from the Pollinations, NVIDIA NIM, and LLM7 catalogs (see "LiteLLM Router"). Its provider keys — `POLLINATION_API_KEY` and `LLM7_API_KEY` — are optional.
 
 ## Environment Variables Reference
 
@@ -164,6 +166,8 @@ environment:
 | `NIM_API_KEY` | Nvidia NIM API key (enables the Nvidia NIM models used by every other tier, if set) |
 | `EXA_API_KEY` | EXA AI web search API key (enables EXA AI web search, if set) |
 | `MODEL_PICKER_ENABLED` | Set to `true` to enable model picker mode (dynamic catalog discovery and health-ranked model selection; see "LiteLLM Router") |
+| `POLLINATION_API_KEY` | Pollinations API key — **model picker mode only**. Lets the picker rank and serve Pollinations community models; the catalog is public and can be listed without it, but request routing needs the key |
+| `LLM7_API_KEY` | LLM7 API key — **model picker mode only**. Lets the picker rank and serve LLM7 models; like Pollinations, the catalog can be listed without it |
 
 Claude Code is pre-configured to route all requests through the LiteLLM proxy at `http://127.0.0.1:5090`. The router automatically selects models based on request content:
 
