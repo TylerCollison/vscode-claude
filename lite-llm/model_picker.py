@@ -47,12 +47,14 @@ Design (beads workspace-c8o, revised in workspace-4wr):
   (dead until a success). Rate-limit failures never fire the hard proof
   (busy-but-working) but do weigh down the tracked score.
 - Rubric: default tier sorts known-strong health first, then untried
-  models, then known-but-not-strong health, then demoted models; think
-  tiers sort context first, then modelgrep benchmark, then the same
-  health blocks (known-strong, untried, known-weak, demoted), then
+  models, then known-but-not-strong health, then demoted models; the
+  think (COMPLEX) pool uses this same default rubric. Only ultra-think
+  (REASONING) sorts context first, then modelgrep benchmark, then the
+  same health blocks (known-strong, untried, known-weak, demoted), then
   health. So on equal context and equal benchmark, demonstrated good
   health beats an unmeasured model; a higher-benchmark untried model
-  still wins over a lower-benchmark known-strong one. Latency-
+  still wins over a lower-benchmark known-strong one — but only on
+  ultra-think. Latency-
   demoted models carry a class floor below all metric-backed candidates in
   the default tier.
 - Learned health is durable: StatsRegistry can persist its per-group event
@@ -1198,6 +1200,8 @@ class StatsRegistry:
 # ---------------------------------------------------------------------------
 
 TIER_DEFAULT = "default"
+# Capability-first rubric; now used only by the ultra-think pool (the
+# think pool uses TIER_DEFAULT).
 TIER_THINK = "think"
 
 _CLASS_FAVORED = 0
@@ -1490,8 +1494,8 @@ def rank_candidates(
 
     # Latency-demoted models carry a class floor below all metric-backed
     # candidates in the default tier (health dimension). Failure-demoted models
-    # compete on evidence alongside metric-backed ones. In think tiers the
-    # rubric is context-first and rank_class already resolves ties.
+    # compete on evidence alongside metric-backed ones. In the ultra-think
+    # rubric the sort is context-first and rank_class already resolves ties.
     latency_demoted_names: set[str] = set()
     for r in ranked:
         if r.rank_class == _CLASS_KNOWN:
@@ -1518,6 +1522,7 @@ def rank_candidates(
         return r.health_score - (1.0 if r.candidate.name in latency_demoted_names else 0.0)
 
     if tier == TIER_THINK:
+        # Ultra-think only (the think pool now uses the default rubric):
         # Context first, then modelgrep benchmark (capability), then the
         # health blocks, then health, then name. So a higher-benchmark
         # untried model still beats a lower-benchmark known-strong one
@@ -1539,11 +1544,11 @@ def rank_candidates(
         # block, health, then context length, then modelgrep benchmarks —
         # name breaks exact ties. Latency-demoted models carry the health
         # floor. This is the availability-over-capability order the default
-        # tier is for. Think tiers use the same health blocks, but only
-        # after context and benchmark, so higher-complexity requests keep
-        # trying unmeasured models with better capability — but only
-        # until they have observations, when they leave FAVORED for
-        # METRIC tracked health.
+        # tier is for, and the think pool uses it too. Ultra-think uses the
+        # same health blocks, but only after context and benchmark, so the
+        # highest-complexity requests keep trying unmeasured models with
+        # better capability — but only until they have observations, when
+        # they leave FAVORED for METRIC tracked health.
         def sort_key(r: RankedCandidate):
             return (
                 block_for(r),

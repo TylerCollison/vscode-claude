@@ -252,7 +252,9 @@ _fallback_model_info_for_unmapped_models()
 
 _TIER_BY_POOL = {
     frozenset({"lite-llm/default"}): model_picker.TIER_DEFAULT,
-    frozenset({"lite-llm/think"}): model_picker.TIER_THINK,
+    # COMPLEX (think) uses the default rubric: known-strong health first.
+    # Only REASONING (ultra-think) keeps the capability-first rubric.
+    frozenset({"lite-llm/think"}): model_picker.TIER_DEFAULT,
     frozenset({"lite-llm/ultra-think"}): model_picker.TIER_THINK,
 }
 
@@ -262,6 +264,8 @@ def detect_tier(candidate_models: list[str]) -> str | None:
 
     The pool is the tier's configured model group(s), possibly intersected with
     a context-fit filter. Anything unrecognized passes through untouched.
+    The think pool maps to the default rubric; only ultra-think maps to the
+    capability-first rubric.
     """
     return _TIER_BY_POOL.get(frozenset(candidate_models or []))
 
@@ -318,6 +322,10 @@ class ModelPickerPlugin:
         tier = detect_tier(context.candidate_models)
         if tier is None:
             return context
+        # The tier pool itself, for the pick log: think requests now log as
+        # tier=default (they use the default rubric), so the pool is what
+        # tells them apart from default requests.
+        pool = list(context.candidate_models or [])
 
         # context.metadata is a pydantic COPY of the request metadata — safe to
         # read (litellm stamps attempted_retries into the real dict before the
@@ -360,8 +368,9 @@ class ModelPickerPlugin:
 
         pick = ranked[0].candidate
         logger.info(
-            "model_picker: tier=%s estimate=%dtok pick=%s (score=%.3f ctx=%s provider=%s free=%s bench=%s stale=%s attempt_excluded=%s)",
+            "model_picker: tier=%s pool=%s estimate=%dtok pick=%s (score=%.3f ctx=%s provider=%s free=%s bench=%s stale=%s attempt_excluded=%s)",
             tier,
+            pool,
             estimate,
             pick.name,
             ranked[0].health_score,

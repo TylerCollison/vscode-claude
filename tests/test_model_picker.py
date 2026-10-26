@@ -1350,7 +1350,7 @@ class TestRubricRanking:
         # only llm7 loses the untried benefit-of-the-doubt; NIM keeps it
         assert [r.candidate.name for r in ranked] == ["z-ai/glm-5.3", "fast"]
 
-    def test_think_tier_context_first_with_class_ties(self, fresh):
+    def test_ultra_think_tier_context_first_with_class_ties(self, fresh):
         lib, _, cfg, stats, _ = fresh
         favored_1m = favored_candidate(lib, "z-ai/glm-5.3", ctx=1048576)
         metric_1m = metric_candidate(lib, "pollinations/openai/gpt-6-luna", 0.9997, 87885, ctx=1048576)
@@ -1794,18 +1794,44 @@ class TestPlugin:
         # pick recorded in the shared metadata bucket for retry exclusion
         assert result.metadata["model_picker_picks"] == [result.candidate_models[0]]
 
-    def test_plugin_rewrites_think_tier_by_context(self, fresh, env_enabled, monkeypatch):
+    def test_plugin_rewrites_ultra_think_tier_by_context(self, fresh, env_enabled, monkeypatch):
         lib, test_plugin, cfg, stats, manager = fresh
         self._fake_snapshot(monkeypatch, lib, manager)
         context = make_context(lib, ["lite-llm/ultra-think"])
         result = asyncio.run(test_plugin.run(context))
-        # the 1M-context catalog models outrank 400k gpt-5.4-nano in think tiers
+        # the 1M-context catalog models outrank 400k gpt-5.4-nano in the ultra-think rubric
         assert result.candidate_models[0] in (
             "pollinations/openai/gpt-6-luna",
             "pollinations/z-ai/glm-5.3",
             "pollinations/deepseek/deepseek-v4-flash",
             "pollinations/community/vendouple/deepseek-v4-pro",
         )
+
+    def test_tier_detection(self, mp):
+        lib, plugin = mp
+        assert plugin.detect_tier(["lite-llm/default"]) == lib.TIER_DEFAULT
+        # COMPLEX (think) uses the default rubric; only REASONING
+        # (ultra-think) keeps the capability-first rubric.
+        assert plugin.detect_tier(["lite-llm/think"]) == lib.TIER_DEFAULT
+        assert plugin.detect_tier(["lite-llm/ultra-think"]) == lib.TIER_THINK
+        assert plugin.detect_tier(["lite-llm/webSearch"]) is None
+
+    def test_plugin_think_pool_picks_default_rubric_winner(self, fresh, env_enabled, monkeypatch):
+        lib, test_plugin, cfg, stats, manager = fresh
+        strong = metric_candidate(lib, "pollinations/openai/healthy", 0.9997, 87885, ctx=400000)
+        untried = favored_candidate(lib, "nvidia_nim/z-ai/glm-5.3", ctx=1048576)
+        untried.benchmark_score, untried.benchmarked = 0.9, True
+
+        async def fake_snapshot(ml=None):
+            return snapshot_with(lib, [strong, untried])
+
+        monkeypatch.setattr(manager, "get_snapshot", fake_snapshot)
+        context = make_context(lib, ["lite-llm/think"])
+        result = asyncio.run(test_plugin.run(context))
+        # Default rubric: known-strong health first, regardless of the
+        # untried model's larger context and higher benchmark. Under the
+        # old capability-first think rubric the untried model would win.
+        assert result.candidate_models == ["pollinations/openai/healthy"]
 
     def test_plugin_excludes_prior_picks_on_retry(self, fresh, env_enabled, monkeypatch):
         lib, test_plugin, cfg, stats, manager = fresh
@@ -2204,8 +2230,8 @@ class TestPersistentAttributionAndDefaultHealth:
             "pollinations/openai/weak",
         ]
 
-    def test_think_benchmark_then_known_health(self, mp):
-        """Think tiers: context, then benchmark, then health blocks.
+    def test_ultra_think_benchmark_then_known_health(self, mp):
+        """Ultra-think: context, then benchmark, then health blocks.
 
         On equal context and equal benchmark, a model known to have good
         health beats an unmeasured one (equally capable, so evidence
