@@ -22,7 +22,7 @@ This Docker image bundles a web-based IDE (VS Code Server), Claude Code, a LiteL
 
 - **LiteLLM Router** - Advanced model routing and provider proxy
   - [LiteLLM Documentation](https://docs.litellm.ai)
-  - Multi-provider support (Pollinations, Ollama Cloud, Google AI Studio, LLM7, NVIDIA NIM, EXA AI web search)
+  - Multi-provider support (NVIDIA NIM, Google AI Studio, EXA AI web search)
   - Content-aware routing (images → vision model, web search → search-capable model, complexity-based tiering)
   - Automatically routes requests to a curated collection of capable free models based on the API keys set (see "LiteLLM Router Configuration")
   - Fallback chains to overcome server side errors, availability, and rate limits
@@ -81,10 +81,7 @@ docker run -d \
   -e SUDO_PASSWORD=password \
   -e DEFAULT_WORKSPACE=/workspace \
   -e PWA_APPNAME=code-server \
-  -e POLLINATION_API_KEY=your-pollinations-api-key \
   -e GOOGLE_API_KEY=your-google-ai-studio-api-key \
-  -e LLM7_API_KEY=your-llm7-api-key \
-  -e OLLAMA_API_KEY=your-ollama-api-key \
   -e NIM_API_KEY=your-nvidia-nim-api-key \
   -e EXA_API_KEY=your-exa-api-key \
   -p 8443:8443 \
@@ -163,11 +160,8 @@ environment:
 ### LiteLLM Router Configuration
 | Variable | Description |
 |----------|-------------|
-| `POLLINATION_API_KEY` | Pollinations API key (used by the primary chat models, if set) |
 | `GOOGLE_API_KEY` | Google AI Studio API key (enables Gemini models for the web-search and vision tiers, if set) |
-| `LLM7_API_KEY` | LLM7 API key (enables LLM7 fallback models, if set) |
-| `OLLAMA_API_KEY` | Ollama Cloud API key (enables Ollama Cloud fallback models, if set) |
-| `NIM_API_KEY` | Nvidia NIM API key (enables Nvidia NIM models, if set) |
+| `NIM_API_KEY` | Nvidia NIM API key (enables the Nvidia NIM models used by every other tier, if set) |
 | `EXA_API_KEY` | EXA AI web search API key (enables EXA AI web search, if set) |
 | `MODEL_PICKER_ENABLED` | Set to `true` to enable model picker mode (dynamic catalog discovery and health-ranked model selection; see "LiteLLM Router") |
 
@@ -176,10 +170,10 @@ Claude Code is pre-configured to route all requests through the LiteLLM proxy at
 | Model Group | Purpose | Routing |
 |-------------|---------|---------|
 | `lite-llm/router` | Main entry point — multi-stage routing pipeline | Auto-routed |
-| `lite-llm/default` | Standard chat and coding tasks | Pollinations primary, with LLM7 / NVIDIA NIM / Ollama Cloud fallbacks |
-| `lite-llm/think` | Complex reasoning and deep analysis | Pollinations primary, with heavier NIM / Ollama Cloud fallbacks |
-| `lite-llm/ultra-think` | Deepest reasoning tier (extended 600s timeouts) | Pollinations primary, with NVIDIA NIM fallbacks |
-| `lite-llm/longContext` | Long-context tasks | Pollinations primary, with NVIDIA NIM (GLM 5.3) fallbacks |
+| `lite-llm/default` | Standard chat and coding tasks | NVIDIA NIM (Nemotron 3.5 Lightning 30B), with NVIDIA NIM fallbacks |
+| `lite-llm/think` | Complex reasoning and deep analysis | NVIDIA NIM (MiniMax M3.1 Flash), with NVIDIA NIM fallbacks |
+| `lite-llm/ultra-think` | Deepest reasoning tier (extended 600s timeouts) | NVIDIA NIM (Nemotron 3 Ultra 550B), with NVIDIA NIM fallbacks |
+| `lite-llm/longContext` | Long-context tasks | NVIDIA NIM (Nemotron 3 Ultra 550B, 1M context), with NVIDIA NIM fallbacks |
 | `lite-llm/webSearch` | Queries requiring web search | Google AI Studio (Gemini 3.5 Flash-Lite) |
 | `lite-llm/image` | Image analysis and vision tasks | Google AI Studio (Gemini 3.5 Flash-Lite) |
 
@@ -620,10 +614,7 @@ services:
       - VSCODE_THEME=Dark Modern # Optional
       - CLAUDE_CODE_PERMISSION_MODE=acceptEdits
       # API Key Configuration
-      - POLLINATION_API_KEY=your-pollinations-api-key # Required to use Pollinations models
       - GOOGLE_API_KEY=your-google-ai-studio-api-key # Required to use Google models
-      - LLM7_API_KEY=your-llm7-api-key # Required to use LLM7 models
-      - OLLAMA_API_KEY=your-ollama-api-key # Required to use Ollama Cloud models
       - NIM_API_KEY=your-nvidia-nim-api-key # Required to use NIM models
       - EXA_API_KEY=your-exa-api-key # Required for EXA AI websearch
       # Plugins Marketplace (optional)
@@ -738,12 +729,12 @@ The routing configuration lives in `/lite-llm/lite-llm-default.yaml`. All config
 
 | Group | Primary Model | Provider | Purpose |
 |-------|---------------|----------|---------|
-| `lite-llm/router` | community/vendouple/laguna-s-2.1:free | Pollinations | **Main entry point** — multi-stage routing pipeline (content → complexity) |
+| `lite-llm/router` | Nemotron 3.5 Lightning 30B | NVIDIA NIM | **Main entry point** — multi-stage routing pipeline (content → complexity) |
 | `lite-llm/complexity` | Auto-router | — | Complexity-based router (SIMPLE/MEDIUM → default, COMPLEX → think, REASONING → ultra-think) |
-| `lite-llm/default` | community/vendouple/laguna-s-2.1:free | Pollinations | Standard chat and coding tasks |
-| `lite-llm/think` | community/vendouple/laguna-s-2.1:free | Pollinations | Complex reasoning and deep analysis |
-| `lite-llm/ultra-think` | community/vendouple/laguna-s-2.1:free | Pollinations | Deepest reasoning tier (extended 600s stream/timeout budget) |
-| `lite-llm/longContext` | community/vendouple/laguna-s-2.1:free | Pollinations | Long-context tasks (NVIDIA NIM GLM 5.3 fallbacks) |
+| `lite-llm/default` | Nemotron 3.5 Lightning 30B | NVIDIA NIM | Standard chat and coding tasks |
+| `lite-llm/think` | MiniMax M3.1 Flash | NVIDIA NIM | Complex reasoning and deep analysis |
+| `lite-llm/ultra-think` | Nemotron 3 Ultra 550B | NVIDIA NIM | Deepest reasoning tier (extended 600s stream/timeout budget) |
+| `lite-llm/longContext` | Nemotron 3 Ultra 550B | NVIDIA NIM | Long-context tasks (1M context window) |
 | `lite-llm/webSearch` | Gemini 3.5 Flash-Lite | Google AI Studio | Queries requiring web search (EXA AI) |
 | `lite-llm/image` | Gemini 3.5 Flash-Lite | Google AI Studio | Image analysis and vision tasks |
 
@@ -751,17 +742,13 @@ The routing configuration lives in `/lite-llm/lite-llm-default.yaml`. All config
 
 | Model Name | Provider | API Key Required |
 |------------|----------|------------------|
-| `community/vendouple/laguna-s-2.1:free` | Pollinations | `POLLINATION_API_KEY` |
-| `nemotron-3-ultra:cloud` | Ollama Cloud | `OLLAMA_API_KEY` |
-| `nemotron-3-super:cloud` | Ollama Cloud | `OLLAMA_API_KEY` |
-| `gemini-3.5-flash-lite` | Google AI Studio | `GOOGLE_API_KEY` |
-| `gemini-3.1-flash-lite` | Google AI Studio | `GOOGLE_API_KEY` |
-| `default` | LLM7 | `LLM7_API_KEY` |
-| `fast` | LLM7 | `LLM7_API_KEY` |
-| `minimax-m2.7` | LLM7 | `LLM7_API_KEY` |
+| `nvidia/nemotron-3.5-lightning-30b-a3b` | NVIDIA NIM | `NIM_API_KEY` |
+| `minimaxai/minimax-m3.1-flash` | NVIDIA NIM | `NIM_API_KEY` |
+| `nvidia/nemotron-3-ultra-550b-a55b` | NVIDIA NIM | `NIM_API_KEY` |
 | `z-ai/glm-5.3` | NVIDIA NIM | `NIM_API_KEY` |
 | `z-ai/glm-5.3-flash` | NVIDIA NIM | `NIM_API_KEY` |
-| `nvidia/nemotron-3-ultra-550b-a55b` | NVIDIA NIM | `NIM_API_KEY` |
+| `gemini-3.5-flash-lite` | Google AI Studio | `GOOGLE_API_KEY` |
+| `gemini-3.1-flash-lite` | Google AI Studio | `GOOGLE_API_KEY` |
 
 Each model group has a fallback chain defined in the YAML config, so if the primary model is unavailable, traffic routes to alternative providers automatically.
 
