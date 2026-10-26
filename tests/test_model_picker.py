@@ -2097,15 +2097,23 @@ class TestConfigDeltas:
         expected_chain = ["nvidia_nim/z-ai/glm-5.3", "nvidia_nim/stepfun-ai/step-5-preview"]
         for group in net_groups:
             assert picker_fb[group] == expected_chain
+        # the default config still carries complexity-path fallbacks (the
+        # beads side of this merge kept them); the picker net above is the
+        # last-resort replacement for the picker tiers, not a copy of them.
+        default_fb = {list(f)[0] for f in default["router_settings"]["fallbacks"]}
+        assert net_groups <= default_fb
         # every picker fallback target resolves through a wildcard or a kept group
         wildcard_prefixes = ("nvidia_nim/", "llm7/", "pollinations/", "gemini-")
         for entry in picker["router_settings"]["fallbacks"]:
             for target in entry[list(entry)[0]]:
                 assert target.startswith(wildcard_prefixes), target
-        # the old static tier-group targets must not reappear as fallbacks
+        # the old static tier-group targets must not reappear as fallbacks:
+        # the union of the pre-merge list and the current default config's
+        # static targets (brought in by the beads side of this merge).
         removed_statics = {"minimax-m2.7", "z-ai/glm-5.3-flash", "nemotron-3-super:cloud",
                            "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3",
-                           "default", "fast"}
+                           "default", "fast", "nvidia/nemotron-3.5-lightning-30b-a3b",
+                           "minimaxai/minimax-m3.1-flash"}
         for entry in picker["router_settings"]["fallbacks"]:
             assert not (set(entry[list(entry)[0]]) & removed_statics)
 
@@ -2125,14 +2133,11 @@ class TestConfigDeltas:
         default, picker = self._configs()
         added_wildcards = {"pollinations/*", "nvidia_nim/*", "llm7/*"}
         removed_statics = {
-            "nemotron-3-super:cloud",
-            "nemotron-3-ultra:cloud",
+            "nvidia/nemotron-3.5-lightning-30b-a3b",
+            "minimaxai/minimax-m3.1-flash",
+            "nvidia/nemotron-3-ultra-550b-a55b",
             "z-ai/glm-5.3",
             "z-ai/glm-5.3-flash",
-            "nvidia/nemotron-3-ultra-550b-a55b",
-            "default",
-            "fast",
-            "minimax-m2.7",
         }
         picker_groups = set(self._group_names(picker))
         assert added_wildcards <= picker_groups
