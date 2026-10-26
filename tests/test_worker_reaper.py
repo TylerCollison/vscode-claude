@@ -307,6 +307,39 @@ def test_reap_swarm_records_up_via_task_state_when_replicas_lag():
         assert W1 in wr.load_reaper_state(wr.state_path(cfg))
 
 
+def test_swarm_service_running_parses_real_current_state_format():
+    # Regression: docker service ps --format "{{.CurrentState}}" renders
+    # the state with its duration attached ("Running 5 minutes ago"), never
+    # the bare word. An exact == "Running" comparison reported every
+    # running task as down, so a transient 0/1 replicas snapshot led the
+    # reaper to `docker service rm` a live worker mid-execution. The
+    # previous double-check tests mocked swarm_service_running itself, so
+    # this parsing was never exercised against real output.
+    cases = [
+        ("Running 5 minutes ago\n", True),
+        ("Running about an hour ago\n", True),
+        ("Running 9 seconds\n", True),
+        ("Shutdown 5 minutes ago\n", False),
+        ("Complete 2 minutes ago\n", False),
+        ("Failed 5 seconds ago\n", False),
+        ("Rejected 5 minutes ago\n", False),
+        ("Starting 3 seconds ago\n", False),
+        ("Preparing 3 seconds ago\n", False),
+    ]
+    for output, expected in cases:
+        with mock.patch.object(wr.du, "run", return_value=(0, output, "")):
+            assert wr.swarm_service_running(W1) is expected, output
+    # A running task among finished history still counts as running.
+    with mock.patch.object(
+        wr.du, "run",
+        return_value=(0, "Shutdown 5 minutes ago\nRunning 2 minutes ago\n", ""),
+    ):
+        assert wr.swarm_service_running(W1) is True
+    # Undeterminable (docker error) stays None, never a removal decision.
+    with mock.patch.object(wr.du, "run", return_value=(1, "", "error")):
+        assert wr.swarm_service_running(W1) is None
+
+
 def test_reap_removal_failure_keeps_entry_for_retry():
     calls = []
     with _StateDir() as cfg:
