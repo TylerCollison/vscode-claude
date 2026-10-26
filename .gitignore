@@ -32,3 +32,7 @@ Thumbs.db
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+
+# Model picker durable stats (MODEL_PICKER_STATS_PATH); never commit learned state
+lite-llm/model_picker_stats.json
+lite-llm/model_picker_stats.json.tmp

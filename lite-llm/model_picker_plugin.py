@@ -13,7 +13,7 @@ The plugin runs AFTER the complexity router's tier classification (it is the
 sanctioned downstream hook: ComplexityRouter._pick_model_for_tier runs
 complexity_router_config.plugins against the chosen tier's pool and routes to
 the surviving value with no pool validation). It narrows the pool to the single
-best free chat model per the tier rubric and may return a dynamic
+best model per the tier rubric and may return a dynamic
 ``pollinations/<catalog-id>`` name served by the ``pollinations/*`` wildcard
 model_list entry, or any existing static group name.
 
@@ -396,16 +396,28 @@ def _resolve_group_name(kwargs: dict) -> str:
     """Model group a success/failure event belongs to.
 
     The router stamps ``deployment_model_name`` (the group) into the request
-    metadata; fall back to the standard model_group/model fields.
+    metadata; fall back to the standard model_group/model fields. A wildcard
+    deployment name (``nvidia_nim/*``) is NOT a model — recording stats
+    under it orphans them, because no candidate is ever named that (this
+    is how NIM failures in production never demoted the picked model).
+    Wildcard names are skipped here so callers fall through to a resolved
+    name, or to "" when none is available.
     """
+    values: list[str] = []
     for holder in (kwargs.get("litellm_metadata"), kwargs.get("metadata"), kwargs.get("litellm_params")):
         if isinstance(holder, dict):
             for key in ("deployment_model_name", "model_group"):
                 value = holder.get(key)
                 if value:
-                    return str(value)
-    group = kwargs.get("model_group") or kwargs.get("model")
-    return str(group) if group else ""
+                    values.append(str(value))
+    for key in ("model_group", "model"):
+        value = kwargs.get(key)
+        if value:
+            values.append(str(value))
+    for value in values:
+        if "*" not in value:
+            return value
+    return ""
 
 
 def _event_ttft_seconds(kwargs: dict, start_time: datetime) -> float | None:
@@ -736,19 +748,48 @@ class ModelPickerStatsLogger(CustomLogger):
         as ``pollinations/community/x`` records its health under
         ``community/x``, so the picker's per-candidate lookups never match.
         Re-prefix from the cached catalog snapshot when unambiguous.
+
+        Two attribution rules that fix production misattribution (#2):
+
+        * The picker's own pick record (PriorPickRegistry, keyed by
+          litellm_call_id when the event carries one) is authoritative and
+          wins over any stamped name — it is the only channel that knows
+          which provider a pick came from.
+        * A bare id shared by several providers (e.g. ``z-ai/glm-5.3``
+          exists under both ``pollinations/`` and ``nvidia_nim/``) is
+          ambiguous and must NOT be guessed into ``pollinations/<id>``.
+          Guessing is how NIM failures demoted the pollinations twin while
+          the NIM model itself stayed "untried". Ambiguous bare ids return
+          "" (unattributable: the caller records nothing rather than
+          polluting a sibling's stats). A wildcard name likewise returns "".
         """
+        if isinstance(kwargs, dict):
+            call_id = ""
+            for holder in (kwargs.get("litellm_metadata"), kwargs.get("metadata")):
+                if isinstance(holder, dict) and holder.get("litellm_call_id"):
+                    call_id = str(holder["litellm_call_id"])
+                    break
+            if not call_id and kwargs.get("litellm_call_id"):
+                call_id = str(kwargs["litellm_call_id"])
+            if call_id:
+                picks = self.prior_picks.get(call_id)
+                if picks:
+                    return picks[-1]
         group = _resolve_group_name(kwargs)
-        if not group or group.startswith("pollinations/"):
-            return group
+        if not group or "*" in group:
+            return ""
         names = self.manager.peek_candidate_names()
         if not names:
             return group
-        candidate = f"pollinations/{group}"
-        # only rewrite when unambiguous: the prefixed name is a tracked
-        # candidate and the bare name is not itself one (static groups like
-        # `z-ai/glm-5.3` record under their own names).
-        if candidate in names and group not in names:
-            return candidate
+        if group in names:
+            return group
+        # Bare / unqualified id: resolve by candidate suffix only when the
+        # match is unique across providers.
+        suffix_matches = [name for name in names if name.endswith("/" + group)]
+        if len(suffix_matches) == 1:
+            return suffix_matches[0]
+        if len(suffix_matches) > 1:
+            return ""
         return group
 
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
@@ -772,6 +813,15 @@ class ModelPickerStatsLogger(CustomLogger):
             return
         exception = kwargs.get("exception")
         self.stats.record_failure(group, model_picker.classify_exception(exception))
+        # A context_length 400 proves the model's real window, which the
+        # catalog overstated (minimax-m3.1-flash: catalog 1,048,576, NIM
+        # 262,144). Learn it so the fit filter never picks this model for
+        # an oversized request again — the lie costs one failure, not
+        # every oversized request until the session is compacted.
+        limit = model_picker.extract_context_limit(exception)
+        if limit is not None:
+            self.stats.record_context_limit(group, limit)
+            logger.info("model_picker: learned context window for %s: %d tokens", group, limit)
 
     # -- soft-failure interception ------------------------------------------
 
@@ -800,7 +850,11 @@ class ModelPickerStatsLogger(CustomLogger):
             if picks:
                 candidates.append(picks[-1])
         # the stream's logging object carries the router-stamped deployment
-        # group (the same channel the stats logger records from)
+        # group (the same channel the stats logger records from) — and,
+        # crucially, the resolved model after wildcard substitution, which
+        # is the name that actually served the request. The wildcard
+        # deployment name itself is never a candidate and is dropped by
+        # _event_group; the resolved model is what fixes NIM attribution.
         call_details = getattr(logging_obj, "model_call_details", None)
         if isinstance(call_details, dict):
             holder = call_details.get("litellm_metadata")
@@ -809,6 +863,15 @@ class ModelPickerStatsLogger(CustomLogger):
                     value = holder.get(key)
                     if value:
                         candidates.append(str(value))
+            for key in ("model", "model_group"):
+                value = call_details.get(key)
+                if isinstance(value, str) and value:
+                    candidates.append(value)
+            params = call_details.get("litellm_params")
+            if isinstance(params, dict):
+                value = params.get("model")
+                if isinstance(value, str) and value:
+                    candidates.append(value)
         model = getattr(response, "model", None)
         if isinstance(model, str) and model:
             candidates.append(model)
@@ -820,6 +883,15 @@ class ModelPickerStatsLogger(CustomLogger):
             reconciled = self._event_group({"litellm_metadata": {"model_group": group}})
             if reconciled and (known is None or reconciled in known):
                 return reconciled
+        # Fallback: the metadata group, already vetted by _event_group
+        # (wildcard and ambiguous bare ids come back as ""). A
+        # fully-qualified name is worth recording even when it is not in
+        # the current snapshot — catalogs churn, and stats outlive
+        # snapshots, so a model that re-enters the catalog later still
+        # carries its failure history. Only wildcard/ambiguous names
+        # (now "") are dropped, because recording under "nvidia_nim/*"
+        # or a sibling provider's twin pollutes a bucket that never ranks
+        # while leaving the failed model "untried".
         return metadata_group
 
     @staticmethod

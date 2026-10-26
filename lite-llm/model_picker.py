@@ -12,13 +12,18 @@ Design (beads workspace-c8o, revised in workspace-4wr):
 
 - Candidates: chat-capable models discovered live from every provider's
   catalog API — the pollinations listing (metric-backed; official and
-  community both eligible, paid_only/down excluded; its pollen pricing
-  discerns free-tier models, which the backend intermittently credit-gates)
-  plus NIM and LLM7 listings. NIM publishes no metrics
-  (metric-less; NIM filters non-chat families by id). LLM7 publishes
-  availability telemetry, per-token pricing and context windows: only its
-  FREE models (zero/absent pricing) are eligible, and those with
-  availability telemetry rank as metric-backed on the published health.
+  community both eligible, paid_only/down excluded, and only FREE models
+  admitted: a nonzero pollen rate drops the model at parse time, exactly
+  like llm7's free-only pool) plus NIM and LLM7 listings. NIM publishes no
+  metrics and no pricing (metric-less; NIM filters non-chat families by
+  id); all NIM models are treated as free, per the operator's assumption.
+  LLM7 publishes availability telemetry, per-token pricing and context
+  windows: only its FREE models (zero/absent pricing) are eligible, and
+  those with availability telemetry rank as metric-backed on the
+  published health. The picker only selects free models: parsers admit
+  only free candidates, and rank_candidates additionally drops any
+  non-free candidate, so a stale snapshot, the fallback snapshot, or a
+  future provider cannot leak a paid model into a pick.
   Each provider's listing is served through a wildcard model_list entry
   (pollinations/*, nvidia_nim/*, llm7/*); a failed provider
   refresh keeps that provider's last-known candidates.
@@ -41,9 +46,23 @@ Design (beads workspace-c8o, revised in workspace-4wr):
   model+account, so one observation is conclusive); or an AuthenticationError
   (dead until a success). Rate-limit failures never fire the hard proof
   (busy-but-working) but do weigh down the tracked score.
-- Rubric: default tier sorts health-first then context; think tiers sort
-  context-first then health (class only breaks ties). Latency-demoted models
-  carry a class floor below all metric-backed candidates in the default tier.
+- Rubric: default tier sorts known-strong health first, then untried
+  models, then known-but-not-strong health, then demoted models; think
+  tiers sort context first, then modelgrep benchmark, then the same
+  health blocks (known-strong, untried, known-weak, demoted), then
+  health. So on equal context and equal benchmark, demonstrated good
+  health beats an unmeasured model; a higher-benchmark untried model
+  still wins over a lower-benchmark known-strong one. Latency-
+  demoted models carry a class floor below all metric-backed candidates in
+  the default tier.
+- Learned health is durable: StatsRegistry can persist its per-group event
+  logs to disk (MODEL_PICKER_STATS_PATH, or /config/.model-picker/ in the
+  code-server container), so a LiteLLM restart does not reset a model to
+  "untried". Per-request attempt exclusion still resets per request — that
+  list is "models already tried in this request" — but a model that failed
+  stays excluded in practice across turns because its persisted stats
+  demote it; a literal forever ban on one transient failure would be wrong
+  for a flaky upstream, so demotion still recovers on successes / decay.
 - Recency guard: a candidate whose most recent observation is a failure within
   the recency window is skipped; one success restores eligibility.
 """
@@ -51,6 +70,7 @@ Design (beads workspace-c8o, revised in workspace-4wr):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import os
@@ -96,6 +116,16 @@ DEFAULT_DEPRIORITIZED_PROVIDERS = "llm7"
 # Score an untried deprioritized-provider group competes with: below healthy
 # metric-backed candidates (published wilson > 0.5), above zero-evidence ones.
 DEFAULT_UNTRIED_PRIOR_SCORE = 0.5
+# Health at or above this is "known strong" for the default tier: well above
+# the neutral 0.5 prior, so a model has to have actually demonstrated good
+# health (published Wilson bound, or tracked success rate) to outrank an
+# untried model there. Untried models still outrank known-but-weak health.
+DEFAULT_STRONG_HEALTH_THRESHOLD = 0.75
+# Default durable stats location in the code-server container, where /config
+# is the persistent volume. Overridden by MODEL_PICKER_STATS_PATH; when
+# neither applies (local dev, tests), StatsRegistry stays in-memory unless
+# a path is passed explicitly.
+DEFAULT_STATS_PATH = "/config/.model-picker/model_picker_stats.json"
 
 CATALOG_FETCH_TIMEOUT_SECONDS = 10.0
 
@@ -133,6 +163,9 @@ class PickerConfig:
             if p.strip()
         )
         self.untried_prior_score = _env_float("MODEL_PICKER_UNTRIED_PRIOR_SCORE", DEFAULT_UNTRIED_PRIOR_SCORE)
+        self.strong_health_threshold = _env_float(
+            "MODEL_PICKER_STRONG_HEALTH_THRESHOLD", DEFAULT_STRONG_HEALTH_THRESHOLD
+        )
         self.modelgrep_url = os.environ.get("MODEL_PICKER_MODELGREP_URL", MODELGREP_MODELS_URL)
         self.benchmark_ttl_seconds = _env_float("MODEL_PICKER_BENCHMARK_TTL_SECONDS", DEFAULT_BENCHMARK_TTL_SECONDS)
         self.benchmarks_enabled = os.environ.get("MODEL_PICKER_BENCHMARKS_OFF", "").strip().lower() not in ("1", "true", "yes", "on")
@@ -160,7 +193,10 @@ class ModelCandidate:
     requests: int = 0  # published sample size
     available: bool = True  # False when the provider's catalog dropped it
     source: str = "prior"  # pollinations_api | prior
-    free: bool = False  # pollinations: no nonzero pollen rate (free tier; credit-gated server-side)
+    free: bool = False  # True when the model is free-tier: pollinations zero
+    # pollen rate, all NIM models (no pricing in NIM's catalog; treated as
+    # free per the operator's assumption), llm7 zero pricing. Unknown or
+    # priced models default to not-free and are never picked.
     benchmark_score: float = 0.0  # 0..1 modelgrep composite (coding, tool calling, SWE)
     benchmarked: bool = False  # False when modelgrep has no scores for the match
     modelgrep_id: str = ""  # matched modelgrep entry ("" when unmatched -> gated out)
@@ -209,8 +245,10 @@ def parse_pollinations_models(payload: dict) -> list[ModelCandidate]:
     Official and community models are both eligible; the catalog's pricing
     metadata discerns free-tier models (no nonzero pollen rate), which the
     pollinations backend currently gates behind account credits — sometimes
-    even spuriously. The ``free`` flag is surfaced for observability; the
-    soft-failure sniffing in the stats logger handles the gating dynamically.
+    even spuriously. Only free-tier models are admitted: a nonzero pollen
+    rate drops the model here, not just flags it — the picker only selects
+    free models, and the soft-failure sniffing in the stats logger handles
+    the credit gating dynamically for the free models that remain.
     """
     out: list[ModelCandidate] = []
     for m in (payload or {}).get("data") or []:
@@ -220,6 +258,8 @@ def parse_pollinations_models(payload: dict) -> list[ModelCandidate]:
         if not model_id:
             continue
         if m.get("paid_only"):
+            continue
+        if not has_free_pricing(m.get("pricing")):
             continue
         output_modalities = m.get("output_modalities") or []
         input_modalities = m.get("input_modalities") or []
@@ -284,7 +324,12 @@ def _bare_catalog_entries(payload: dict | list) -> list[dict]:
 
 
 def parse_nim_models(payload: dict | list) -> list[ModelCandidate]:
-    """Parse NIM's /v1/models into chat-capable metric-less candidates."""
+    """Parse NIM's /v1/models into chat-capable metric-less candidates.
+
+    NIM's catalog carries no pricing, so every admitted model is treated
+    as free (operator assumption): the picker only selects free models,
+    and NIM is the free-tier provider in this deployment.
+    """
     out: list[ModelCandidate] = []
     for m in _bare_catalog_entries(payload):
         model_id = str(m["id"])
@@ -297,6 +342,7 @@ def parse_nim_models(payload: dict | list) -> list[ModelCandidate]:
                 context_length=int(m.get("context_length") or 0),
                 metricless=True,
                 source="prior",
+                free=True,
             )
         )
     return out
@@ -980,12 +1026,123 @@ class GroupStats:
         )
 
 
-class StatsRegistry:
-    """Per-group rolling stats shared by the plugin and the stats logger."""
+def default_stats_path() -> str | None:
+    """Durable stats path for this deployment, or None for in-memory only.
 
-    def __init__(self, half_life_seconds: float = DEFAULT_HALF_LIFE_SECONDS) -> None:
+    Explicit env wins; otherwise the code-server container's persistent
+    /config volume is used when present. Anywhere else (local dev, tests)
+    the default is in-memory, so nothing is written to the repo by accident.
+    """
+    env_path = os.environ.get("MODEL_PICKER_STATS_PATH", "").strip()
+    if env_path:
+        return env_path
+    if os.path.isdir("/config"):
+        return DEFAULT_STATS_PATH
+    return None
+
+
+class StatsRegistry:
+    """Per-group rolling stats shared by the plugin and the stats logger.
+
+    Optionally durable: when ``path`` is set (explicitly, or via
+    ``default_stats_path()`` for the shared registry), every recorded event
+    is flushed to a JSON file atomically (temp file + os.replace), and the
+    file is reloaded on construction. Persistence is fail-soft — a bad path
+    or corrupt file logs a warning and falls back to in-memory stats, never
+    breaking routing. The file holds only per-model aggregate event data
+    (timestamps, success/failure class, TTFT); no prompts, responses, or
+    credentials.
+    """
+
+    def __init__(
+        self,
+        half_life_seconds: float = DEFAULT_HALF_LIFE_SECONDS,
+        path: str | None = None,
+    ) -> None:
         self.half_life_seconds = half_life_seconds
+        self.path = path
         self._groups: dict[str, GroupStats] = {}
+        # Upstream-proven context windows, per group: a catalog window is
+        # a claim, and catalogs lie (minimax-m3.1-flash claims 1,048,576
+        # while NIM serves it at 262,144). A context_length 400 proves the
+        # real limit, so it is recorded here and used as the fit filter's
+        # effective window from then on — the lie costs one failed
+        # request per model, not every oversized request forever.
+        self._learned_windows: dict[str, int] = {}
+        if path:
+            self._load()
+
+    def _load(self) -> None:
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                payload = json.load(f)
+            groups = payload.get("groups") if isinstance(payload, dict) else None
+            if not isinstance(groups, dict):
+                return
+            for name, data in groups.items():
+                if not isinstance(name, str) or not isinstance(data, dict):
+                    continue
+                stats = GroupStats(self.half_life_seconds)
+                events = data.get("events") or []
+                for event in events:
+                    if not isinstance(event, list) or len(event) != 4:
+                        continue
+                    ts, ok, ttft, failure_class = event
+                    if not isinstance(ts, (int, float)) or not isinstance(ok, bool):
+                        continue
+                    stats._events.append(
+                        (
+                            float(ts),
+                            ok,
+                            float(ttft) if isinstance(ttft, (int, float)) else None,
+                            str(failure_class) if isinstance(failure_class, str) else None,
+                        )
+                    )
+                stats.dead = bool(data.get("dead", False))
+                stats.demoted = bool(data.get("demoted", False))
+                last_ts = data.get("last_obs_ts")
+                stats.last_obs_ts = float(last_ts) if isinstance(last_ts, (int, float)) else None
+                stats.last_obs_was_failure = bool(data.get("last_obs_was_failure", False))
+                self._groups[name] = stats
+            learned = payload.get("learned_windows") if isinstance(payload, dict) else None
+            if isinstance(learned, dict):
+                for name, limit in learned.items():
+                    if isinstance(name, str) and isinstance(limit, int) and not isinstance(limit, bool) and limit > 0:
+                        self._learned_windows[name] = limit
+        except FileNotFoundError:
+            pass
+        except Exception as e:  # noqa: BLE001 — corrupt stats must never break routing
+            logger.warning("model_picker: stats file %s unreadable (%s); starting fresh", self.path, e)
+
+    def _save(self) -> None:
+        if not self.path:
+            return
+        try:
+            parent = os.path.dirname(self.path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            payload = {
+                "version": 1,
+                "learned_windows": dict(self._learned_windows),
+                "groups": {
+                    name: {
+                        "events": [
+                            [ts, ok, ttft, failure_class] for ts, ok, ttft, failure_class in stats._events
+                        ],
+                        "dead": stats.dead,
+                        "demoted": stats.demoted,
+                        "last_obs_ts": stats.last_obs_ts,
+                        "last_obs_was_failure": stats.last_obs_was_failure,
+                    }
+                    for name, stats in self._groups.items()
+                },
+            }
+            tmp_path = f"{self.path}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+            os.replace(tmp_path, self.path)
+        except Exception as e:  # noqa: BLE001 — persistence must never break routing
+            logger.warning("model_picker: could not save stats to %s (%s)", self.path, e)
 
     def group(self, name: str) -> GroupStats:
         stats = self._groups.get(name)
@@ -995,10 +1152,42 @@ class StatsRegistry:
         return stats
 
     def record_success(self, name: str, ttft_seconds: float | None = None, now: float | None = None) -> None:
+        if not name:
+            return
         self.group(name).record_success(time.time() if now is None else now, ttft_seconds)
+        self._save()
 
     def record_failure(self, name: str, failure_class: str, now: float | None = None) -> None:
+        if not name:
+            return
         self.group(name).record_failure(time.time() if now is None else now, failure_class)
+        self._save()
+
+    def record_context_limit(self, name: str, limit: int) -> None:
+        """Record an upstream-proven context window for a group.
+
+        The minimum wins: if a provider ever reports a smaller limit,
+        that is the binding constraint for fit filtering.
+        """
+        if not name or not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+            return
+        previous = self._learned_windows.get(name)
+        if previous is None or limit < previous:
+            self._learned_windows[name] = limit
+            self._save()
+
+    def learned_window(self, name: str) -> int | None:
+        return self._learned_windows.get(name)
+
+    def effective_window(self, candidate: "ModelCandidate") -> int:
+        """Window the fit filter trusts: the smaller of catalog and learned.
+
+        A learned window never widens a catalog window — upstream proved
+        the smaller number, and a catalog claim above it is exactly the
+        lie that 400s oversized requests.
+        """
+        windows = [w for w in (candidate.context_length, self._learned_windows.get(candidate.name)) if w]
+        return min(windows) if windows else 0
 
     def derived(self, name: str, now: float | None = None) -> DerivedStats:
         return self.group(name).derived(time.time() if now is None else now)
@@ -1035,21 +1224,103 @@ def tracked_health_score(stats: DerivedStats) -> float:
     return (stats.successes + 1.0) / (stats.successes + stats.failures + 2.0)
 
 
+def extract_context_limit(exc: BaseException | None) -> int | None:
+    """Upstream context limit carried by a context_length failure, if any.
+
+    NVIDIA's 400 for an over-window request reads just "Invalid request"
+    to LiteLLM, so it maps to a generic BadRequestError — but the mapped
+    error keeps the provider body's ``details`` (``{"type":
+    "context_length", "limit": 262144, "actual": 265267}``). Walk the
+    exception chain and any body/response payloads for that shape; fall
+    back to a ``context_length ... limit N`` pattern in the message text.
+    Returns None for unrelated errors and for context errors that carry
+    no usable limit.
+    """
+    import re as _re
+
+    seen: set[int] = set()
+    queue: list[object] = [exc]
+    while queue:
+        current = queue.pop(0)
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        for attr in ("body", "response"):
+            payload = getattr(current, attr, None)
+            limit = _context_limit_from_payload(payload)
+            if limit is not None:
+                return limit
+        text = str(current)
+        match = _re.search(
+            r"context_length[^0-9]{0,40}?limit['\"]?\s*[:=]\s*(\d+)", text, _re.IGNORECASE
+        )
+        if match:
+            try:
+                return int(match.group(1))
+            except ValueError:
+                pass
+        for attr in ("__cause__", "__context__"):
+            nxt = getattr(current, attr, None)
+            if nxt is not None:
+                queue.append(nxt)
+    return None
+
+
+def _context_limit_from_payload(payload: object) -> int | None:
+    import json as _json
+
+    if isinstance(payload, str):
+        try:
+            payload = _json.loads(payload)
+        except Exception:
+            return None
+    if not isinstance(payload, dict):
+        return None
+    details = payload.get("details")
+    if isinstance(details, dict) and details.get("type") in (
+        "context_length",
+        "context_length_exceeded",
+    ):
+        limit = details.get("limit")
+        if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0:
+            return limit
+    return None
+
+
+def _countable_chars(value: object) -> int:
+    """Chars that count toward a prompt-size estimate, recursively.
+
+    Anthropic-shaped messages nest the bulk of a coding session inside
+    tool_result blocks (``{"type": "tool_result", "content": [{"type":
+    "text", "text": ...}]}``) — a counter that only reads top-level
+    ``text`` parts sees ~7k tokens of a 265k-token request and the fit
+    filter passes a model whose real window the request already exceeds.
+    Count every string under a message's content, recursing into nested
+    content lists/dicts (tool results, tool inputs). Image blocks are
+    skipped: their base64 ``source``/``data`` is not prompt text.
+    """
+    if isinstance(value, str):
+        return len(value)
+    if isinstance(value, list):
+        return sum(_countable_chars(item) for item in value)
+    if isinstance(value, dict):
+        if value.get("type") in ("image", "image_url"):
+            return 0
+        return sum(
+            _countable_chars(item)
+            for key, item in value.items()
+            if key not in ("source", "data", "type", "tool_use_id")
+        )
+    return 0
+
+
 def estimate_tokens(messages: list[dict]) -> int:
-    """Cheap chars/4 token estimate over OpenAI-shaped messages."""
+    """Cheap chars/4 token estimate over OpenAI- or Anthropic-shaped messages."""
     total_chars = 0
     for msg in messages or []:
         if not isinstance(msg, dict):
             continue
-        content = msg.get("content")
-        if isinstance(content, str):
-            total_chars += len(content)
-        elif isinstance(content, list):
-            for part in content:
-                if isinstance(part, dict):
-                    text = part.get("text")
-                    if isinstance(text, str):
-                        total_chars += len(text)
+        total_chars += _countable_chars(msg.get("content"))
     return total_chars // 4
 
 
@@ -1164,16 +1435,35 @@ def rank_candidates(
     # "below". Auth and latency proofs remain active.
     best_metric_score = max(metric_scores) if metric_scores else 0.0
 
+    # Context fit: only enforced where the context length is actually known;
+    # metric-less groups with unknown context bypass fit. The window
+    # used is the effective one — the smaller of the catalog claim and
+    # any upstream-proven learned limit — because a catalog claim above
+    # the real window is exactly what 400s an oversized request.
+    # If fit empties the pool, keep all: an oversized request is still
+    # better served by the best-ranked (largest-window, healthiest)
+    # candidate than by passing the tier pool through to the router's
+    # arbitrary selection. This mirrors the recency guard below.
     pool: list[tuple[ModelCandidate, DerivedStats]] = []
+    fit_dropped: list[tuple[ModelCandidate, DerivedStats]] = []
     for c in candidates:
         if not c.available:
             continue
-        # Context fit: only enforced where the context length is actually known;
-        # metric-less groups with unknown context bypass fit (the in-request
-        # retry mechanism backstops a genuine overflow).
-        if c.context_length and estimate > c.context_length:
+        # Free-only: the picker only selects free models. Parsers admit
+        # only free candidates, and this rank-time filter is the backstop
+        # for stale snapshots, the (paid) fallback snapshot, and future
+        # providers — a non-free candidate can never be picked, even if
+        # it somehow reaches the snapshot.
+        if not c.free:
             continue
-        pool.append((c, stats_registry.derived(c.name, now)))
+        entry = (c, stats_registry.derived(c.name, now))
+        window = stats_registry.effective_window(c)
+        if window and estimate > window:
+            fit_dropped.append(entry)
+            continue
+        pool.append(entry)
+    if not pool and fit_dropped:
+        pool = fit_dropped
 
     ranked: list[RankedCandidate] = []
     for c, dstats in pool:
@@ -1209,27 +1499,55 @@ def rank_candidates(
             if d.ttft_n >= cfg.min_obs and d.ttft_mean > cfg.demote_ttft_seconds:
                 latency_demoted_names.add(r.candidate.name)
 
+    # Shared health blocks, used by both tiers: a model that has
+    # *demonstrated* strong health beats an unmeasured one, and an
+    # unmeasured one still beats a model known to be weak; demoted models
+    # sort last. An untried model's nominal health is 1.0, so health alone
+    # cannot implement "known-good beats unknown" — the block must come
+    # before health whenever the two are meant to compete.
+    def block_for(r: RankedCandidate) -> int:
+        if r.rank_class == _CLASS_KNOWN:
+            return 3
+        if r.rank_class == _CLASS_FAVORED:
+            return 1
+        if r.health_score >= cfg.strong_health_threshold:
+            return 0
+        return 2
+
+    def effective_score(r: RankedCandidate) -> float:
+        return r.health_score - (1.0 if r.candidate.name in latency_demoted_names else 0.0)
+
     if tier == TIER_THINK:
-        # Context-first; class breaks context ties (favored > metric > known),
-        # then health, then modelgrep benchmarks.
+        # Context first, then modelgrep benchmark (capability), then the
+        # health blocks, then health, then name. So a higher-benchmark
+        # untried model still beats a lower-benchmark known-strong one
+        # (exploration by capability), but on equal context *and* equal
+        # benchmark, demonstrated good health beats being unmeasured —
+        # equally capable models are decided by evidence, not novelty.
+        # Demoted models still sort last within their context/benchmark.
         ranked.sort(
             key=lambda r: (
                 -r.candidate.context_length,
-                r.rank_class,
-                -r.health_score,
                 -r.candidate.benchmark_score,
+                block_for(r),
+                -effective_score(r),
                 r.candidate.name,
             )
         )
-    else:  # TIER_DEFAULT: favored block first, then health (availability),
-        # then context length, then modelgrep benchmarks — name breaks exact
-        # ties. Latency-demoted models carry the health floor.
+    else:  # TIER_DEFAULT: known-strong health first, then untried models,
+        # then known-but-not-strong health, then demoted models; within a
+        # block, health, then context length, then modelgrep benchmarks —
+        # name breaks exact ties. Latency-demoted models carry the health
+        # floor. This is the availability-over-capability order the default
+        # tier is for. Think tiers use the same health blocks, but only
+        # after context and benchmark, so higher-complexity requests keep
+        # trying unmeasured models with better capability — but only
+        # until they have observations, when they leave FAVORED for
+        # METRIC tracked health.
         def sort_key(r: RankedCandidate):
-            favored = 0 if r.rank_class == _CLASS_FAVORED else 1
-            effective_score = r.health_score - (1.0 if r.candidate.name in latency_demoted_names else 0.0)
             return (
-                favored,
-                -effective_score,
+                block_for(r),
+                -effective_score(r),
                 -r.candidate.context_length,
                 -r.candidate.benchmark_score,
                 r.candidate.name,
@@ -1467,7 +1785,7 @@ def get_shared_manager() -> CatalogManager:
 def get_shared_stats() -> StatsRegistry:
     global _shared_stats
     if _shared_stats is None:
-        _shared_stats = StatsRegistry()
+        _shared_stats = StatsRegistry(path=default_stats_path())
     return _shared_stats
 
 
