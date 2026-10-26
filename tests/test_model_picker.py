@@ -487,11 +487,70 @@ class TestModelgrepEnrichment:
         entry, stage, _ = idx.match("z-ai/glm-5.3")
         assert entry is None  # glm-5.3 must never match glm-5.2
 
-    def test_variant_guard_rejects_variant_drift(self, mp):
+    def test_variant_guard_relaxed_by_substring_fallback(self, mp):
+        # Deliberate consequence of bidirectional substring matching: a
+        # -flash relay now matches a -flash-lite entry when that is the
+        # unique substring hit (candidate segment contained in the entry
+        # segment). The version guard still holds: glm-5.3 never matches
+        # glm-5.2, because neither contains the other.
         lib, _ = mp
         idx = lib.ModelGrepIndex([_mg_entry("z-ai/glm-5.3-flash-lite")])
-        entry, _, _ = idx.match("z-ai/glm-5.3-flash")
-        assert entry is None  # -flash is not -flash-lite
+        entry, stage, _ = idx.match("z-ai/glm-5.3-flash")
+        assert entry["id"] == "z-ai/glm-5.3-flash-lite"
+        assert stage == "substring"
+
+    def test_substring_matches_vendor_prefixed_relay(self, mp):
+        # The reported case: the vercel- prefix broke every strict stage
+        # even though the base model entry exists.
+        lib, _ = mp
+        idx = lib.ModelGrepIndex([_mg_entry("nvidia/nemotron-3.5-lightning", coding_pct=34)])
+        entry, stage, _ = idx.match("YoannDev90/vercel-nemotron-3.5-lightning:free")
+        assert entry["id"] == "nvidia/nemotron-3.5-lightning"
+        assert stage == "substring"
+
+    def test_substring_matches_entry_containing_candidate(self, mp):
+        # Vice versa: the candidate's segment contained in the entry's.
+        lib, _ = mp
+        idx = lib.ModelGrepIndex([_mg_entry("z-ai/glm-5.3-flash")])
+        entry, stage, _ = idx.match("community/user/glm-5.3")
+        assert entry["id"] == "z-ai/glm-5.3-flash"
+        assert stage == "substring"
+
+    def test_substring_ambiguous_rejected(self, mp):
+        # A fragment matching several entries still gates out.
+        lib, _ = mp
+        idx = lib.ModelGrepIndex([_mg_entry("meta/muse-spark-1.3"), _mg_entry("meta/muse-glimmer-30b")])
+        entry, _, _ = idx.match("community/user/muse")
+        assert entry is None
+
+    def test_substring_requires_boundary_and_min_length(self, mp):
+        lib, _ = mp
+        idx = lib.ModelGrepIndex([_mg_entry("acme/sunbeam-x"), _mg_entry("acme/x-d3-pro")])
+        assert idx.match("community/user/beam")[0] is None  # mid-token, not a boundary
+        assert idx.match("community/user/d3")[0] is None  # under the 4-char minimum
+
+    def test_substring_invents_no_entry(self, mp):
+        # The CloudCompile ultra relay still gates out: no ultra entry
+        # exists for any stage, strict or substring, to match.
+        lib, _ = mp
+        idx = lib.ModelGrepIndex([_mg_entry("nvidia/nemotron-3.5-lightning")])
+        entry, _, _ = idx.match("CloudCompile/nvidia-nemotron-3-ultra-550b-a55b:free")
+        assert entry is None
+
+    def test_gate_keeps_substring_matched_relay(self, fresh):
+        lib, _, cfg, stats, manager = fresh
+        manager._modelgrep_entries = [
+            _mg_entry("nvidia/nemotron-3.5-lightning", coding_pct=34, agentic_pct=51, context_length=1000000),
+        ]
+        candidates = [
+            lib.ModelCandidate(name="pollinations/community/YoannDev90/vercel-nemotron-3.5-lightning:free",
+                               provider="pollinations", metricless=False, success_rate=1.0, requests=50,
+                               context_length=1000000, free=True),
+        ]
+        kept = manager._enrich_and_gate(candidates)
+        assert [c.name for c in kept] == ["pollinations/community/YoannDev90/vercel-nemotron-3.5-lightning:free"]
+        assert kept[0].modelgrep_id == "nvidia/nemotron-3.5-lightning"
+        assert kept[0].benchmarked is True
 
     def test_size_sibling_resolution(self, mp):
         lib, _ = mp

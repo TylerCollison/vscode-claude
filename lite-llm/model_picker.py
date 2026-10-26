@@ -488,6 +488,15 @@ def modelgrep_benchmark_score(entry: dict) -> tuple[float, bool]:
 # model, which is worse than dropping it. The pipeline tries alias variants
 # of the candidate's upstream id in decreasing confidence order, then a
 # structured family resolver guarded by version/variant/size equality.
+# Only when every strict stage fails does the bidirectional-substring
+# fallback run: a candidate matches an entry when either normalized bare
+# segment contains the other on token boundaries. That rescues relay names
+# carrying vendor prefixes (vercel-nemotron-3.5-lightning -> the
+# nemotron-3.5-lightning entry), but it is deliberately unique-hit-only
+# (with maker disambiguation) so a generic fragment can never silently
+# claim an ambiguous model — and it relaxes the variant guard by design:
+# a bare -flash relay now matches a -flash-lite entry when that is the
+# unique substring hit.
 _NAME_SEPARATORS = re.compile(r"[\s_:]+")
 _NAME_SEPARATORS_KEEPING_DOTS = re.compile(r"[\s_]+")
 _NAME_COLLAPSE = re.compile(r"-{2,}")
@@ -612,6 +621,23 @@ def _size_rank(size_tokens: tuple[str, ...]) -> float:
     return best
 
 
+def _boundary_contains(haystack: str, needle: str) -> bool:
+    """True when needle occurs in haystack on '-' or '/' boundaries.
+
+    Equality, a leading segment, a trailing segment, or a middle segment
+    all count; a mid-token occurrence (beam in sunbeam) does not.
+    """
+    if not needle or needle not in haystack:
+        return False
+    if haystack == needle:
+        return True
+    if haystack.startswith(needle + "-") or haystack.startswith(needle + "/"):
+        return True
+    if haystack.endswith("-" + needle) or haystack.endswith("/" + needle):
+        return True
+    return ("-" + needle + "-") in haystack or ("/" + needle + "/") in haystack
+
+
 class ModelGrepIndex:
     """Lookup structures over modelgrep entries for candidate matching."""
 
@@ -619,6 +645,7 @@ class ModelGrepIndex:
         self._by_id: dict[str, dict] = {}
         self._by_segment: dict[str, list[dict]] = {}
         self._by_key: dict[tuple, list[dict]] = {}
+        self._entry_forms: list[tuple[dict, str, str]] = []
         for entry in entries:
             mg_id = str(entry.get("id") or "")
             if not mg_id:
@@ -628,6 +655,7 @@ class ModelGrepIndex:
             segment = norm_id.split("/")[-1]
             self._by_segment.setdefault(segment, []).append(entry)
             self._by_key.setdefault(_segment_key(segment), []).append(entry)
+            self._entry_forms.append((entry, segment, norm_id))
 
     def _by_full_id(self, alias: str) -> dict | None:
         return self._by_id.get(alias)
@@ -643,8 +671,11 @@ class ModelGrepIndex:
 
         entry is None when nothing matches within the guarded rules (the
         caller gates the candidate out). Version/variant/size equality is
-        enforced in the family stage, so glm-5.3 can never match glm-5.2 and
-        -flash can never match -flash-lite.
+        enforced in the family stage, so glm-5.3 can never match glm-5.2.
+        The substring fallback runs last, after every strict stage, and
+        matches bidirectionally on token boundaries — so a -flash relay
+        can match a -flash-lite entry when that is the unique substring
+        hit. See the module comment above for the rationale.
         """
         for alias, confidence, stage in _candidate_aliases(upstream_id):
             hit = self._by_full_id(alias) if "/" in alias else None
@@ -667,7 +698,53 @@ class ModelGrepIndex:
                 # deterministic: prefer the largest parameter count
                 best = max(siblings, key=lambda e: _size_rank(_segment_key(str(e.get("id") or "").split("/")[-1])[2]))
                 return best, "family-size-sibling-multi", 0.45
-        return None, ("ambiguous" if len(hits) > 1 else "unmatched"), 0.0
+        # Bidirectional-substring fallback, last: the entry's bare segment
+        # contains the candidate's (vendor-prefixed relays), or the
+        # candidate's contains the entry's, on token boundaries. Unique
+        # hits only — ambiguity still gates out.
+        sub, sub_ambiguous = self._substring_match(upstream_id)
+        if sub is not None:
+            return sub, "substring", 0.4
+        return None, ("ambiguous" if len(hits) > 1 or sub_ambiguous else "unmatched"), 0.0
+
+    def _substring_match(self, upstream_id: str) -> tuple[dict | None, bool]:
+        """Bidirectional token-boundary substring match on the bare segment.
+
+        Variants are the normalized bare segment plus its decoration-stripped
+        forms (stripping after normalization, so colon-suffixed :free relays
+        strip correctly too). A variant matches an entry when either side
+        contains the other on a '-' or '/' boundary, and the shorter side
+        is at least 4 chars, so 1-3 char fragments cannot claim a model.
+        Returns (entry, ambiguous): ambiguous is True when some variant hit
+        several entries that maker disambiguation could not narrow to one.
+        """
+        variants: list[str] = []
+        seen: set[str] = set()
+        bare = _norm_name(upstream_id.split("/")[-1])
+        for variant in _strip_decorations(bare):
+            if variant and variant not in seen and len(variant) >= 4:
+                seen.add(variant)
+                variants.append(variant)
+        ambiguous = False
+        for variant in variants:
+            hits: list[dict] = []
+            for entry, segment, full_id in self._entry_forms:
+                if len(segment) < 4:
+                    continue
+                if (
+                    _boundary_contains(segment, variant)
+                    or _boundary_contains(variant, segment)
+                    or _boundary_contains(full_id, variant)
+                ):
+                    hits.append(entry)
+            if len(hits) == 1:
+                return hits[0], False
+            if len(hits) > 1:
+                narrowed = self._disambiguate_by_maker(hits, upstream_id)
+                if len(narrowed) == 1:
+                    return narrowed[0], False
+                ambiguous = True
+        return None, ambiguous
 
     @staticmethod
     def _maker_of(entry: dict) -> str:
