@@ -145,7 +145,7 @@ def test_dispatch_mr_pr_worker_dispatches_every_time_no_dedup():
     captured = []
 
     def fake_dispatch_local(worker, image, env, port, worker_port,
-                            restart_policy, mr_pr_id, net=None, labels=None):
+                            mr_pr_id, net=None, labels=None):
         captured.append(worker)
         return 0, "created", ""
 

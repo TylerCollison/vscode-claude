@@ -194,14 +194,15 @@ def dispatch_mr_pr_worker(mr_pr_info, cfg, self_info):
         du.log("Swarm manager detected — dispatching service %s for MR/PR #%s (branch %s)"
             % (worker, mr_pr_id, branch))
         rc, out, err = du.dispatch_swarm(worker, self_info["image"], env_vars, port,
-                                          cfg.worker_port, mr_pr_id, net=self_info,
+                                          cfg.worker_port, mr_pr_id,
+                                          net=self_info,
                                           labels=labels)
     else:
         du.log("Local mode — dispatching container %s for MR/PR #%s (branch %s)"
             % (worker, mr_pr_id, branch))
         rc, out, err = du.dispatch_local(worker, self_info["image"], env_vars, port,
-                                          cfg.worker_port, self_info.get("restart_policy", ""),
-                                          mr_pr_id, net=self_info,
+                                          cfg.worker_port, mr_pr_id,
+                                          net=self_info,
                                           labels=labels)
 
     if rc != 0:
