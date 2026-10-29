@@ -46,12 +46,15 @@ Design (beads workspace-c8o, revised in workspace-4wr):
   model+account, so one observation is conclusive); or an AuthenticationError
   (dead until a success). Rate-limit failures never fire the hard proof
   (busy-but-working) but do weigh down the tracked score.
-- Rubric: default tier sorts known-strong health first, then untried
-  models, then known-but-not-strong health, then demoted models; the
-  think (COMPLEX) pool uses this same default rubric. Only ultra-think
-  (REASONING) sorts context first, then modelgrep benchmark, then the
-  same health blocks (known-strong, untried, known-weak, demoted), then
-  health. So on equal context and equal benchmark, demonstrated good
+- Rubric: default tier filters first — hard health floor
+  (MODEL_PICKER_MIN_HEALTH, default 0.3), then the top N% healthiest
+  (MODEL_PICKER_HEALTH_TOP_PERCENT, default 25) — and picks the most
+  capable model (largest context, then modelgrep benchmark) from the
+  survivors, with health breaking ties; demoted models never enter the
+  cohort. The think (COMPLEX) pool uses this same default rubric. Only
+  ultra-think (REASONING) sorts context first, then modelgrep benchmark,
+  then the health blocks (known-strong, untried, known-weak, demoted),
+  then health. So on equal context and equal benchmark, demonstrated good
   health beats an unmeasured model; a higher-benchmark untried model
   still wins over a lower-benchmark known-strong one — but only on
   ultra-think. Latency-
@@ -118,11 +121,23 @@ DEFAULT_DEPRIORITIZED_PROVIDERS = "llm7"
 # Score an untried deprioritized-provider group competes with: below healthy
 # metric-backed candidates (published wilson > 0.5), above zero-evidence ones.
 DEFAULT_UNTRIED_PRIOR_SCORE = 0.5
-# Health at or above this is "known strong" for the default tier: well above
-# the neutral 0.5 prior, so a model has to have actually demonstrated good
-# health (published Wilson bound, or tracked success rate) to outrank an
-# untried model there. Untried models still outrank known-but-weak health.
+# Health at or above this is "known strong" for the ultra-think tier's health
+# blocks: well above the neutral 0.5 prior, so a model has to have actually
+# demonstrated good health (published Wilson bound, or tracked success rate)
+# to outrank an untried model there. Untried models still outrank known-but-weak
+# health. (The default tier no longer uses health blocks; see below.)
 DEFAULT_STRONG_HEALTH_THRESHOLD = 0.75
+# Hard health floor for the default tier: a model below this is too unhealthy
+# to be helpful and is filtered out before the capability pick. Lenient by
+# design — a sanity gate, not a quality bar (the top-percent filter does the
+# quality selection) — and below the 0.5 untried prior, so unmeasured models
+# are not eliminated by the floor.
+DEFAULT_MIN_HEALTH = 0.3
+# Share of the healthiest default-tier candidates that survive to the
+# capability pick: after the floor, only the top N% by health compete, and
+# the most capable among them wins. With a ~30-model pool, 25% leaves about
+# 8 finalists.
+DEFAULT_HEALTH_TOP_PERCENT = 25.0
 # Default durable stats location in the code-server container, where /config
 # is the persistent volume. Overridden by MODEL_PICKER_STATS_PATH; when
 # neither applies (local dev, tests), StatsRegistry stays in-memory unless
@@ -135,9 +150,10 @@ CATALOG_FETCH_TIMEOUT_SECONDS = 10.0
 
 def _env_float(name: str, default: float) -> float:
     try:
-        return float(os.environ[name])
+        value = float(os.environ[name])
     except (KeyError, TypeError, ValueError):
         return default
+    return default if value != value else value  # NaN is never a usable knob
 
 
 def _env_int(name: str, default: int) -> int:
@@ -145,6 +161,17 @@ def _env_int(name: str, default: int) -> int:
         return int(os.environ[name])
     except (KeyError, TypeError, ValueError):
         return default
+
+
+def _clamp(value: object, lo: float, hi: float, default: float) -> float:
+    """Clamp a config value into [lo, hi]; non-numeric or NaN falls back to default."""
+    try:
+        v = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    if v != v:  # NaN
+        return default
+    return min(hi, max(lo, v))
 
 
 class PickerConfig:
@@ -167,6 +194,10 @@ class PickerConfig:
         self.untried_prior_score = _env_float("MODEL_PICKER_UNTRIED_PRIOR_SCORE", DEFAULT_UNTRIED_PRIOR_SCORE)
         self.strong_health_threshold = _env_float(
             "MODEL_PICKER_STRONG_HEALTH_THRESHOLD", DEFAULT_STRONG_HEALTH_THRESHOLD
+        )
+        self.min_health = _env_float("MODEL_PICKER_MIN_HEALTH", DEFAULT_MIN_HEALTH)
+        self.health_top_percent = _env_float(
+            "MODEL_PICKER_HEALTH_TOP_PERCENT", DEFAULT_HEALTH_TOP_PERCENT
         )
         self.modelgrep_url = os.environ.get("MODEL_PICKER_MODELGREP_URL", MODELGREP_MODELS_URL)
         self.benchmark_ttl_seconds = _env_float("MODEL_PICKER_BENCHMARK_TTL_SECONDS", DEFAULT_BENCHMARK_TTL_SECONDS)
@@ -1684,17 +1715,26 @@ def rank_candidates(
                 r.candidate.name,
             )
         )
-    else:  # TIER_DEFAULT: known-strong health first, then untried models,
-        # then known-but-not-strong health, then demoted models; within a
-        # block, health, then context length, then modelgrep benchmarks —
-        # name breaks exact ties. Latency-demoted models carry the health
-        # floor. This is the availability-over-capability order the default
-        # tier is for, and the think pool uses it too. Ultra-think uses the
-        # same health blocks, but only after context and benchmark, so the
-        # highest-complexity requests keep trying unmeasured models with
-        # better capability — but only until they have observations, when
-        # they leave FAVORED for METRIC tracked health.
-        def sort_key(r: RankedCandidate):
+    else:  # TIER_DEFAULT: health-filtered capability pick. The default tier
+        # no longer always picks the healthiest model. It filters first —
+        # hard health floor, then the top N% healthiest — and picks the most
+        # capable model (largest context, then benchmark) from the survivors,
+        # with health breaking ties. The think pool uses this rubric too (it
+        # maps to TIER_DEFAULT). Health here is the effective score (the
+        # latency floor already applied), so slow models are filtered on
+        # their penalized health.
+        #
+        # Demoted (KNOWN-class) models never enter the cohort: demotion is a
+        # proven-bad signal, stronger than the health number, and letting a
+        # demoted-but-capable model jump the queue would regress the
+        # demotion proofs. If every candidate is demoted, the old block order
+        # below is kept as a last resort. If the floor empties the cohort,
+        # the floor is ignored for this request (mirroring the fit-empty
+        # fallback) and the top-% + capability steps still run on the full
+        # cohort. The cohort leads the returned list in capability order
+        # and the rest follow in the old block order, so anything iterating
+        # past the pick still sees every eligible candidate.
+        def default_sort_key(r: RankedCandidate):
             return (
                 block_for(r),
                 -effective_score(r),
@@ -1703,7 +1743,43 @@ def rank_candidates(
                 r.candidate.name,
             )
 
-        ranked.sort(key=sort_key)
+        eligible = [r for r in ranked if r.rank_class != _CLASS_KNOWN]
+        if eligible:
+            floor = _clamp(cfg.min_health, 0.0, 1.0, DEFAULT_MIN_HEALTH)
+            cohort = [r for r in eligible if effective_score(r) >= floor]
+            if not cohort:
+                logger.debug(
+                    "model_picker: health floor %.3f emptied the default pool; ignoring floor for this request",
+                    floor,
+                )
+                cohort = eligible
+            pct = _clamp(cfg.health_top_percent, 1.0, 100.0, DEFAULT_HEALTH_TOP_PERCENT)
+            cohort.sort(
+                key=lambda r: (
+                    -effective_score(r),
+                    -r.candidate.context_length,
+                    -r.candidate.benchmark_score,
+                    r.candidate.name,
+                )
+            )
+            keep = max(1, math.ceil(len(cohort) * pct / 100.0))
+            cohort = cohort[:keep]
+            cohort.sort(
+                key=lambda r: (
+                    -r.candidate.context_length,
+                    -r.candidate.benchmark_score,
+                    -effective_score(r),
+                    r.candidate.name,
+                )
+            )
+            cohort_names = {r.candidate.name for r in cohort}
+            rest = sorted(
+                (r for r in ranked if r.candidate.name not in cohort_names),
+                key=default_sort_key,
+            )
+            ranked = cohort + rest
+        else:
+            ranked.sort(key=default_sort_key)
     return ranked
 
 

@@ -713,6 +713,127 @@ class TestModelgrepEnrichment:
         assert ranked[0].candidate.name == "pollinations/strong-bench"
 
 
+# ---------------------------------------------------------------------------
+# Default tier: health-filtered capability pick
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultHealthFilteredCapabilityPick:
+    """Default (and think) requests filter by health, then pick capability:
+    hard floor (MODEL_PICKER_MIN_HEALTH) -> top N% healthiest
+    (MODEL_PICKER_HEALTH_TOP_PERCENT) -> most capable survivor (context,
+    then benchmark, then health, then name). Demoted models never enter
+    the cohort."""
+
+    def test_capability_wins_within_healthy_cohort(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        cfg.min_health = 0.3
+        cfg.health_top_percent = 50.0
+        healthiest_small = metric_candidate(lib, "pollinations/healthiest", 0.9997, 87885, ctx=100000)
+        healthiest_small.benchmark_score, healthiest_small.benchmarked = 0.2, True
+        capable_mid = metric_candidate(lib, "pollinations/capable", 0.99, 100, ctx=1048576)
+        capable_mid.benchmark_score, capable_mid.benchmarked = 0.8, True
+        weak_small = metric_candidate(lib, "pollinations/weak", 0.9, 100, ctx=100000)
+        weakest = metric_candidate(lib, "pollinations/weakest", 0.6, 100, ctx=100000)
+        ranked = lib.rank_candidates(
+            [healthiest_small, capable_mid, weak_small, weakest], lib.TIER_DEFAULT, stats, cfg
+        )
+        # Top 50% of 4 is 2: the two healthiest compete on capability, so
+        # the larger-context model wins even though it is not healthiest.
+        # The rest follow in the old block order.
+        assert [r.candidate.name for r in ranked] == [
+            "pollinations/capable",
+            "pollinations/healthiest",
+            "pollinations/weak",
+            "pollinations/weakest",
+        ]
+
+    def test_floor_eliminates_unhealthy_capable(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        cfg.min_health = 0.3
+        cfg.health_top_percent = 100.0
+        unhealthy_capable = metric_candidate(lib, "pollinations/unhealthy", 0.3, 100, ctx=1048576)
+        unhealthy_capable.benchmark_score, unhealthy_capable.benchmarked = 0.9, True
+        healthy_small = metric_candidate(lib, "pollinations/healthy", 0.99, 100, ctx=100000)
+        ranked = lib.rank_candidates([unhealthy_capable, healthy_small], lib.TIER_DEFAULT, stats, cfg)
+        assert ranked[0].candidate.name == "pollinations/healthy"
+
+    def test_top_percent_cutoff_excludes_fourth_healthiest(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        cfg.min_health = 0.3
+        cfg.health_top_percent = 30.0
+        models = []
+        for i, rate in enumerate([0.99, 0.98, 0.97, 0.96, 0.95, 0.94, 0.93, 0.92, 0.91, 0.90]):
+            m = metric_candidate(lib, f"pollinations/m{i}", rate, 100, ctx=100000)
+            models.append(m)
+        # The 4th-healthiest is the most capable — but the top 30% of 10
+        # keeps only 3, so it must not win. The 3rd-healthiest has the
+        # largest context among the survivors.
+        models[3].context_length = 1048576
+        models[3].benchmark_score, models[3].benchmarked = 0.9, True
+        models[2].context_length = 300000
+        ranked = lib.rank_candidates(models, lib.TIER_DEFAULT, stats, cfg)
+        assert ranked[0].candidate.name == "pollinations/m2"
+        names = [r.candidate.name for r in ranked]
+        assert names.index("pollinations/m3") >= 3
+
+    def test_floor_empty_falls_back_to_full_cohort(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        cfg.min_health = 0.5  # every model below it: floor must be ignored
+        cfg.health_top_percent = 50.0
+        m1 = metric_candidate(lib, "pollinations/m1", 0.4, 100, ctx=100000)
+        m2 = metric_candidate(lib, "pollinations/m2", 0.35, 100, ctx=1048576)
+        m3 = metric_candidate(lib, "pollinations/m3", 0.3, 100, ctx=100000)
+        m4 = metric_candidate(lib, "pollinations/m4", 0.25, 100, ctx=100000)
+        ranked = lib.rank_candidates([m1, m2, m3, m4], lib.TIER_DEFAULT, stats, cfg)
+        # Floor ignored, top 50% of 4 is 2, capability decides between them.
+        assert ranked[0].candidate.name == "pollinations/m2"
+
+    def test_demoted_model_never_enters_cohort(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        cfg.min_health = 0.3
+        cfg.health_top_percent = 100.0
+        demoted = favored_candidate(lib, "nvidia_nim/demoted/model", ctx=2097152)
+        now = time.time()
+        for _ in range(15):
+            stats.record_failure("nvidia_nim/demoted/model", lib.FAILURE_CLASS_ERROR, now=now)
+        for _ in range(15):
+            stats.record_success("nvidia_nim/demoted/model", None, now=now)
+        # Tracked rate ~0.5 over 30 obs trips the failure proof (hard rate
+        # far below the healthy model's published bound) yet its Wilson
+        # score (~0.33) still clears the 0.3 floor — without the demoted
+        # exclusion it would enter the cohort and win on context.
+        healthy = metric_candidate(lib, "pollinations/healthy", 0.99, 100, ctx=100000)
+        ranked = lib.rank_candidates([demoted, healthy], lib.TIER_DEFAULT, stats, cfg, now=now)
+        assert ranked[0].candidate.name == "pollinations/healthy"
+        assert ranked[-1].candidate.name == "nvidia_nim/demoted/model"
+
+    def test_untried_passes_floor_and_competes_on_capability(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        cfg.min_health = 0.3
+        cfg.health_top_percent = 100.0
+        untried = favored_candidate(lib, "nvidia_nim/z-ai/glm-5.3", ctx=1048576)
+        untried.benchmark_score, untried.benchmarked = 0.9, True
+        healthy = metric_candidate(lib, "pollinations/healthy", 0.99, 100, ctx=100000)
+        ranked = lib.rank_candidates([untried, healthy], lib.TIER_DEFAULT, stats, cfg)
+        # The untried placeholder score (1.0) passes the floor and the
+        # capability pick then favors its larger context.
+        assert ranked[0].candidate.name == "nvidia_nim/z-ai/glm-5.3"
+
+    def test_env_vars_configure_thresholds(self, mp, monkeypatch):
+        lib, _ = mp
+        monkeypatch.setenv("MODEL_PICKER_MIN_HEALTH", "0.6")
+        monkeypatch.setenv("MODEL_PICKER_HEALTH_TOP_PERCENT", "40")
+        cfg = lib.PickerConfig()
+        assert cfg.min_health == 0.6
+        assert cfg.health_top_percent == 40.0
+        monkeypatch.setenv("MODEL_PICKER_MIN_HEALTH", "not-a-number")
+        monkeypatch.setenv("MODEL_PICKER_HEALTH_TOP_PERCENT", "nan")
+        cfg = lib.PickerConfig()
+        assert cfg.min_health == lib.DEFAULT_MIN_HEALTH
+        assert cfg.health_top_percent == lib.DEFAULT_HEALTH_TOP_PERCENT
+
+
 def lib_modelgrep_index(entries):
     lib = sys.modules["model_picker"]
     return lib.ModelGrepIndex(entries)
@@ -1689,8 +1810,9 @@ class TestAnthropicRetryEntry:
 
 
 class TestRubricRanking:
-    def test_default_tier_strong_first_then_untried_then_health(self, fresh):
+    def test_default_tier_health_filtered_capability_pick(self, fresh):
         lib, _, cfg, stats, _ = fresh
+        cfg.health_top_percent = 100.0
         favored_big = favored_candidate(lib, "z-ai/glm-5.3", ctx=1048576)
         favored_small = favored_candidate(lib, "nvidia/nemotron-3-super", provider="nvidia_nim", ctx=262144)
         strong_metric = metric_candidate(lib, "pollinations/openai/gpt-5.4-nano", 0.9997, 87885)
@@ -1699,16 +1821,17 @@ class TestRubricRanking:
             [weak_metric, favored_small, strong_metric, favored_big], lib.TIER_DEFAULT, stats, cfg
         )
         order = [r.candidate.name for r in ranked]
-        # Default tier now prefers known-strong health over untried models:
-        # both metric models clear the strong threshold (Wilson ~1.0 and
-        # ~0.88), so they rank by health first, then the untried models by
-        # context. (Think tiers still favor untried first; see
-        # test_think_tier_context_first_with_class_ties.)
+        # Default tier no longer ranks known-strong health first: with the
+        # whole pool in the cohort (top 100%), capability decides — the
+        # untried models win on context, then the metric models by health.
+        # (This replaces the old strong-first-then-untried-then-health order;
+        # see TestDefaultHealthFilteredCapabilityPick for the floor/top-%
+        # steps.)
         assert order == [
-            "pollinations/openai/gpt-5.4-nano",
-            "pollinations/openai/gpt-oss-20b",
             "z-ai/glm-5.3",
             "nvidia/nemotron-3-super",
+            "pollinations/openai/gpt-5.4-nano",
+            "pollinations/openai/gpt-oss-20b",
         ]
 
     def test_llm7_untried_below_healthy_metric_backed(self, fresh):
@@ -1771,15 +1894,17 @@ class TestRubricRanking:
         ranked2 = lib.rank_candidates([favored, strong_metric], lib.TIER_DEFAULT, stats, cfg, now=after_guard)
         assert ranked2[0].candidate.name == "pollinations/openai/gpt-5.4-nano"
         # once the failure window ages out entirely, the group is promoted back
-        # to untried (no longer KNOWN) — but the default tier still prefers
-        # the known-strong metric model over an untried one, so promotion
-        # restores eligibility, not the top spot.
+        # to untried (no longer KNOWN) — and under the health-filtered
+        # rubric its 1.0 placeholder tops the health sort, so in this
+        # two-model pool the top-25% cohort is just the promoted model and
+        # it retakes the top spot. Promotion restores eligibility *and*,
+        # via the placeholder, cohort leadership in a small pool.
         ranked3 = lib.rank_candidates(
             [favored, strong_metric], lib.TIER_DEFAULT, stats, cfg, now=now + 5 * cfg.half_life_seconds
         )
         assert [r.candidate.name for r in ranked3] == [
-            "pollinations/openai/gpt-5.4-nano",
             "z-ai/glm-5.3",
+            "pollinations/openai/gpt-5.4-nano",
         ]
 
     def test_perfect_small_sample_ranks_on_tracked_evidence(self, fresh):
@@ -2200,19 +2325,23 @@ class TestPlugin:
 
     def test_plugin_think_pool_picks_default_rubric_winner(self, fresh, env_enabled, monkeypatch):
         lib, test_plugin, cfg, stats, manager = fresh
-        strong = metric_candidate(lib, "pollinations/openai/healthy", 0.9997, 87885, ctx=400000)
-        untried = favored_candidate(lib, "nvidia_nim/z-ai/glm-5.3", ctx=1048576)
-        untried.benchmark_score, untried.benchmarked = 0.9, True
+        cfg.min_health = 0.3
+        cfg.health_top_percent = 100.0
+        healthy = metric_candidate(lib, "pollinations/openai/healthy", 0.9997, 87885, ctx=400000)
+        unhealthy_capable = metric_candidate(lib, "pollinations/openai/unhealthy", 0.3, 100, ctx=1048576)
+        unhealthy_capable.benchmark_score, unhealthy_capable.benchmarked = 0.9, True
 
         async def fake_snapshot(ml=None):
-            return snapshot_with(lib, [strong, untried])
+            return snapshot_with(lib, [healthy, unhealthy_capable])
 
         monkeypatch.setattr(manager, "get_snapshot", fake_snapshot)
         context = make_context(lib, ["lite-llm/think"])
         result = asyncio.run(test_plugin.run(context))
-        # Default rubric: known-strong health first, regardless of the
-        # untried model's larger context and higher benchmark. Under the
-        # old capability-first think rubric the untried model would win.
+        # Think uses the default rubric, not ultra-think's capability-first
+        # one: the below-floor capable model is filtered out even though
+        # it has the larger context and higher benchmark, so the healthy
+        # model wins. (Under the old default rubric this same setup proved
+        # think used health blocks; the new rubric proves it via the floor.)
         assert result.candidate_models == ["pollinations/openai/healthy"]
 
     def test_plugin_excludes_prior_picks_on_retry(self, fresh, env_enabled, monkeypatch):
@@ -2589,15 +2718,20 @@ class TestConfigDeltas:
 
 
 class TestPersistentAttributionAndDefaultHealth:
-    def test_default_favors_known_strong_then_untried_then_known_weak(self, mp):
-        """Default tier: demonstrated health > untried > known-weak.
+    def test_default_health_floor_then_capability(self, mp):
+        """Default tier: floor, then capability among the survivors.
 
-        Previously the untried (FAVORED) block ranked first, so an
-        unmeasured NIM model beat a published-healthy pollinations model
-        on every request — the log's GLM-5.3 loop.
+        The old order (demonstrated health > untried > known-weak) is
+        superseded: the weak model is floored out, and among the
+        floor-passing models the untried one wins on benchmark at equal
+        context. The old GLM-5.3 loop concern (untried beating healthy on
+        every request) is now bounded by the floor and the top-percent
+        cohort — and once the untried model has observations it competes
+        on tracked evidence, not on being new.
         """
         lib, _plugin = mp
         cfg = lib.PickerConfig()
+        cfg.health_top_percent = 100.0
         stats = lib.StatsRegistry()
         untried = favored_candidate(lib, "nvidia_nim/z-ai/glm-5.3", ctx=100000)
         untried.benchmark_score = 0.66
@@ -2607,8 +2741,8 @@ class TestPersistentAttributionAndDefaultHealth:
             [untried, strong, weak], lib.TIER_DEFAULT, stats, cfg, now=time.time()
         )
         assert [r.candidate.name for r in ranked] == [
-            "pollinations/openai/healthy",
             "nvidia_nim/z-ai/glm-5.3",
+            "pollinations/openai/healthy",
             "pollinations/openai/weak",
         ]
 

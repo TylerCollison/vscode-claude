@@ -762,12 +762,12 @@ Each model group has a fallback chain defined in the YAML config, so if the prim
 
 | Tier (complexity) | Ranking order |
 |-------|---------------|
-| `lite-llm/default` (SIMPLE/MEDIUM) and `lite-llm/think` (COMPLEX) | Known-strong health first (health ≥ 0.75, tunable via `MODEL_PICKER_STRONG_HEALTH_THRESHOLD`), then untried models, then known-weak health, then demoted models; within each group, health, then context window, then modelgrep benchmark, then name. Availability over capability: a proven model beats a larger or higher-benchmark untested one. |
+| `lite-llm/default` (SIMPLE/MEDIUM) and `lite-llm/think` (COMPLEX) | Health-filtered capability pick: first drop models below a hard health floor (`MODEL_PICKER_MIN_HEALTH`, default 0.3), then keep only the top healthiest share (`MODEL_PICKER_HEALTH_TOP_PERCENT`, default 25), then pick the most capable survivor — largest context window, then modelgrep benchmark, then health, then name. Demoted models never enter the cohort; if the floor empties the pool it is ignored for that request. Capability among the healthy: a larger or higher-benchmark model wins once it clears the health bar. |
 | `lite-llm/ultra-think` (REASONING) | Largest context window first, then modelgrep benchmark, then the same health groups (known-strong, untried, known-weak, demoted), then health, then name. Capability first: the most capable model gets tried first — but on equal context and equal benchmark, demonstrated good health beats an unmeasured model. |
 
 Notes on the ranking:
 
-- An untried model logs `score=1.000` — that is the "unmeasured" placeholder, not measured health. Its first observation moves it to tracked health, where it then competes on evidence.
+- An untried model logs `score=1.000` — that is the "unmeasured" placeholder, not measured health. Its first observation moves it to tracked health, where it then competes on evidence. Because the placeholder tops the health sort, untried models pass the default floor and can fill the top-percent cohort while many models are still unmeasured.
 - Demotion is re-derived from a rolling window, so recovery is automatic: a single soft failure (a provider error inside a 200 response, e.g. an out-of-credits account) demotes immediately, while hard-failure rate and slow time-to-first-token demote after enough observations.
 - If a pick fails mid-request, the picker retries the next-ranked candidate in-request. Non-retryable errors (notably a 400 context overflow, which LiteLLM does not retry) fall through to the tier's last-resort fallback net instead of ending the session.
 - `lite-llm/webSearch` and `lite-llm/image` are not complexity tiers and keep their static Gemini fallbacks; the picker does not rank them.

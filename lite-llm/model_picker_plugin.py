@@ -261,8 +261,9 @@ _fallback_model_info_for_unmapped_models()
 
 _TIER_BY_POOL = {
     frozenset({"lite-llm/default"}): model_picker.TIER_DEFAULT,
-    # COMPLEX (think) uses the default rubric: known-strong health first.
-    # Only REASONING (ultra-think) keeps the capability-first rubric.
+    # COMPLEX (think) uses the default rubric: health floor, then top-N%
+    # healthiest, then most capable. Only REASONING (ultra-think) keeps
+    # the capability-first rubric.
     frozenset({"lite-llm/think"}): model_picker.TIER_DEFAULT,
     frozenset({"lite-llm/ultra-think"}): model_picker.TIER_THINK,
 }
