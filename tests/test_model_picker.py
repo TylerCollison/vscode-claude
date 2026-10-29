@@ -1441,6 +1441,307 @@ class TestThinkingOnlyRetry:
 
 
 # ---------------------------------------------------------------------------
+# Schema validation + pseudo tool calls (malformed output never stands)
+# ---------------------------------------------------------------------------
+
+
+class TestSchemaValidation:
+    """Tool_use blocks are validated (id, name, object input, declared-tool
+    name, input_schema) and whole-text pseudo tool calls are treated as
+    failures — all through the retry-with-exclusion walk at ERROR, so no
+    manual 'continue' is needed to get a turn back on track."""
+
+    BASH_SCHEMA = {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}
+
+    @staticmethod
+    def _tools():
+        return [{"name": "Bash", "description": "d", "input_schema": TestSchemaValidation.BASH_SCHEMA}]
+
+    @staticmethod
+    def _tool_block(tool_id="toolu_1", name="Bash", input_value=None):
+        return {"type": "tool_use", "id": tool_id, "name": name, "input": {} if input_value is None else input_value}
+
+    @staticmethod
+    def _anthropic_response(blocks):
+        return {"id": "msg_test", "type": "message", "role": "assistant", "model": "m", "content": blocks, "stop_reason": "end_turn"}
+
+    def test_tool_use_wire_validation(self, mp):
+        lib, plugin = mp
+        tools = {"Bash": self.BASH_SCHEMA}
+        assert plugin._validate_tool_use("toolu_1", "Bash", {"command": "ls"}, tools) is None
+        assert plugin._validate_tool_use("", "Bash", {"command": "ls"}, tools) is not None
+        assert plugin._validate_tool_use("toolu_1", "", {"command": "ls"}, tools) is not None
+        assert plugin._validate_tool_use("toolu_1", "Bash", "ls", tools) is not None
+        assert plugin._validate_tool_use("toolu_1", "Bash", None, tools) is not None
+        assert plugin._validate_tool_use("toolu_1", "Nope", {"command": "ls"}, tools) is not None
+        assert plugin._validate_tool_use("toolu_1", "Nope", {"command": "ls"}, None) is None  # fail-open: no tools seen
+        assert plugin._validate_tool_use("toolu_1", "Bash", {}, tools) is not None  # missing required command
+        assert plugin._validate_tool_use("toolu_1", "Bash", {"command": 5}, tools) is not None  # wrong type
+        assert plugin._validate_tool_use("toolu_1", "Bash", {"anything": True}, {"Bash": None}) is None  # no schema: skip
+        assert plugin._validate_tool_use("toolu_1", "Bash", {"command": "ls"}, {"Bash": "not-a-schema"}) is None  # bad schema: fail open
+
+    def test_response_schema_violation_anthropic(self, mp):
+        lib, plugin = mp
+        tools = {"Bash": self.BASH_SCHEMA}
+        assert plugin._response_schema_violation(
+            self._anthropic_response([self._tool_block(input_value={"command": "ls"})]), tools
+        ) is None
+        assert plugin._response_schema_violation(self._anthropic_response([self._tool_block(tool_id="")]), tools) is not None
+        assert plugin._response_schema_violation(self._anthropic_response([self._tool_block(input_value="ls")]), tools) is not None
+        assert plugin._response_schema_violation(self._anthropic_response([self._tool_block(name="Nope")]), tools) is not None
+        assert plugin._response_schema_violation(self._anthropic_response([{"type": "text", "text": "hi"}]), tools) is None
+        assert plugin._response_schema_violation(self._anthropic_response([{"type": "thinking", "thinking": "plan"}]), tools) is None
+        assert plugin._response_schema_violation(self._anthropic_response([{"type": "text", "text": 5}]), tools) is not None
+
+    def test_response_schema_violation_openai(self, mp):
+        lib, plugin = mp
+        tools = {"Bash": self.BASH_SCHEMA}
+
+        def resp(tool_calls):
+            return {"choices": [{"message": {"role": "assistant", "content": None, "tool_calls": tool_calls}, "finish_reason": "tool_calls"}]}
+
+        good = [{"id": "call_1", "type": "function", "function": {"name": "Bash", "arguments": '{"command": "ls"}'}}]
+        assert plugin._response_schema_violation(resp(good), tools) is None
+        bad_json = [{"id": "call_1", "type": "function", "function": {"name": "Bash", "arguments": "{oops"}}]
+        assert plugin._response_schema_violation(resp(bad_json), tools) is not None
+        not_obj = [{"id": "call_1", "type": "function", "function": {"name": "Bash", "arguments": "[1, 2]"}}]
+        assert plugin._response_schema_violation(resp(not_obj), tools) is not None
+        unknown = [{"id": "call_1", "type": "function", "function": {"name": "Nope", "arguments": "{}"}}]
+        assert plugin._response_schema_violation(resp(unknown), tools) is not None
+        assert plugin._response_schema_violation(resp([]), tools) is None
+
+    def test_pseudo_tool_call_detection(self, mp):
+        lib, plugin = mp
+        call = '<token>mcp__happier__change_title</token>{"title": "workspace-ehp"}'
+        assert plugin._text_is_pseudo_tool_call(call)
+        assert plugin._text_is_pseudo_tool_call("  \n" + call + "\n")
+        assert not plugin._text_is_pseudo_tool_call(call + " Let me explain.")
+        assert not plugin._text_is_pseudo_tool_call("Just a normal reply.")
+        assert not plugin._text_is_pseudo_tool_call('{"title": "workspace-ehp"}')
+        assert not plugin._text_is_pseudo_tool_call("<token>mcp__happier__change_title</token>")
+        assert plugin._response_is_pseudo_tool_call(self._anthropic_response([{"type": "text", "text": call}]))
+        assert plugin._response_is_pseudo_tool_call(self._anthropic_response([{"type": "thinking", "thinking": "plan"}, {"type": "text", "text": call}]))
+        assert not plugin._response_is_pseudo_tool_call(self._anthropic_response([{"type": "text", "text": call}, self._tool_block()]))
+        assert plugin._response_is_pseudo_tool_call(
+            {"choices": [{"message": {"role": "assistant", "content": call, "tool_calls": None}, "finish_reason": "stop"}]}
+        )
+
+    def test_extract_request_tools(self, mp):
+        lib, plugin = mp
+        assert plugin._extract_request_tools({"tools": self._tools()}) == {"Bash": self.BASH_SCHEMA}
+        assert plugin._extract_request_tools(
+            {"tools": [{"type": "function", "function": {"name": "Bash", "parameters": self.BASH_SCHEMA}}]}
+        ) == {"Bash": self.BASH_SCHEMA}
+        assert plugin._extract_request_tools({"messages": []}) is None
+        assert plugin._extract_request_tools({"tools": []}) == {}
+
+    def _request_data(self):
+        return {
+            "model": "lite-llm/complexity",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": self._tools(),
+            "litellm_metadata": {"model_group": "pollinations/community/x"},
+        }
+
+    def test_streaming_valid_tool_block_passes_through(self, mp, monkeypatch):
+        lib, plugin = mp
+        logger = TestSoftFailureRetry._make_logger(lib, plugin)
+        calls = TestSoftFailureRetry._fake_router_acompletion(monkeypatch, logger, [])
+        events = [
+            {"type": "message_start", "message": {"type": "message", "role": "assistant", "model": "m"}},
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {}}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": '{"command": "ls"}'}},
+            {"type": "content_block_stop", "index": 0},
+            {"type": "message_delta", "delta": {"stop_reason": "tool_use", "stop_sequence": None}, "usage": {"output_tokens": 5}},
+            {"type": "message_stop"},
+        ]
+
+        async def stream():
+            for e in events:
+                yield e
+
+        async def run():
+            out = []
+            async for chunk in logger.async_post_call_streaming_iterator_hook(None, stream(), self._request_data()):
+                out.append(chunk)
+            return out
+
+        assert asyncio.run(run()) == events  # held, validated, released in order
+        assert calls["n"] == 0
+
+    def test_streaming_invalid_tool_block_dropped_and_retried(self, mp, monkeypatch):
+        lib, plugin = mp
+        logger = TestSoftFailureRetry._make_logger(lib, plugin)
+        good = litellm.ModelResponse(choices=[{"message": {"role": "assistant", "content": "Recovered"}, "finish_reason": "stop"}])
+        calls = TestSoftFailureRetry._fake_router_acompletion(monkeypatch, logger, [good])
+        events = [
+            {"type": "message_start", "message": {"type": "message", "role": "assistant", "model": "m"}},
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "partial "}},
+            {"type": "content_block_stop", "index": 0},
+            {"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {}}},
+            {"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": '{"command": 5}'}},
+            {"type": "content_block_stop", "index": 1},
+        ]
+        request_data = self._request_data()
+
+        async def stream():
+            for e in events:
+                yield e
+
+        async def run():
+            out = []
+            async for chunk in logger.async_post_call_streaming_iterator_hook(None, stream(), request_data):
+                out.append(chunk)
+            return out
+
+        out = asyncio.run(run())
+        assert calls["n"] == 1
+        assert "pollinations/community/x" in request_data["litellm_metadata"]["model_picker_exclude"]
+        flat = "".join(plugin._event_text(c) for c in out)
+        assert flat.startswith("partial ")  # delivered text kept
+        assert "Recovered" in flat  # retry tail appended
+        streamed = [e for c in out for e in plugin._chunk_events(c)]
+        assert not any(
+            e.get("type") == "content_block_start" and (e.get("content_block") or {}).get("type") == "tool_use" for e in streamed
+        )  # the invalid block never reached the client
+        assert [e.get("type") for e in streamed][-2:] == ["message_delta", "message_stop"]
+        derived = logger.stats.derived("pollinations/community/x")
+        assert derived.n_obs >= 1
+        assert derived.soft_failures == 0  # ERROR, not SOFT
+
+    def test_streaming_incomplete_tool_block_retried(self, mp, monkeypatch):
+        lib, plugin = mp
+        logger = TestSoftFailureRetry._make_logger(lib, plugin)
+        good = litellm.ModelResponse(choices=[{"message": {"role": "assistant", "content": "Recovered"}, "finish_reason": "stop"}])
+        calls = TestSoftFailureRetry._fake_router_acompletion(monkeypatch, logger, [good])
+        events = [
+            {"type": "message_start", "message": {"type": "message", "role": "assistant", "model": "m"}},
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {}}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": '{"command": "ls"}'}},
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None}, "usage": {"output_tokens": 5}},
+            {"type": "message_stop"},
+        ]
+        request_data = self._request_data()
+
+        async def stream():
+            for e in events:
+                yield e
+
+        async def run():
+            out = []
+            async for chunk in logger.async_post_call_streaming_iterator_hook(None, stream(), request_data):
+                out.append(chunk)
+            return out
+
+        out = asyncio.run(run())
+        assert calls["n"] == 1  # unclosed block is a violation, not a pass-through
+        assert "Recovered" in "".join(plugin._event_text(c) for c in out)
+        streamed = [e for c in out for e in plugin._chunk_events(c)]
+        assert not any(
+            e.get("type") == "content_block_start" and (e.get("content_block") or {}).get("type") == "tool_use" for e in streamed
+        )
+
+    def test_streaming_pseudo_call_retried(self, mp, monkeypatch):
+        lib, plugin = mp
+        logger = TestSoftFailureRetry._make_logger(lib, plugin)
+        good = litellm.ModelResponse(choices=[{"message": {"role": "assistant", "content": "Recovered"}, "finish_reason": "stop"}])
+        calls = TestSoftFailureRetry._fake_router_acompletion(monkeypatch, logger, [good])
+        call = '<token>mcp__happier__change_title</token>{"title": "workspace-ehp"}'
+        events = [
+            {"type": "message_start", "message": {"type": "message", "role": "assistant", "model": "m"}},
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "plan"}},
+            {"type": "content_block_stop", "index": 0},
+            {"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}},
+            {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": call}},
+            {"type": "content_block_stop", "index": 1},
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None}, "usage": {"output_tokens": 5}},
+            {"type": "message_stop"},
+        ]
+        request_data = self._request_data()
+
+        async def stream():
+            for e in events:
+                yield e
+
+        async def run():
+            out = []
+            async for chunk in logger.async_post_call_streaming_iterator_hook(None, stream(), request_data):
+                out.append(chunk)
+            return out
+
+        out = asyncio.run(run())
+        assert calls["n"] == 1
+        assert "Recovered" in "".join(plugin._event_text(c) for c in out)
+
+    def test_non_streaming_schema_violation_swapped(self, mp, monkeypatch):
+        lib, plugin = mp
+        logger = TestSoftFailureRetry._make_logger(lib, plugin)
+        good = litellm.ModelResponse(choices=[{"message": {"role": "assistant", "content": "OK"}, "finish_reason": "stop"}])
+        calls = TestSoftFailureRetry._fake_router_acompletion(monkeypatch, logger, [good])
+        data = self._request_data()
+        bad = self._anthropic_response([self._tool_block(input_value="ls")])
+        result = asyncio.run(logger.async_post_call_success_hook(None, data, bad))
+        assert calls["n"] == 1
+        assert "pollinations/community/x" in data["litellm_metadata"]["model_picker_exclude"]
+        assert result["content"] == [{"type": "text", "text": "OK"}]
+        valid = self._anthropic_response([self._tool_block(input_value={"command": "ls"})])
+        assert asyncio.run(logger.async_post_call_success_hook(None, data, valid)) is valid
+
+    def test_non_streaming_pseudo_call_swapped(self, mp, monkeypatch):
+        lib, plugin = mp
+        logger = TestSoftFailureRetry._make_logger(lib, plugin)
+        good = litellm.ModelResponse(choices=[{"message": {"role": "assistant", "content": "OK"}, "finish_reason": "stop"}])
+        calls = TestSoftFailureRetry._fake_router_acompletion(monkeypatch, logger, [good])
+        data = self._request_data()
+        call = '<token>mcp__happier__change_title</token>{"title": "workspace-ehp"}'
+        result = asyncio.run(
+            logger.async_post_call_success_hook(None, data, self._anthropic_response([{"type": "text", "text": call}]))
+        )
+        assert calls["n"] == 1
+        assert result["content"] == [{"type": "text", "text": "OK"}]
+
+    def test_walk_continues_past_schema_violation(self, mp, monkeypatch):
+        lib, plugin = mp
+        logger = TestSoftFailureRetry._make_logger(lib, plugin)
+        bad = {"id": "msg_bad", "type": "message", "role": "assistant", "model": "pollinations/community/y",
+               "content": [self._tool_block(name="Nope")], "stop_reason": "tool_use"}
+        good = litellm.ModelResponse(choices=[{"message": {"role": "assistant", "content": "Recovered"}, "finish_reason": "stop"}])
+        calls = TestSoftFailureRetry._fake_router_acompletion(monkeypatch, logger, [bad, good])
+        request_data = self._request_data()
+        result, summary = asyncio.run(
+            logger._retry_until_clean(
+                request_data,
+                "pollinations/community/x",
+                first_failure_class=lib.FAILURE_CLASS_ERROR,
+                first_failure_label="schema violation",
+            )
+        )
+        assert result is good
+        assert calls["n"] == 2
+        excluded = request_data["litellm_metadata"]["model_picker_exclude"]
+        assert "pollinations/community/x" in excluded
+        assert "pollinations/community/y" in excluded
+        assert logger.stats.derived("pollinations/community/y").soft_failures == 0
+
+    def test_success_logger_records_schema_violation_as_error(self, mp):
+        lib, plugin = mp
+        logger = TestSoftFailureRetry._make_logger(lib, plugin)
+        kwargs = {"litellm_metadata": {"model_group": "pollinations/community/x"}}
+        now = datetime.now()
+        asyncio.run(
+            logger.async_log_success_event(
+                kwargs, self._anthropic_response([self._tool_block(tool_id="")]), now, now
+            )
+        )
+        derived = logger.stats.derived("pollinations/community/x")
+        assert derived.n_obs == 1
+        assert derived.soft_failures == 0
+        assert derived.last_obs_was_failure is True
+
+
+# ---------------------------------------------------------------------------
 # Anthropically-shaped retries (the /v1/messages walk fix, litellm5.log)
 # ---------------------------------------------------------------------------
 
