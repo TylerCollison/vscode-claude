@@ -49,8 +49,8 @@ Design (beads workspace-c8o, revised in workspace-4wr):
 - Rubric: default tier filters first — hard health floor
   (MODEL_PICKER_MIN_HEALTH, default 0.3), then the top N% healthiest
   (MODEL_PICKER_HEALTH_TOP_PERCENT, default 25) — and picks the most
-  capable model (largest context, then modelgrep benchmark) from the
-  survivors, with health breaking ties; demoted models never enter the
+  capable model (highest modelgrep benchmark, then largest context) from
+  the survivors, with health breaking ties; demoted models never enter the
   cohort. The think (COMPLEX) pool uses this same default rubric. Only
   ultra-think (REASONING) sorts context first, then modelgrep benchmark,
   then the health blocks (known-strong, untried, known-weak, demoted),
@@ -1718,11 +1718,14 @@ def rank_candidates(
     else:  # TIER_DEFAULT: health-filtered capability pick. The default tier
         # no longer always picks the healthiest model. It filters first —
         # hard health floor, then the top N% healthiest — and picks the most
-        # capable model (largest context, then benchmark) from the survivors,
-        # with health breaking ties. The think pool uses this rubric too (it
-        # maps to TIER_DEFAULT). Health here is the effective score (the
-        # latency floor already applied), so slow models are filtered on
-        # their penalized health.
+        # capable model (highest benchmark, then largest context) from the
+        # survivors, with health breaking ties. The think pool uses this
+        # rubric too (it maps to TIER_DEFAULT). Health here is the effective
+        # score (the latency floor already applied), so slow models are
+        # filtered on their penalized health. Benchmark outranks context
+        # everywhere capability is compared in this tier — the capability
+        # pick, the top-% cutoff's tiebreak, and the tail order — while
+        # ultra-think keeps its own context-first order.
         #
         # Demoted (KNOWN-class) models never enter the cohort: demotion is a
         # proven-bad signal, stronger than the health number, and letting a
@@ -1738,8 +1741,8 @@ def rank_candidates(
             return (
                 block_for(r),
                 -effective_score(r),
-                -r.candidate.context_length,
                 -r.candidate.benchmark_score,
+                -r.candidate.context_length,
                 r.candidate.name,
             )
 
@@ -1757,8 +1760,8 @@ def rank_candidates(
             cohort.sort(
                 key=lambda r: (
                     -effective_score(r),
-                    -r.candidate.context_length,
                     -r.candidate.benchmark_score,
+                    -r.candidate.context_length,
                     r.candidate.name,
                 )
             )
@@ -1766,8 +1769,8 @@ def rank_candidates(
             cohort = cohort[:keep]
             cohort.sort(
                 key=lambda r: (
-                    -r.candidate.context_length,
                     -r.candidate.benchmark_score,
+                    -r.candidate.context_length,
                     -effective_score(r),
                     r.candidate.name,
                 )

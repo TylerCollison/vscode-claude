@@ -820,6 +820,41 @@ class TestDefaultHealthFilteredCapabilityPick:
         # capability pick then favors its larger context.
         assert ranked[0].candidate.name == "nvidia_nim/z-ai/glm-5.3"
 
+    def test_benchmark_beats_context_in_capability_pick(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        cfg.min_health = 0.3
+        cfg.health_top_percent = 100.0
+        small_high_bench = metric_candidate(lib, "pollinations/small-high-bench", 0.99, 100, ctx=100000)
+        small_high_bench.benchmark_score, small_high_bench.benchmarked = 0.9, True
+        big_low_bench = metric_candidate(lib, "pollinations/big-low-bench", 0.9997, 87885, ctx=1048576)
+        big_low_bench.benchmark_score, big_low_bench.benchmarked = 0.2, True
+        ranked = lib.rank_candidates([big_low_bench, small_high_bench], lib.TIER_DEFAULT, stats, cfg)
+        # Benchmark outranks context: the smaller-context model wins on its
+        # higher benchmark even though the other model is healthier and
+        # larger. (Context-first would pick big-low-bench.)
+        assert ranked[0].candidate.name == "pollinations/small-high-bench"
+
+    def test_cutoff_tiebreak_prefers_benchmark_over_context(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        cfg.min_health = 0.3
+        cfg.health_top_percent = 50.0
+        untried_high_bench = favored_candidate(lib, "nvidia_nim/high-bench", ctx=100000)
+        untried_high_bench.benchmark_score, untried_high_bench.benchmarked = 0.9, True
+        untried_mid_bench = favored_candidate(lib, "nvidia_nim/mid-bench", ctx=100000)
+        untried_mid_bench.benchmark_score, untried_mid_bench.benchmarked = 0.5, True
+        untried_big_ctx = favored_candidate(lib, "nvidia_nim/big-ctx", ctx=1048576)
+        untried_big_ctx.benchmark_score, untried_big_ctx.benchmarked = 0.1, True
+        healthy = metric_candidate(lib, "pollinations/healthy", 0.9997, 87885, ctx=100000)
+        ranked = lib.rank_candidates(
+            [untried_big_ctx, healthy, untried_mid_bench, untried_high_bench], lib.TIER_DEFAULT, stats, cfg
+        )
+        # Three untried models tie at health 1.0; the top 50% of 4 keeps 2,
+        # and the benchmark tiebreak admits the two higher-benchmark ones
+        # — the larger-context low-benchmark model is cut despite its size.
+        names = [r.candidate.name for r in ranked]
+        assert names.index("nvidia_nim/big-ctx") >= 2
+        assert ranked[0].candidate.name == "nvidia_nim/high-bench"
+
     def test_env_vars_configure_thresholds(self, mp, monkeypatch):
         lib, _ = mp
         monkeypatch.setenv("MODEL_PICKER_MIN_HEALTH", "0.6")

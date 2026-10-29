@@ -762,7 +762,7 @@ Each model group has a fallback chain defined in the YAML config, so if the prim
 
 | Tier (complexity) | Ranking order |
 |-------|---------------|
-| `lite-llm/default` (SIMPLE/MEDIUM) and `lite-llm/think` (COMPLEX) | Health-filtered capability pick: first drop models below a hard health floor (`MODEL_PICKER_MIN_HEALTH`, default 0.3), then keep only the top healthiest share (`MODEL_PICKER_HEALTH_TOP_PERCENT`, default 25), then pick the most capable survivor — largest context window, then modelgrep benchmark, then health, then name. Demoted models never enter the cohort; if the floor empties the pool it is ignored for that request. Capability among the healthy: a larger or higher-benchmark model wins once it clears the health bar. |
+| `lite-llm/default` (SIMPLE/MEDIUM) and `lite-llm/think` (COMPLEX) | Health-filtered capability pick: first drop models below a hard health floor (`MODEL_PICKER_MIN_HEALTH`, default 0.3), then keep only the top healthiest share (`MODEL_PICKER_HEALTH_TOP_PERCENT`, default 25), then pick the most capable survivor — highest modelgrep benchmark, then largest context window, then health, then name. Demoted models never enter the cohort; if the floor empties the pool it is ignored for that request. Capability among the healthy: a larger or higher-benchmark model wins once it clears the health bar. |
 | `lite-llm/ultra-think` (REASONING) | Largest context window first, then modelgrep benchmark, then the same health groups (known-strong, untried, known-weak, demoted), then health, then name. Capability first: the most capable model gets tried first — but on equal context and equal benchmark, demonstrated good health beats an unmeasured model. |
 
 Notes on the ranking:
