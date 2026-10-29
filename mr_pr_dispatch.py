@@ -42,23 +42,6 @@ class Config:
         self.id_placeholder = du.env("MR_PR_ID_PLACEHOLDER", "{{MR_PR_ID}}")
 
 
-def worker_name(title, mr_pr_id):
-    """Derive a unique worker name from the MR/PR title, id, and a timestamp."""
-    import datetime
-    import dispatch_utils as du
-
-    ts = datetime.datetime.now().strftime("%Y%m%d%H%M%S%f")
-    slug = du.slugify(title)
-    if slug:
-        base = "mr-pr-%s-%s" % (slug, mr_pr_id)
-    else:
-        base = "mr-pr-%s" % mr_pr_id
-    base = re.sub(r"[^a-zA-Z0-9]+", "-", base).strip("-").lower()
-    # Cap the slug portion so the timestamp (which guarantees uniqueness) always
-    # survives Docker Swarm's 63-char service name limit.
-    return "%s-%s" % (base[:63 - len(ts) - 1], ts)
-
-
 def default_mr_pr_prompt(mr_pr_id, title, branch, repo_url, provider):
     """Generate the default prompt for an MR/PR responder worker."""
     if provider == "github":
@@ -169,27 +152,6 @@ def worker_name(title, mr_pr_id):
     # Cap the slug portion so the timestamp (which guarantees uniqueness) always
     # survives Docker Swarm's 63-char service name limit.
     return "%s-%s" % (base[:63 - len(ts) - 1], ts)
-
-
-def shutdown_worker_for_mr_pr(mr_pr_id, title, provider, cfg, self_info):
-    """Remove the dispatched worker container/service for the given MR/PR.
-
-    This is called when an MR/PR is closed so that any running worker is torn
-    down instead of lingering forever.
-    """
-    import dispatch_utils as du
-    wname = worker_name(title, mr_pr_id)
-    swarm = du.is_swarm_manager()
-    if swarm:
-        du.log("Shutting down swarm service %s for MR/PR #%s" % (wname, mr_pr_id))
-        rc, out, err = du.run(["docker", "service", "rm", wname])
-    else:
-        du.log("Removing container %s for MR/PR #%s" % (wname, mr_pr_id))
-        rc, out, err = du.run(["docker", "rm", wname])
-    if rc == 0:
-        du.log("Successfully reaped worker %s for MR/PR #%s" % (wname, mr_pr_id))
-    else:
-        du.log("WARNING: failed to reap worker %s for MR/PR #%s: %s" % (wname, mr_pr_id, err or out))
 
 
 def dispatch_mr_pr_worker(mr_pr_info, cfg, self_info):
@@ -307,18 +269,6 @@ def run_daemon(cfg, self_info):
                 continue
 
         du.log("MR/PR trigger received: #%s (%s)" % (mr_pr_info.get("mr_pr_id", "unknown"), mr_pr_info.get("title", "")))
-        # Automatic worker shutdown on MR/PR closure
-        if mr_pr_info.get("close"):
-            try:
-                shutdown_worker_for_mr_pr(
-                    mr_pr_info["mr_pr_id"],
-                    mr_pr_info.get("title", ""),
-                    mr_pr_info.get("provider", "github"),
-                    cfg,
-                    self_info,
-                )
-            except Exception as e:
-                du.log("ERROR: failed to shut down worker for closed MR/PR #%s: %s" % (mr_pr_info.get("mr_pr_id"), e))
         try:
             dispatch_mr_pr(cfg, self_info, mr_pr_info)
         except Exception as e:
