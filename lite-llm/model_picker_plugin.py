@@ -52,6 +52,18 @@ failures record ERROR, not SOFT, because they are prompt-class-dependent
 (the same model answers plain prompts) and must not fire the instant
 demotion proof; the per-request exclusion is what unblocks the turn.
 
+Schema validation extends the same idea to malformed output: tool_use
+blocks are validated (id, name, object input, declared-tool name,
+input_schema via jsonschema) and responses whose entire text is a pseudo
+tool call (<token>name</token>{json} with no real tool block) are treated
+as failures, all through the same retry-with-exclusion walk at ERROR.
+Non-streaming responses are validated whole before they are returned;
+streaming tool_use blocks are held until their content_block_stop and
+released only when valid, because a malformed block that already streamed
+out cannot be retracted. Validation is fail-open on anything it cannot
+prove — unknown shapes, missing tool definitions, bad tool schemas — and
+fail-closed only on definite violations.
+
 litellm's ``get_instance_fn`` exec's this file with spec_from_file_location
 WITHOUT registering it in sys.modules, so a plain ``import model_picker``
 would not resolve, and this file being referenced from both the plugins list
@@ -68,6 +80,7 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import sys
 from datetime import datetime
 
@@ -898,6 +911,236 @@ def _classify_stream_event(event: dict) -> tuple[bool, bool]:
     return False, False
 
 
+def _extract_request_tools(request_data: object) -> dict[str, object] | None:
+    """Declared tools from a request, as {name: input_schema-or-None}.
+
+    Anthropic shape: tools are dicts with name/input_schema. OpenAI shape:
+    tools are {"type": "function", "function": {"name", "parameters"}}.
+    Returns None when the request carries no tool list at all — callers
+    then validate wire shape only and never fail closed on a name they
+    cannot check. A present-but-empty list maps to {} (the request
+    declares zero tools, so any tool_use is unknown).
+    """
+    if not isinstance(request_data, dict):
+        return None
+    tools = request_data.get("tools")
+    if not isinstance(tools, list):
+        return None
+    out: dict[str, object] = {}
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        if "name" in tool or "input_schema" in tool:
+            name = tool.get("name")
+            if isinstance(name, str) and name:
+                out[name] = tool.get("input_schema")
+            continue
+        function = tool.get("function")
+        if isinstance(function, dict):
+            name = function.get("name")
+            if isinstance(name, str) and name:
+                out[name] = function.get("parameters")
+    return out
+
+
+def _validate_input_against_schema(value: object, schema: object) -> str | None:
+    """None when value satisfies schema; a violation reason otherwise.
+
+    Fail-open by design: an unparseable schema, a missing jsonschema
+    install, or any validator error means "cannot prove a violation",
+    never "invalid" — the validator must never break a request it cannot
+    judge. Only a definite ValidationError is a violation.
+    """
+    if schema is None or not isinstance(schema, (dict, bool)):
+        return None
+    try:
+        import jsonschema
+    except Exception:  # noqa: BLE001 — no validator available: fail open
+        return None
+    try:
+        jsonschema.validate(value, schema)
+    except jsonschema.ValidationError as e:
+        return f"input fails tool schema ({e.message[:120]})"
+    except Exception:  # noqa: BLE001 — bad schema etc.: fail open
+        return None
+    return None
+
+
+def _validate_tool_use(tool_id: object, name: object, input_value: object, tools: dict | None) -> str | None:
+    """Wire + declared-tool validation for one tool_use block.
+
+    Returns a violation reason, or None when the block is valid (or
+    cannot be proven invalid). Fail-closed only on definite violations:
+    missing/empty id, missing/empty name, non-dict input, unknown tool
+    name (when tools are known), input failing the tool's input_schema.
+    """
+    if not isinstance(tool_id, str) or not tool_id.strip():
+        return "tool_use block missing id"
+    if not isinstance(name, str) or not name.strip():
+        return "tool_use block missing name"
+    if not isinstance(input_value, dict):
+        return "tool_use input is not an object"
+    if tools is not None:
+        if name not in tools:
+            return f"unknown tool {name!r}"
+        reason = _validate_input_against_schema(input_value, tools[name])
+        if reason is not None:
+            return reason
+    return None
+
+
+def _anthropic_content_schema_violation(content: object, tools: dict | None) -> str | None:
+    """First schema violation in an anthropic content list, or None.
+
+    Only definite violations count: malformed tool_use blocks (wire or
+    declared-tool checks) and non-string text. Thinking blocks, empty
+    text, and unknown block types are schema-valid here — thinking-only
+    and pseudo-call rules judge those separately.
+    """
+    if not isinstance(content, list):
+        return None
+    for block in content:
+        btype = _block_type(block)
+        if btype == "tool_use":
+            if isinstance(block, dict):
+                tool_id, name, input_value = block.get("id"), block.get("name"), block.get("input")
+            else:
+                tool_id, name, input_value = getattr(block, "id", None), getattr(block, "name", None), getattr(block, "input", None)
+            reason = _validate_tool_use(tool_id, name, input_value, tools)
+            if reason is not None:
+                return reason
+        elif btype == "text":
+            text = block.get("text") if isinstance(block, dict) else getattr(block, "text", None)
+            if text is not None and not isinstance(text, str):
+                return "text block text is not a string"
+    return None
+
+
+def _openai_message_schema_violation(message: object, tools: dict | None) -> str | None:
+    """First schema violation in one OpenAI chat message, or None.
+
+    tool_calls carry arguments as a JSON string: unparseable arguments,
+    or arguments parsing to a non-object, are definite violations, as
+    are unknown function names when tools are known.
+    """
+    if isinstance(message, dict):
+        tool_calls = message.get("tool_calls")
+    else:
+        tool_calls = getattr(message, "tool_calls", None)
+    if not tool_calls or not isinstance(tool_calls, list):
+        return None
+    for call in tool_calls:
+        if isinstance(call, dict):
+            function = call.get("function") or {}
+            call_id = call.get("id")
+            name = function.get("name") if isinstance(function, dict) else None
+            arguments = function.get("arguments") if isinstance(function, dict) else None
+        else:
+            function = getattr(call, "function", None)
+            call_id = getattr(call, "id", None)
+            name = getattr(function, "name", None) if function is not None else None
+            arguments = getattr(function, "arguments", None) if function is not None else None
+        if isinstance(arguments, str):
+            try:
+                input_value = json.loads(arguments)
+            except Exception:  # noqa: BLE001 — unparseable arguments are the violation
+                return "tool_call arguments are not valid JSON"
+            if not isinstance(input_value, dict):
+                return "tool_call arguments are not an object"
+        elif isinstance(arguments, dict):
+            input_value = arguments
+        elif arguments is None:
+            input_value = {}
+        else:
+            return "tool_call arguments are not an object"
+        reason = _validate_tool_use(call_id, name, input_value, tools)
+        if reason is not None:
+            return reason
+    return None
+
+
+def _response_schema_violation(response_obj: object, tools: dict | None) -> str | None:
+    """First schema violation in a completed response, or None.
+
+    Unrecognized shapes fail open (None): a response the validator
+    cannot classify is never retried on this rule.
+    """
+    try:
+        if isinstance(response_obj, dict):
+            content = response_obj.get("content")
+            if isinstance(content, list):
+                return _anthropic_content_schema_violation(content, tools)
+            choices = response_obj.get("choices") or []
+            if choices and isinstance(choices[0], dict):
+                message = choices[0].get("message") or choices[0].get("delta") or {}
+                return _openai_message_schema_violation(message, tools)
+            return None
+        choices = getattr(response_obj, "choices", None) or []
+        if choices:
+            choice = choices[0]
+            message = getattr(choice, "message", None) or getattr(choice, "delta", None)
+            return _openai_message_schema_violation(message, tools)
+        return None
+    except Exception:  # noqa: BLE001 — validation must never fail the request
+        return None
+
+
+_PSEUDO_TOOL_CALL_RE = re.compile(r"^\s*<token>([^<>]+)</token>\s*(\{.*\})\s*$", re.DOTALL)
+
+
+def _text_is_pseudo_tool_call(text: object) -> bool:
+    """True when the whole text is one tool-call attempt, no answer.
+
+    The model emitted a call in a text format (<token>name</token>{json})
+    instead of a tool_use block. A real answer never consists solely of
+    that: any additional prose means the text is an answer (however poor),
+    not a bare call attempt, so it does not fire.
+    """
+    if not isinstance(text, str):
+        return False
+    return _PSEUDO_TOOL_CALL_RE.match(text) is not None
+
+
+def _response_is_pseudo_tool_call(response_obj: object) -> bool:
+    """True when a completed response's only action is a pseudo-call.
+
+    Anthropic: no tool_use/server_tool_use block, and the joined text
+    blocks are exactly one pseudo-call. OpenAI: no tool_calls, and the
+    message content is exactly one pseudo-call. Thinking alongside the
+    pseudo-call does not save it — thinking is not an action.
+    """
+    try:
+        if isinstance(response_obj, dict):
+            content = response_obj.get("content")
+            if isinstance(content, list):
+                texts: list[str] = []
+                for block in content:
+                    btype = _block_type(block)
+                    if btype in ("tool_use", "server_tool_use"):
+                        return False
+                    if btype == "text":
+                        texts.append(_block_text(block))
+                return _text_is_pseudo_tool_call("\n".join(texts))
+            choices = response_obj.get("choices") or []
+            if choices and isinstance(choices[0], dict):
+                message = choices[0].get("message") or choices[0].get("delta") or {}
+                if message.get("tool_calls"):
+                    return False
+                content = message.get("content")
+                return _text_is_pseudo_tool_call(content) if isinstance(content, str) else False
+            return False
+        choices = getattr(response_obj, "choices", None) or []
+        if choices:
+            message = getattr(choices[0], "message", None) or getattr(choices[0], "delta", None)
+            if message is None or getattr(message, "tool_calls", None):
+                return False
+            content = getattr(message, "content", None)
+            return _text_is_pseudo_tool_call(content) if isinstance(content, str) else False
+        return False
+    except Exception:  # noqa: BLE001 — classification must never fail the request
+        return False
+
+
 class ModelPickerStatsLogger(CustomLogger):
     """Records per-group success/failure/TTFT observations for the picker."""
 
@@ -997,6 +1240,19 @@ class ModelPickerStatsLogger(CustomLogger):
             # SOFT: thinking-only is prompt-class-dependent, so one
             # observation must not fire the instant-demotion proof.
             logger.info("model_picker: thinking-only response recorded as failure for %s (no actionable content)", group)
+            self.stats.record_failure(group, model_picker.FAILURE_CLASS_ERROR)
+            return
+        # Same treatment for malformed responses. The logger may not see
+        # the request's tool definitions, so this is the wire check only
+        # (block shape, argument JSON, pseudo-calls) — name and input_schema
+        # checks live in the post-call hooks, which do see the tools.
+        schema_violation = _response_schema_violation(response_obj, None)
+        if schema_violation is not None or _response_is_pseudo_tool_call(response_obj):
+            logger.info(
+                "model_picker: malformed response recorded as failure for %s (%s)",
+                group,
+                schema_violation or "pseudo tool call",
+            )
             self.stats.record_failure(group, model_picker.FAILURE_CLASS_ERROR)
             return
         self.stats.record_success(group, _event_ttft_seconds(kwargs, start_time))
@@ -1183,10 +1439,10 @@ class ModelPickerStatsLogger(CustomLogger):
         Returns (response, failure_summary) — response is None when every
         available candidate failed. Each failed attempt is recorded and
         excluded from the next pick; soft failures (200-with-error-content),
-        thinking-only responses, and hard exceptions all continue the walk.
-        Termination: the walk is bounded by the candidate-pool size, and a
-        re-offered already-failed model means the picker has nothing fresh
-        left.
+        thinking-only responses, schema violations, pseudo tool calls, and
+        hard exceptions all continue the walk. Termination: the walk is
+        bounded by the candidate-pool size, and a re-offered already-failed
+        model means the picker has nothing fresh left.
 
         The intercepted attempt's failure class is caller-chosen: soft
         failures are deterministic per model+account, so SOFT (instant
@@ -1195,12 +1451,15 @@ class ModelPickerStatsLogger(CustomLogger):
         so thinking-only entries record ERROR instead: per-request exclusion
         still applies, but persistent demotion needs the normal failure
         proof (repeated thinking-only turns), not a single observation.
+        Schema violations and pseudo tool calls record ERROR for the same
+        reason: they are model-format failures, not provider outages.
         """
         failed_groups: list[str] = []
         last_reason = "unknown"
         group = first_group
         pending_class = first_failure_class
         pending_label = first_failure_label
+        walk_tools = _extract_request_tools(request_data)
         attempts = 1  # the intercepted attempt
         cap = await self._candidate_cap()
         while attempts < cap:
@@ -1244,6 +1503,20 @@ class ModelPickerStatsLogger(CustomLogger):
                 group = self._event_group({"litellm_metadata": {"model_group": _response_model_name(retry_resp)}})
                 pending_class = model_picker.FAILURE_CLASS_ERROR
                 pending_label = "thinking-only response"
+                continue
+            violation = _response_schema_violation(retry_resp, walk_tools)
+            if violation is not None:
+                last_reason = "schema violation"
+                group = self._event_group({"litellm_metadata": {"model_group": _response_model_name(retry_resp)}})
+                pending_class = model_picker.FAILURE_CLASS_ERROR
+                pending_label = "schema violation"
+                logger.info("model_picker: retry response schema violation (%s); trying next candidate", violation)
+                continue
+            if _response_is_pseudo_tool_call(retry_resp):
+                last_reason = "pseudo tool call"
+                group = self._event_group({"litellm_metadata": {"model_group": _response_model_name(retry_resp)}})
+                pending_class = model_picker.FAILURE_CLASS_ERROR
+                pending_label = "pseudo tool call"
                 continue
             return retry_resp, {"tried": attempts, "reason": last_reason, "groups": failed_groups}
         return None, {"tried": attempts, "reason": last_reason, "groups": failed_groups}
@@ -1357,6 +1630,21 @@ class ModelPickerStatsLogger(CustomLogger):
         events are held back until the stream ends so a thinking-only close
         can be replaced by the retry's tail instead of ending the turn
         empty; clean streams yield them unchanged, in order, at the end.
+
+        Schema validation goes further, and it has to: a malformed tool
+        block that already streamed out cannot be retracted, so tool_use
+        blocks are held — start, input deltas, and stop buffered together —
+        and released only when the assembled block validates (id, name,
+        object input, declared-tool name, input_schema). An invalid block
+        is dropped before the client ever sees it and the walk retries
+        with that model excluded; a stream that ends with a tool block
+        still open is itself a violation (incomplete block). Text and
+        thinking blocks flow immediately — holding them would defeat
+        streaming — and server_tool_use blocks pass through unheld (their
+        execution is server-side). A response whose entire text is a
+        pseudo tool call (<token>name</token>{json} with no real tool
+        block) gets the same retry at stream end: the text is schema-valid,
+        so the schema check cannot catch it, but it is not an answer.
         """
         open_block: tuple[int, str] | None = None
         next_index = 0
@@ -1367,14 +1655,21 @@ class ModelPickerStatsLogger(CustomLogger):
         saw_any_chunk = False  # anything at all delivered
         saw_thinking = False  # a thinking/redacted_thinking block appeared
         saw_actionable = False  # non-blank text or a tool block appeared
+        saw_tool_use = False  # a tool_use/server_tool_use block appeared
+        delivered_text = ""  # text_delta text only (thinking excluded), for the pseudo-call check
+        stream_tools = _extract_request_tools(request_data)
         stream_stop_reason: str | None = None  # from message_delta, when seen
         pending_terminal: list = []  # terminal-only chunks held for the end decision
         terminal_yielded = False  # a terminal event already went out (mixed chunk)
+        schema_violation: str | None = None  # invalid tool block dropped, or incomplete at end
+        held_tool: dict | None = None  # open tool_use block: index/id/name/partial_json
+        held_chunks: list = []  # chunks buffered for the held tool block
         try:
             async for chunk in response:
                 saw_any_chunk = True
                 text = ""
                 chunk_terminal_only = False
+                chunk_ended_hold = False
                 try:
                     if _is_in_band_error(chunk):
                         # litellm's adapter already swallowed the upstream
@@ -1410,11 +1705,52 @@ class ModelPickerStatsLogger(CustomLogger):
                         saw_actionable = saw_actionable or actionable
                         if etype == "content_block_start":
                             block = event.get("content_block") or {}
-                            open_block = (int(event.get("index", 0) or 0), str(block.get("type") or "text"))
+                            block_type = _block_type(block) or "text"
+                            open_block = (int(event.get("index", 0) or 0), block_type)
                             next_index = max(next_index, open_block[0] + 1)
+                            if block_type == "tool_use":
+                                saw_tool_use = True
+                                held_tool = {
+                                    "index": open_block[0],
+                                    "id": str(block.get("id") or "") if isinstance(block, dict) else str(getattr(block, "id", "") or ""),
+                                    "name": str(block.get("name") or "") if isinstance(block, dict) else str(getattr(block, "name", "") or ""),
+                                    "partial_json": "",
+                                }
+                            elif block_type == "server_tool_use":
+                                saw_tool_use = True
+                        elif etype == "content_block_delta":
+                            delta = event.get("delta") or {}
+                            if isinstance(delta, dict):
+                                if delta.get("type") == "text_delta":
+                                    delivered_text += str(delta.get("text") or "")
+                                if delta.get("type") == "input_json_delta":
+                                    saw_tool_use = True
+                                    if held_tool is not None:
+                                        held_tool["partial_json"] += str(delta.get("partial_json") or "")
                         elif etype == "content_block_stop":
-                            next_index = max(next_index, int(event.get("index", 0) or 0) + 1)
+                            stop_index = int(event.get("index", 0) or 0)
+                            next_index = max(next_index, stop_index + 1)
                             open_block = None
+                            if held_tool is not None and stop_index == held_tool["index"]:
+                                chunk_ended_hold = True
+                                held = held_tool
+                                held_tool = None
+                                partial = held["partial_json"]
+                                if not partial.strip():
+                                    violation = _validate_tool_use(held["id"], held["name"], {}, stream_tools)
+                                else:
+                                    try:
+                                        input_value = json.loads(partial)
+                                    except Exception:  # noqa: BLE001 — unparseable input is the violation
+                                        violation = "tool_use input is not valid JSON"
+                                    else:
+                                        violation = _validate_tool_use(held["id"], held["name"], input_value, stream_tools)
+                                if violation is not None:
+                                    schema_violation = violation
+                                    # the dropped block's index is free again:
+                                    # the retry tail reuses it so the client
+                                    # sees contiguous block indices
+                                    next_index = held["index"]
                     if text and model_picker.is_soft_failure_content(accumulated):
                         soft_text = accumulated
                         break  # dropped before yield — the client never sees it
@@ -1424,6 +1760,26 @@ class ModelPickerStatsLogger(CustomLogger):
                     saw_text = True
                 if chunk_terminal_only:
                     pending_terminal.append(chunk)
+                elif chunk_ended_hold and schema_violation is not None:
+                    # invalid tool block: drop the whole buffered block —
+                    # it never reached the client — and retry instead
+                    held_chunks = []
+                    break
+                elif chunk_ended_hold and held_tool is not None:
+                    # one chunk closed a valid block and opened the next
+                    # (multi-event chunk; LiteLLM normally yields one event
+                    # per chunk, so this is defensive): release the closed
+                    # block, hold the new one from here
+                    for buffered in held_chunks:
+                        yield buffered
+                    held_chunks = [chunk]
+                elif chunk_ended_hold:
+                    for buffered in held_chunks:
+                        yield buffered
+                    held_chunks = []
+                    yield chunk
+                elif held_tool is not None:
+                    held_chunks.append(chunk)
                 else:
                     yield chunk
         except (asyncio.CancelledError, GeneratorExit):
@@ -1444,6 +1800,22 @@ class ModelPickerStatsLogger(CustomLogger):
             )
             soft_text = soft_text or "mid-stream upstream failure"
 
+        if held_tool is not None:
+            # A tool block was still open when the stream stopped being
+            # useful (soft break, in-band error, exception, or truncation):
+            # its buffered chunks never reached the client, so the tail
+            # must reuse its index instead of closing a block nobody saw.
+            # A normal stream end with an unclosed tool block is itself a
+            # schema violation (incomplete block); early breaks keep their
+            # own failure path and only need the index rewind.
+            held_index = held_tool["index"]
+            held_tool = None
+            held_chunks = []
+            open_block = None
+            next_index = held_index
+            if soft_text is None and schema_violation is None and not in_band_error:
+                schema_violation = "incomplete tool_use block (stream ended before content_block_stop)"
+
         if in_band_error:
             # the adapter's error event never reached the client (dropped
             # above); the walk below applies the same handling as exceptions
@@ -1455,6 +1827,8 @@ class ModelPickerStatsLogger(CustomLogger):
             )
             soft_text = soft_text or "in-band error event"
 
+        failure_class = model_picker.FAILURE_CLASS_SOFT
+        failure_label = "soft failure"
         if soft_text is None:
             # Normal completion — the only place the thinking-only rule may
             # fire. The stream already delivered the thinking block (it
@@ -1490,9 +1864,19 @@ class ModelPickerStatsLogger(CustomLogger):
                     for event in self._synthesize_tail_events(None, open_block, next_index):
                         yield _sse_frame(event)
                 return
-            for chunk in pending_terminal:
-                yield chunk
-            return
+            if schema_violation is not None:
+                failure_class = model_picker.FAILURE_CLASS_ERROR
+                failure_label = "schema violation"
+            elif not saw_tool_use and not terminal_yielded and _text_is_pseudo_tool_call(delivered_text):
+                # the whole text is a tool-call attempt in text form, with
+                # no real tool block: not an answer, so the turn would end
+                # on it — retry with the model excluded
+                failure_class = model_picker.FAILURE_CLASS_ERROR
+                failure_label = "pseudo tool call"
+            else:
+                for chunk in pending_terminal:
+                    yield chunk
+                return
 
         if not saw_any_chunk:
             # the stream died before yielding anything: synthesize the
@@ -1506,7 +1890,12 @@ class ModelPickerStatsLogger(CustomLogger):
 
         try:
             group = self._failed_group(request_data, response)
-            retry_resp, summary = await self._retry_until_clean(request_data, group)
+            retry_resp, summary = await self._retry_until_clean(
+                request_data,
+                group,
+                first_failure_class=failure_class,
+                first_failure_label=failure_label,
+            )
             if retry_resp is None:
                 logger.warning(
                     "model_picker: retry walk exhausted after %d attempts (%s); replying with fallback notice",
@@ -1522,7 +1911,14 @@ class ModelPickerStatsLogger(CustomLogger):
                 yield _sse_frame(event)
 
     async def async_post_call_success_hook(self, user_api_key_dict, data, response):
-        """Non-streaming twin: swap a soft-failed response for a retried one."""
+        """Non-streaming twin: swap a failed response for a retried one.
+
+        Soft failures, thinking-only responses, schema violations, and
+        pseudo tool calls all take the same path: the original response
+        never reaches the client, the model is excluded for the request,
+        and the walk retries. The whole response is validated here before
+        it is returned, so non-streaming clients never see a malformed one.
+        """
         import os as _os
 
         if _os.environ.get("MODEL_PICKER_DEBUG_HOOKS"):
@@ -1533,16 +1929,35 @@ class ModelPickerStatsLogger(CustomLogger):
             )
         text = model_picker.extract_response_text(response)
         thinking_only = _response_is_thinking_only(response)
-        if not thinking_only and (not text or not model_picker.is_soft_failure_response(text, response)):
+        schema_violation = None if thinking_only else _response_schema_violation(response, _extract_request_tools(data))
+        pseudo_call = (
+            False
+            if (thinking_only or schema_violation is not None)
+            else _response_is_pseudo_tool_call(response)
+        )
+        if (
+            not thinking_only
+            and schema_violation is None
+            and not pseudo_call
+            and (not text or not model_picker.is_soft_failure_response(text, response))
+        ):
             return response
         anthropic_shape = isinstance(response, dict) and isinstance(response.get("content"), list)
+        if thinking_only:
+            first_failure_class, first_failure_label = model_picker.FAILURE_CLASS_ERROR, "thinking-only response"
+        elif schema_violation is not None:
+            first_failure_class, first_failure_label = model_picker.FAILURE_CLASS_ERROR, "schema violation"
+        elif pseudo_call:
+            first_failure_class, first_failure_label = model_picker.FAILURE_CLASS_ERROR, "pseudo tool call"
+        else:
+            first_failure_class, first_failure_label = model_picker.FAILURE_CLASS_SOFT, "soft failure"
         try:
             group = self._failed_group(data if isinstance(data, dict) else {}, response)
             retry_resp, summary = await self._retry_until_clean(
                 data,
                 group,
-                first_failure_class=model_picker.FAILURE_CLASS_ERROR if thinking_only else model_picker.FAILURE_CLASS_SOFT,
-                first_failure_label="thinking-only response" if thinking_only else "soft failure",
+                first_failure_class=first_failure_class,
+                first_failure_label=first_failure_label,
             )
             if retry_resp is not None:
                 if anthropic_shape:
