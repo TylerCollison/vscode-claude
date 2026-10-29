@@ -43,6 +43,15 @@ entry — handing them to acompletion ships anthropic blocks to OpenAI-format
 providers and 400s every candidate on a payload the provider never saw fit to
 accept.
 
+Thinking-only responses — a completed response whose message is thinking
+(or redacted thinking) with no actionable text or tool block, on a
+turn-ending stop reason — get the same retry-with-exclusion, and ONLY then:
+the check runs on the completed response, never mid-stream, and never when
+text or tool calls give the turn something to continue from. Thinking-only
+failures record ERROR, not SOFT, because they are prompt-class-dependent
+(the same model answers plain prompts) and must not fire the instant
+demotion proof; the per-request exclusion is what unblocks the turn.
+
 litellm's ``get_instance_fn`` exec's this file with spec_from_file_location
 WITHOUT registering it in sys.modules, so a plain ``import model_picker``
 would not resolve, and this file being referenced from both the plugins list
@@ -723,6 +732,172 @@ def _response_model_name(response_obj: object) -> str:
     return str(model) if model else ""
 
 
+# Turn-ending stop reasons: the agent loop terminates the turn on these
+# when the message carries nothing to execute and nothing to show.
+# tool_use/pause_turn name a continuation, and refusal is a policy outcome,
+# not a model failure — none of those may trigger a thinking-only retry.
+_TURN_ENDING_STOP_REASONS = frozenset({"end_turn", "max_tokens", "stop_sequence"})
+
+
+def _block_type(block: object) -> str:
+    if isinstance(block, dict):
+        return str(block.get("type") or "")
+    return str(getattr(block, "type", "") or "")
+
+
+def _block_text(block: object) -> str:
+    if isinstance(block, dict):
+        text = block.get("text")
+        return text if isinstance(text, str) else ""
+    text = getattr(block, "text", None)
+    return text if isinstance(text, str) else ""
+
+
+def _anthropic_blocks_thinking_only(blocks: object) -> bool:
+    """Shape rule for an anthropic content list: at least one thinking or
+    redacted_thinking block, and nothing else but whitespace-only text.
+
+    A thinking block plus an empty text block (what the bridge emits for a
+    reasoning-only upstream response with empty content) is still
+    thinking-only: the empty text gives the turn nothing to show. Any
+    other block type (tool_use, server_tool_use, ...) means the turn
+    continues from that block, so it breaks thinking-only.
+    """
+    if not isinstance(blocks, (list, tuple)) or not blocks:
+        return False
+    saw_thinking = False
+    for block in blocks:
+        btype = _block_type(block)
+        if btype in ("thinking", "redacted_thinking"):
+            saw_thinking = True
+        elif btype == "text":
+            if _block_text(block).strip():
+                return False
+        else:
+            return False
+    return saw_thinking
+
+
+def _openai_message_thinking_only(message: object) -> bool:
+    """Shape rule for one OpenAI chat message (dict or object).
+
+    Reasoning present (reasoning_content or thinking_blocks), content
+    absent/blank, and no tool calls: the model thought and then stopped
+    without answering or acting.
+    """
+    if isinstance(message, dict):
+        reasoning = message.get("reasoning_content") or message.get("reasoning")
+        thinking_blocks = message.get("thinking_blocks")
+        content = message.get("content")
+        tool_calls = message.get("tool_calls")
+    else:
+        reasoning = getattr(message, "reasoning_content", None) or getattr(message, "reasoning", None)
+        thinking_blocks = getattr(message, "thinking_blocks", None)
+        content = getattr(message, "content", None)
+        tool_calls = getattr(message, "tool_calls", None)
+    has_reasoning = bool(isinstance(reasoning, str) and reasoning.strip()) or bool(thinking_blocks)
+    if not has_reasoning or tool_calls:
+        return False
+    if isinstance(content, str):
+        return not content.strip()
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, str):
+                if part.strip():
+                    return False
+            elif isinstance(part, dict):
+                if isinstance(part.get("text"), str) and part["text"].strip():
+                    return False
+                if part.get("type") not in ("text", None):
+                    return False
+        return True
+    return content is None
+
+
+def _response_is_thinking_only(response_obj: object) -> bool:
+    """True when a COMPLETED response is thinking-only on a turn-ending
+    stop reason — the message the agent loop would terminate on with
+    nothing to show and nothing to execute.
+
+    This is deliberately a completed-response check only: it must never
+    run on a partial stream (thinking deltas precede text in every normal
+    reasoning response). The streaming hook evaluates it once, after the
+    stream ends; the non-streaming hook evaluates the whole response.
+
+    "The turn would have stopped" is operationalized as: the finished
+    message gives the loop nothing to execute (no tool_use or server-tool
+    block) and nothing to show (no non-blank text), on a stop reason that
+    terminates the turn. A missing reason counts as turn-ending (a stream
+    that ends without message_delta, or a response carrying no reason,
+    still ends the turn). Unrecognized shapes fail closed (False): a
+    response the detector cannot classify is never retried on this rule.
+    """
+    try:
+        if isinstance(response_obj, dict):
+            content = response_obj.get("content")
+            if isinstance(content, list):
+                stop = response_obj.get("stop_reason")
+                if stop is not None and str(stop) not in _TURN_ENDING_STOP_REASONS:
+                    return False
+                return _anthropic_blocks_thinking_only(content)
+            choices = response_obj.get("choices") or []
+            if choices and isinstance(choices[0], dict):
+                choice = choices[0]
+                message = choice.get("message") or choice.get("delta") or {}
+                mapped = _STOP_REASON_MAP.get(str(choice.get("finish_reason") or ""), "end_turn")
+                if mapped not in _TURN_ENDING_STOP_REASONS:
+                    return False
+                return _openai_message_thinking_only(message)
+            return False
+        choices = getattr(response_obj, "choices", None) or []
+        if choices:
+            choice = choices[0]
+            message = getattr(choice, "message", None) or getattr(choice, "delta", None)
+            mapped = _STOP_REASON_MAP.get(str(getattr(choice, "finish_reason", None) or ""), "end_turn")
+            if mapped not in _TURN_ENDING_STOP_REASONS:
+                return False
+            return _openai_message_thinking_only(message)
+        return False
+    except Exception:  # noqa: BLE001 — classification must never fail the request
+        return False
+
+
+def _classify_stream_event(event: dict) -> tuple[bool, bool]:
+    """(thinking, actionable) flags contributed by one anthropic stream event.
+
+    thinking: a thinking/redacted_thinking block started, or a thinking_delta.
+    actionable: a non-whitespace text_delta, a tool_use/server_tool_use block
+    started, or tool input streaming (input_json_delta) — anything the agent
+    loop would continue the turn from. Anything else contributes neither.
+    """
+    if not isinstance(event, dict):
+        return False, False
+    etype = event.get("type")
+    if etype == "content_block_start":
+        block = event.get("content_block") or {}
+        btype = _block_type(block)
+        if btype in ("thinking", "redacted_thinking"):
+            return True, False
+        if btype in ("tool_use", "server_tool_use"):
+            return False, True
+        return False, False
+    if etype == "content_block_delta":
+        delta = event.get("delta") or {}
+        if not isinstance(delta, dict):
+            return False, False
+        dtype = delta.get("type")
+        if dtype == "thinking_delta" or ("thinking" in delta and dtype != "text_delta"):
+            return True, False
+        if dtype == "text_delta":
+            return False, bool(str(delta.get("text") or "").strip())
+        if dtype == "input_json_delta":
+            return False, True
+        if "text" in delta:
+            return False, bool(str(delta.get("text") or "").strip())
+        return False, False
+    return False, False
+
+
 class ModelPickerStatsLogger(CustomLogger):
     """Records per-group success/failure/TTFT observations for the picker."""
 
@@ -813,6 +988,16 @@ class ModelPickerStatsLogger(CustomLogger):
             snippet = " ".join(text.split())[:100]
             logger.info("model_picker: soft failure recorded for %s (content=%r)", group, snippet)
             self.stats.record_failure(group, model_picker.FAILURE_CLASS_SOFT)
+            return
+        if _response_is_thinking_only(response_obj):
+            # a 200 "success" that ends the turn on thinking alone must not
+            # reinforce the model the way a real answer would — and, like a
+            # soft failure, it must not be recorded as a success on paths
+            # where the post-call hook did not already retry it. ERROR, not
+            # SOFT: thinking-only is prompt-class-dependent, so one
+            # observation must not fire the instant-demotion proof.
+            logger.info("model_picker: thinking-only response recorded as failure for %s (no actionable content)", group)
+            self.stats.record_failure(group, model_picker.FAILURE_CLASS_ERROR)
             return
         self.stats.record_success(group, _event_ttft_seconds(kwargs, start_time))
 
@@ -986,19 +1171,36 @@ class ModelPickerStatsLogger(CustomLogger):
         except Exception:  # noqa: BLE001 — the walk must stay bounded regardless
             return _RETRY_WALK_SAFETY_CAP
 
-    async def _retry_until_clean(self, request_data: dict, first_group: str):
+    async def _retry_until_clean(
+        self,
+        request_data: dict,
+        first_group: str,
+        first_failure_class: str = model_picker.FAILURE_CLASS_SOFT,
+        first_failure_label: str = "soft failure",
+    ):
         """Retry the request until a model succeeds or none are left to try.
 
         Returns (response, failure_summary) — response is None when every
         available candidate failed. Each failed attempt is recorded and
-        excluded from the next pick; both soft failures (200-with-error-
-        content) and hard exceptions continue the walk. Termination: the walk
-        is bounded by the candidate-pool size, and a re-offered already-failed
-        model means the picker has nothing fresh left.
+        excluded from the next pick; soft failures (200-with-error-content),
+        thinking-only responses, and hard exceptions all continue the walk.
+        Termination: the walk is bounded by the candidate-pool size, and a
+        re-offered already-failed model means the picker has nothing fresh
+        left.
+
+        The intercepted attempt's failure class is caller-chosen: soft
+        failures are deterministic per model+account, so SOFT (instant
+        demotion proof) is right for them, but a thinking-only response is
+        prompt-class-dependent — the same model answers plain prompts fine —
+        so thinking-only entries record ERROR instead: per-request exclusion
+        still applies, but persistent demotion needs the normal failure
+        proof (repeated thinking-only turns), not a single observation.
         """
         failed_groups: list[str] = []
         last_reason = "unknown"
         group = first_group
+        pending_class = first_failure_class
+        pending_label = first_failure_label
         attempts = 1  # the intercepted attempt
         cap = await self._candidate_cap()
         while attempts < cap:
@@ -1008,10 +1210,10 @@ class ModelPickerStatsLogger(CustomLogger):
                 logger.info("model_picker: candidate pool exhausted after %d attempts", attempts)
                 break
             if group:
-                self.stats.record_failure(group, model_picker.FAILURE_CLASS_SOFT)
+                self.stats.record_failure(group, pending_class)
                 self._exclude_group(request_data, group)
                 failed_groups.append(group)
-                logger.info("model_picker: soft failure intercepted for %s; retrying", group)
+                logger.info("model_picker: %s intercepted for %s; retrying", pending_label, group)
             retry_data = self._retry_data(request_data)
             if retry_data is None:
                 break
@@ -1023,12 +1225,25 @@ class ModelPickerStatsLogger(CustomLogger):
             except Exception as e:  # noqa: BLE001 — one bad provider must not end the walk
                 last_reason = f"upstream error ({type(e).__name__})"
                 group = self._event_group({"litellm_metadata": {"model_group": _response_model_name(e)}})
+                pending_class = model_picker.FAILURE_CLASS_SOFT
+                pending_label = "soft failure"
                 logger.warning("model_picker: retry attempt failed (%s); trying next candidate", e)
                 continue
             text = model_picker.extract_response_text(retry_resp)
             if model_picker.is_soft_failure_response(text, retry_resp):
                 last_reason = "provider error in response content"
                 group = self._event_group({"litellm_metadata": {"model_group": _response_model_name(retry_resp)}})
+                pending_class = model_picker.FAILURE_CLASS_SOFT
+                pending_label = "soft failure"
+                continue
+            if _response_is_thinking_only(retry_resp):
+                # a retry that also comes back thinking-only is not a clean
+                # answer: keep walking instead of handing the client a
+                # notice while untried candidates remain
+                last_reason = "thinking-only response"
+                group = self._event_group({"litellm_metadata": {"model_group": _response_model_name(retry_resp)}})
+                pending_class = model_picker.FAILURE_CLASS_ERROR
+                pending_label = "thinking-only response"
                 continue
             return retry_resp, {"tried": attempts, "reason": last_reason, "groups": failed_groups}
         return None, {"tried": attempts, "reason": last_reason, "groups": failed_groups}
@@ -1130,6 +1345,18 @@ class ModelPickerStatsLogger(CustomLogger):
         excluded. The retry's answer continues the same SSE stream — appended
         after any partial content already delivered — so an incomplete
         answer never stands as the turn's final answer.
+
+        Thinking-only responses get the same retry, but ONLY when the turn
+        would otherwise have stopped: the check runs once, after the stream
+        ends normally, and fires only when the assembled message is thinking
+        (or redacted thinking) with no actionable text or tool block and a
+        turn-ending stop reason. Thinking deltas mid-stream never fire —
+        they precede text in every normal reasoning response — and a
+        thinking block alongside text or tool calls never fires, because
+        the turn continues from those. Terminal message_delta/message_stop
+        events are held back until the stream ends so a thinking-only close
+        can be replaced by the retry's tail instead of ending the turn
+        empty; clean streams yield them unchanged, in order, at the end.
         """
         open_block: tuple[int, str] | None = None
         next_index = 0
@@ -1138,9 +1365,16 @@ class ModelPickerStatsLogger(CustomLogger):
         in_band_error = False  # litellm converted a mid-stream failure into an error event
         saw_text = False  # content text already delivered to the client
         saw_any_chunk = False  # anything at all delivered
+        saw_thinking = False  # a thinking/redacted_thinking block appeared
+        saw_actionable = False  # non-blank text or a tool block appeared
+        stream_stop_reason: str | None = None  # from message_delta, when seen
+        pending_terminal: list = []  # terminal-only chunks held for the end decision
+        terminal_yielded = False  # a terminal event already went out (mixed chunk)
         try:
             async for chunk in response:
                 saw_any_chunk = True
+                text = ""
+                chunk_terminal_only = False
                 try:
                     if _is_in_band_error(chunk):
                         # litellm's adapter already swallowed the upstream
@@ -1153,8 +1387,27 @@ class ModelPickerStatsLogger(CustomLogger):
                     text = _event_text(chunk)
                     if text:
                         accumulated += text
-                    for event in _chunk_events(chunk):
+                    events = _chunk_events(chunk)
+                    chunk_terminal_only = bool(events) and all(
+                        e.get("type") in ("message_delta", "message_stop") for e in events
+                    )
+                    for event in events:
                         etype = event.get("type")
+                        if etype in ("message_delta", "message_stop"):
+                            if etype == "message_delta":
+                                delta = event.get("delta") or {}
+                                if isinstance(delta, dict) and delta.get("stop_reason"):
+                                    stream_stop_reason = str(delta["stop_reason"])
+                            if not chunk_terminal_only:
+                                # a terminal event riding with content has
+                                # already been delivered with this chunk: the
+                                # stream is closed from the client's side and
+                                # no tail can replace it
+                                terminal_yielded = True
+                            continue
+                        thinking, actionable = _classify_stream_event(event)
+                        saw_thinking = saw_thinking or thinking
+                        saw_actionable = saw_actionable or actionable
                         if etype == "content_block_start":
                             block = event.get("content_block") or {}
                             open_block = (int(event.get("index", 0) or 0), str(block.get("type") or "text"))
@@ -1169,7 +1422,10 @@ class ModelPickerStatsLogger(CustomLogger):
                     logger.debug("model_picker: stream sniff error (%s)", e)
                 if text:
                     saw_text = True
-                yield chunk
+                if chunk_terminal_only:
+                    pending_terminal.append(chunk)
+                else:
+                    yield chunk
         except (asyncio.CancelledError, GeneratorExit):
             raise
         except Exception as e:
@@ -1200,6 +1456,42 @@ class ModelPickerStatsLogger(CustomLogger):
             soft_text = soft_text or "in-band error event"
 
         if soft_text is None:
+            # Normal completion — the only place the thinking-only rule may
+            # fire. The stream already delivered the thinking block (it
+            # cannot be un-yielded), but the held terminal events have not
+            # gone out, so the retry's tail replaces the empty close: the
+            # assembled message gains the retry's text/tool blocks and the
+            # turn continues instead of ending on thinking alone.
+            if (
+                saw_thinking
+                and not saw_actionable
+                and not terminal_yielded
+                and (stream_stop_reason is None or stream_stop_reason in _TURN_ENDING_STOP_REASONS)
+            ):
+                try:
+                    group = self._failed_group(request_data, response)
+                    retry_resp, summary = await self._retry_until_clean(
+                        request_data,
+                        group,
+                        first_failure_class=model_picker.FAILURE_CLASS_ERROR,
+                        first_failure_label="thinking-only response",
+                    )
+                    if retry_resp is None:
+                        logger.warning(
+                            "model_picker: retry walk exhausted after %d attempts (%s); replying with fallback notice",
+                            summary["tried"],
+                            summary["groups"],
+                        )
+                    fallback = _FALLBACK_REPLY.format(tried=summary["tried"], reason=summary["reason"])
+                    for event in self._synthesize_tail_events(retry_resp, open_block, next_index, fallback):
+                        yield _sse_frame(event)
+                except Exception as e:  # noqa: BLE001 — retry errors must not crash the SSE stream
+                    logger.warning("model_picker: thinking-only retry error (%s)", e)
+                    for event in self._synthesize_tail_events(None, open_block, next_index):
+                        yield _sse_frame(event)
+                return
+            for chunk in pending_terminal:
+                yield chunk
             return
 
         if not saw_any_chunk:
@@ -1240,12 +1532,18 @@ class ModelPickerStatsLogger(CustomLogger):
                 model_picker.extract_response_text(response)[:60],
             )
         text = model_picker.extract_response_text(response)
-        if not text or not model_picker.is_soft_failure_response(text, response):
+        thinking_only = _response_is_thinking_only(response)
+        if not thinking_only and (not text or not model_picker.is_soft_failure_response(text, response)):
             return response
         anthropic_shape = isinstance(response, dict) and isinstance(response.get("content"), list)
         try:
             group = self._failed_group(data if isinstance(data, dict) else {}, response)
-            retry_resp, summary = await self._retry_until_clean(data, group)
+            retry_resp, summary = await self._retry_until_clean(
+                data,
+                group,
+                first_failure_class=model_picker.FAILURE_CLASS_ERROR if thinking_only else model_picker.FAILURE_CLASS_SOFT,
+                first_failure_label="thinking-only response" if thinking_only else "soft failure",
+            )
             if retry_resp is not None:
                 if anthropic_shape:
                     return self._as_anthropic_dict(response, retry_resp, "")

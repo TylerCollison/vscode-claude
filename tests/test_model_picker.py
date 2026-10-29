@@ -1172,6 +1172,275 @@ class TestSoftFailureRetry:
 
 
 # ---------------------------------------------------------------------------
+# Thinking-only retry (a turn that would end on thinking alone is retried)
+# ---------------------------------------------------------------------------
+
+
+class TestThinkingOnlyRetry:
+    """A completed response that is thinking-only on a turn-ending stop
+    reason must retry with the model excluded — but ONLY then: thinking
+    mid-stream, thinking beside text/tool calls, and thinking-only on a
+    turn-continuing stop reason must all pass through untouched."""
+
+    @staticmethod
+    def _thinking_stream(stop_reason="end_turn"):
+        """Realistic anthropic stream: thinking block, then the close."""
+        return [
+            {"type": "message_start", "message": {"type": "message", "role": "assistant", "model": "m"}},
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "First, call functions.Bash"}},
+            {"type": "content_block_stop", "index": 0},
+            {"type": "message_delta", "delta": {"stop_reason": stop_reason, "stop_sequence": None}, "usage": {"output_tokens": 10}},
+            {"type": "message_stop"},
+        ]
+
+    @staticmethod
+    def _anthropic_response(blocks, stop_reason="end_turn"):
+        response = {"id": "msg_test", "type": "message", "role": "assistant", "model": "m", "content": blocks}
+        if stop_reason is not None:
+            response["stop_reason"] = stop_reason
+        return response
+
+    def test_detector_anthropic_shapes(self, mp):
+        lib, plugin = mp
+        thinking = {"type": "thinking", "thinking": "plan"}
+        text = {"type": "text", "text": "answer"}
+        empty_text = {"type": "text", "text": ""}
+        tool_use = {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {}}
+        redacted = {"type": "redacted_thinking", "data": "opaque"}
+        assert plugin._response_is_thinking_only(self._anthropic_response([thinking]))
+        assert plugin._response_is_thinking_only(self._anthropic_response([thinking, empty_text]))
+        assert plugin._response_is_thinking_only(self._anthropic_response([redacted]))
+        assert plugin._response_is_thinking_only(self._anthropic_response([thinking], stop_reason="max_tokens"))
+        assert plugin._response_is_thinking_only(self._anthropic_response([thinking], stop_reason=None))
+        assert not plugin._response_is_thinking_only(self._anthropic_response([thinking, text]))
+        assert not plugin._response_is_thinking_only(self._anthropic_response([thinking, tool_use]))
+        assert not plugin._response_is_thinking_only(self._anthropic_response([text]))
+        assert not plugin._response_is_thinking_only(self._anthropic_response([]))
+        # a turn-continuing stop reason never fires, even with nothing actionable
+        assert not plugin._response_is_thinking_only(self._anthropic_response([thinking], stop_reason="tool_use"))
+        assert not plugin._response_is_thinking_only(self._anthropic_response([thinking], stop_reason="refusal"))
+
+    def test_detector_openai_shapes(self, mp):
+        lib, plugin = mp
+
+        def msg(reasoning=None, content=None, tool_calls=None):
+            return types.SimpleNamespace(reasoning_content=reasoning, content=content, tool_calls=tool_calls)
+
+        def resp(message, finish):
+            return types.SimpleNamespace(
+                model="pollinations/community/x",
+                choices=[types.SimpleNamespace(message=message, finish_reason=finish)],
+            )
+
+        assert plugin._response_is_thinking_only(resp(msg(reasoning="plan"), "stop"))
+        assert plugin._response_is_thinking_only(resp(msg(reasoning="plan"), "length"))
+        assert not plugin._response_is_thinking_only(resp(msg(reasoning="plan", content="hi"), "stop"))
+        assert not plugin._response_is_thinking_only(
+            resp(msg(reasoning="plan", tool_calls=[{"id": "1", "function": {"name": "Bash"}}]), "tool_calls")
+        )
+        assert not plugin._response_is_thinking_only(resp(msg(), "stop"))
+        # dict-shaped OpenAI responses behave the same
+        assert plugin._response_is_thinking_only(
+            {"choices": [{"message": {"role": "assistant", "content": None, "reasoning_content": "plan"}, "finish_reason": "stop"}]}
+        )
+        assert not plugin._response_is_thinking_only(
+            {"choices": [{"message": {"role": "assistant", "content": None, "reasoning_content": "plan"}, "finish_reason": "tool_calls"}]}
+        )
+        assert not plugin._response_is_thinking_only({"choices": [{"message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}]})
+
+    def test_streaming_thinking_only_retries_with_exclusion(self, mp, monkeypatch):
+        lib, plugin = mp
+        logger = TestSoftFailureRetry._make_logger(lib, plugin)
+        good = litellm.ModelResponse(
+            choices=[{"message": {"role": "assistant", "content": "Here is the listing:"}, "finish_reason": "stop"}],
+            usage={"prompt_tokens": 3, "completion_tokens": 4},
+        )
+        calls = TestSoftFailureRetry._fake_router_acompletion(monkeypatch, logger, [good])
+        events = self._thinking_stream()
+        request_data = {
+            "model": "lite-llm/complexity",
+            "messages": [{"role": "user", "content": "hi"}],
+            "litellm_metadata": {"model_group": "pollinations/community/x"},
+        }
+
+        async def stream():
+            for e in events:
+                yield e
+
+        async def run():
+            out = []
+            async for chunk in logger.async_post_call_streaming_iterator_hook(None, stream(), request_data):
+                out.append(chunk)
+            return out
+
+        out = asyncio.run(run())
+        assert calls["n"] == 1
+        assert "pollinations/community/x" in request_data["litellm_metadata"]["model_picker_exclude"]
+        flat = "".join(plugin._event_text(c) for c in out)
+        assert "Here is the listing:" in flat  # the retry's answer reaches the client
+        assert "First, call functions.Bash" in flat  # already-delivered thinking stays
+        types_seen = [e.get("type") for c in out for e in plugin._chunk_events(c)]
+        assert types_seen.count("message_delta") == 1  # the original end_turn close was dropped
+        assert types_seen.count("message_stop") == 1
+        assert types_seen[-2:] == ["message_delta", "message_stop"]
+        # ERROR, not SOFT: one thinking-only turn must not instantly demote
+        derived = logger.stats.derived("pollinations/community/x")
+        assert derived.n_obs >= 1
+        assert derived.soft_failures == 0
+
+    def test_streaming_thinking_with_text_passes_through(self, mp, monkeypatch):
+        lib, plugin = mp
+        logger = TestSoftFailureRetry._make_logger(lib, plugin)
+        calls = TestSoftFailureRetry._fake_router_acompletion(monkeypatch, logger, [])
+        events = [
+            {"type": "message_start", "message": {"type": "message", "role": "assistant", "model": "m"}},
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "plan"}},
+            {"type": "content_block_stop", "index": 0},
+            {"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}},
+            {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "answer"}},
+            {"type": "content_block_stop", "index": 1},
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None}, "usage": {"output_tokens": 5}},
+            {"type": "message_stop"},
+        ]
+
+        async def stream():
+            for e in events:
+                yield e
+
+        async def run():
+            out = []
+            async for chunk in logger.async_post_call_streaming_iterator_hook(None, stream(), {"model": "m", "messages": []}):
+                out.append(chunk)
+            return out
+
+        assert asyncio.run(run()) == events
+        assert calls["n"] == 0
+
+    def test_streaming_thinking_only_on_tool_use_reason_passes_through(self, mp, monkeypatch):
+        lib, plugin = mp
+        logger = TestSoftFailureRetry._make_logger(lib, plugin)
+        calls = TestSoftFailureRetry._fake_router_acompletion(monkeypatch, logger, [])
+        events = self._thinking_stream(stop_reason="tool_use")
+
+        async def stream():
+            for e in events:
+                yield e
+
+        async def run():
+            out = []
+            async for chunk in logger.async_post_call_streaming_iterator_hook(None, stream(), {"model": "m", "messages": []}):
+                out.append(chunk)
+            return out
+
+        assert asyncio.run(run()) == events
+        assert calls["n"] == 0
+
+    def test_streaming_thinking_with_tool_use_passes_through(self, mp, monkeypatch):
+        lib, plugin = mp
+        logger = TestSoftFailureRetry._make_logger(lib, plugin)
+        calls = TestSoftFailureRetry._fake_router_acompletion(monkeypatch, logger, [])
+        events = [
+            {"type": "message_start", "message": {"type": "message", "role": "assistant", "model": "m"}},
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "plan"}},
+            {"type": "content_block_stop", "index": 0},
+            {"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {}}},
+            {"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": "{}"}},
+            {"type": "content_block_stop", "index": 1},
+            {"type": "message_delta", "delta": {"stop_reason": "tool_use", "stop_sequence": None}, "usage": {"output_tokens": 5}},
+            {"type": "message_stop"},
+        ]
+
+        async def stream():
+            for e in events:
+                yield e
+
+        async def run():
+            out = []
+            async for chunk in logger.async_post_call_streaming_iterator_hook(None, stream(), {"model": "m", "messages": []}):
+                out.append(chunk)
+            return out
+
+        assert asyncio.run(run()) == events
+        assert calls["n"] == 0
+
+    def test_non_streaming_thinking_only_swapped_for_retry(self, mp, monkeypatch):
+        lib, plugin = mp
+        logger = TestSoftFailureRetry._make_logger(lib, plugin)
+        good = litellm.ModelResponse(choices=[{"message": {"role": "assistant", "content": "OK"}, "finish_reason": "stop"}])
+        calls = TestSoftFailureRetry._fake_router_acompletion(monkeypatch, logger, [good])
+        data = {
+            "model": "lite-llm/complexity",
+            "messages": [{"role": "user", "content": "hi"}],
+            "litellm_metadata": {"model_group": "pollinations/community/x"},
+        }
+        result = asyncio.run(
+            logger.async_post_call_success_hook(
+                None, data, self._anthropic_response([{"type": "thinking", "thinking": "plan"}])
+            )
+        )
+        assert calls["n"] == 1
+        assert "pollinations/community/x" in data["litellm_metadata"]["model_picker_exclude"]
+        assert result["content"] == [{"type": "text", "text": "OK"}]
+        # and a normal text response is untouched
+        text_resp = self._anthropic_response([{"type": "text", "text": "fine"}])
+        assert asyncio.run(logger.async_post_call_success_hook(None, data, text_resp)) is text_resp
+
+    def test_success_logger_records_thinking_only_as_error_not_success(self, mp):
+        lib, plugin = mp
+        logger = TestSoftFailureRetry._make_logger(lib, plugin)
+        kwargs = {"litellm_metadata": {"model_group": "pollinations/community/x"}}
+        now = datetime.now()
+        asyncio.run(
+            logger.async_log_success_event(
+                kwargs, self._anthropic_response([{"type": "thinking", "thinking": "plan"}]), now, now
+            )
+        )
+        derived = logger.stats.derived("pollinations/community/x")
+        assert derived.n_obs == 1
+        assert derived.soft_failures == 0
+        assert derived.last_obs_was_failure is True
+        assert derived.failures == pytest.approx(1.0)
+
+    def test_walk_continues_past_thinking_only_retry(self, mp, monkeypatch):
+        lib, plugin = mp
+        logger = TestSoftFailureRetry._make_logger(lib, plugin)
+        thinking_y = types.SimpleNamespace(
+            model="pollinations/community/y",
+            choices=[
+                types.SimpleNamespace(
+                    message=types.SimpleNamespace(reasoning_content="plan", content=None, tool_calls=None),
+                    finish_reason="stop",
+                )
+            ],
+        )
+        good = litellm.ModelResponse(choices=[{"message": {"role": "assistant", "content": "Recovered"}, "finish_reason": "stop"}])
+        calls = TestSoftFailureRetry._fake_router_acompletion(monkeypatch, logger, [thinking_y, good])
+        request_data = {
+            "model": "lite-llm/complexity",
+            "messages": [{"role": "user", "content": "hi"}],
+            "litellm_metadata": {"model_group": "pollinations/community/x"},
+        }
+        result, summary = asyncio.run(
+            logger._retry_until_clean(
+                request_data,
+                "pollinations/community/x",
+                first_failure_class=lib.FAILURE_CLASS_ERROR,
+                first_failure_label="thinking-only response",
+            )
+        )
+        assert result is good
+        assert calls["n"] == 2
+        excluded = request_data["litellm_metadata"]["model_picker_exclude"]
+        assert "pollinations/community/x" in excluded
+        assert "pollinations/community/y" in excluded
+        assert logger.stats.derived("pollinations/community/x").soft_failures == 0
+        assert logger.stats.derived("pollinations/community/y").soft_failures == 0
+
+
+# ---------------------------------------------------------------------------
 # Anthropically-shaped retries (the /v1/messages walk fix, litellm5.log)
 # ---------------------------------------------------------------------------
 
