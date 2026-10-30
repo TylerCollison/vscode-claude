@@ -1361,10 +1361,16 @@ class ModelPickerStatsLogger(CustomLogger):
         agent turns recovered mid-flight keep their working tool calls, and
         the message closes with the retry's stop reason and usage in
         anthropic vocabulary.
+
+        The fallback notice applies ONLY when there is no response at all
+        (the walk was exhausted): a successful retry whose answer is
+        tool-only — the normal agent-turn shape — carries no text, and
+        filling it with the "every model was tried" notice would lie to
+        the client about a request that actually succeeded.
         """
-        text = model_picker.extract_response_text(response_obj) or fallback_text or _FALLBACK_REPLY.format(
-            tried=0, reason="unknown"
-        )
+        text = model_picker.extract_response_text(response_obj)
+        if not text and response_obj is None:
+            text = fallback_text or _FALLBACK_REPLY.format(tried=0, reason="unknown")
         tool_uses = _response_tool_uses(response_obj)
         for i, tool_use in enumerate(tool_uses):
             if not tool_use["id"]:

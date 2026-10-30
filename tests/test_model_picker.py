@@ -988,6 +988,97 @@ class TestSoftFailureRetry:
         ranked = lib.rank_candidates([gated, healthy], lib.TIER_DEFAULT, logger.stats, cfg, now=now)
         assert ranked[0].candidate.name == "pollinations/openai/healthy"
 
+    def test_tail_synthesis_uses_fallback_only_when_no_response(self, mp):
+        """Regression: the "[model_picker] every available model was tried"
+        notice leaked into SUCCESSFUL retries whose answer was tool-only
+        (no text) — the normal agent-turn shape — because the tail used the
+        fallback whenever the response had no extractable text. The notice
+        must only fill in when there is no response at all."""
+        lib, plugin = mp
+        synth = plugin.ModelPickerStatsLogger._synthesize_tail_events
+        tool_only = {
+            "content": [{"type": "tool_use", "id": "toolu_1", "name": "get_weather", "input": {"city": "Paris"}}]
+        }
+        events = synth(tool_only, None, 0, "FALLBACK NOTICE")
+        flat = "".join(plugin._event_text(e) for e in events)
+        assert "FALLBACK NOTICE" not in flat
+        tool_blocks = [
+            e.get("content_block", {})
+            for e in events
+            if e.get("type") == "content_block_start" and e.get("content_block", {}).get("type") == "tool_use"
+        ]
+        assert [b.get("name") for b in tool_blocks] == ["get_weather"]
+        # ...while a genuinely exhausted walk still gets the notice...
+        events = synth(None, None, 0, "FALLBACK NOTICE")
+        flat = "".join(plugin._event_text(e) for e in events)
+        assert "FALLBACK NOTICE" in flat
+        # ...and a retry WITH text keeps its own text, not the notice.
+        events = synth({"content": [{"type": "text", "text": "Real answer"}]}, None, 0, "FALLBACK NOTICE")
+        flat = "".join(plugin._event_text(e) for e in events)
+        assert "Real answer" in flat
+        assert "FALLBACK NOTICE" not in flat
+
+    def test_streaming_retry_tool_only_response_gets_no_fallback_notice(self, mp, monkeypatch):
+        """End to end: a soft failure whose retry succeeds with a tool-only
+        answer must reach the client as that tool call — no
+        "[model_picker] every available model was tried" text mixed in.
+        The notice's "(2 attempts, last failure: unknown)" signature is the
+        tell: the walk succeeded on its first retry, so the reason was never
+        set, and the text-less answer was backfilled with the notice."""
+        lib, plugin = mp
+        logger = self._make_logger(lib, plugin)
+        credits = "The account behind this API key doesn't have enough credits. Please top up."
+        events = self._anthropic_events("Could not process", credits)
+        tool_resp = litellm.ModelResponse(
+            choices=[
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "get_weather", "arguments": '{"city": "Paris"}'},
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+            usage={"prompt_tokens": 3, "completion_tokens": 2},
+        )
+        calls = self._fake_router_acompletion(monkeypatch, logger, [tool_resp])
+
+        async def stream():
+            for e in events:
+                yield e
+
+        request_data = {
+            "model": "lite-llm/complexity",
+            "messages": [{"role": "user", "content": "hi"}],
+            "litellm_metadata": {"model_group": "pollinations/community/x"},
+        }
+
+        async def run():
+            out = []
+            async for chunk in logger.async_post_call_streaming_iterator_hook(None, stream(), request_data):
+                out.append(chunk)
+            return out
+
+        out = asyncio.run(run())
+        assert calls["n"] == 1
+        flat = "".join(plugin._event_text(c) for c in out)
+        assert "every available model was tried" not in flat
+        assert "enough credits" not in flat
+        tool_blocks = [
+            e.get("content_block", {})
+            for c in out
+            for e in plugin._chunk_events(c)
+            if e.get("type") == "content_block_start" and e.get("content_block", {}).get("type") == "tool_use"
+        ]
+        assert [b.get("name") for b in tool_blocks] == ["get_weather"]
+
     def test_walk_context_error_learns_window_without_persistent_failure(self, mp, monkeypatch):
         lib, plugin = mp
         logger = self._make_logger(lib, plugin)
