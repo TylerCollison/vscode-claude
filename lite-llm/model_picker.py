@@ -84,6 +84,7 @@ import os
 import re
 import time
 from collections import deque
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 logger = logging.getLogger("model_picker")
@@ -1406,20 +1407,71 @@ def tracked_health_score(stats: DerivedStats) -> float:
     return (stats.successes + 1.0) / (stats.successes + stats.failures + 2.0)
 
 
-def extract_context_limit(exc: BaseException | None) -> int | None:
-    """Upstream context limit carried by a context_length failure, if any.
+# Wordings that identify a context-window overflow in an error message
+# (LiteLLM's own detection list in exception_mapping_utils, plus the
+# context_length_exceeded code). Used to recognize a context error even
+# when the error carries no usable numeric limit.
+_CONTEXT_WINDOW_MESSAGE_MARKERS = (
+    "exceed context limit",
+    "this model's maximum context length is",
+    "model's maximum context limit",
+    "is longer than the model's context length",
+    "input tokens exceed the configured limit",
+    "`inputs` tokens + `max_new_tokens` must be",
+    "exceeds the available context size",
+    "exceeds the maximum number of tokens allowed",
+    "context_length_exceeded",
+    "context window exceeded",
+)
 
-    NVIDIA's 400 for an over-window request reads just "Invalid request"
-    to LiteLLM, so it maps to a generic BadRequestError — but the mapped
-    error keeps the provider body's ``details`` (``{"type":
-    "context_length", "limit": 262144, "actual": 265267}``). Walk the
-    exception chain and any body/response payloads for that shape; fall
-    back to a ``context_length ... limit N`` pattern in the message text.
-    Returns None for unrelated errors and for context errors that carry
-    no usable limit.
+
+def _payload_dicts(payload: object) -> Iterator[dict]:
+    """Dicts inside a provider body: itself, nested error dicts, list items."""
+    import json as _json
+
+    if isinstance(payload, str):
+        try:
+            payload = _json.loads(payload)
+        except Exception:
+            return
+    if isinstance(payload, list):
+        for item in payload:
+            yield from _payload_dicts(item)
+        return
+    if not isinstance(payload, dict):
+        return
+    yield payload
+    nested = payload.get("error")
+    if isinstance(nested, dict):
+        yield from _payload_dicts(nested)
+
+
+def _context_details_items(payload: object) -> Iterator[dict]:
+    """context_length details dicts inside a provider body, if any."""
+    for d in _payload_dicts(payload):
+        details = d.get("details")
+        items = [details] if isinstance(details, dict) else (details if isinstance(details, list) else [])
+        for item in items:
+            if isinstance(item, dict) and item.get("type") in (
+                "context_length",
+                "context_length_exceeded",
+            ):
+                yield item
+
+
+def is_context_window_error(exc: BaseException | None) -> bool:
+    """Whether an exception is a context-window overflow, by type or wording.
+
+    LiteLLM maps provider context errors to ContextWindowExceededError, but
+    some providers' bare 400s never map (NVIDIA's "Invalid request") while
+    still carrying a context_length details body — so check the type name,
+    the details payload (and its code), and LiteLLM's own context-error
+    substrings. A bare "Invalid request" with no context marker is not one.
     """
-    import re as _re
-
+    if exc is None:
+        return False
+    if "contextwindow" in type(exc).__name__.lower().replace("_", ""):
+        return True
     seen: set[int] = set()
     queue: list[object] = [exc]
     while queue:
@@ -1429,18 +1481,70 @@ def extract_context_limit(exc: BaseException | None) -> int | None:
         seen.add(id(current))
         for attr in ("body", "response"):
             payload = getattr(current, attr, None)
+            if next(_context_details_items(payload), None) is not None:
+                return True
+            for d in _payload_dicts(payload):
+                if d.get("code") == "context_length_exceeded":
+                    return True
+        text = str(current).lower()
+        if any(marker in text for marker in _CONTEXT_WINDOW_MESSAGE_MARKERS):
+            return True
+        for attr in ("__cause__", "__context__"):
+            nxt = getattr(current, attr, None)
+            if nxt is not None:
+                queue.append(nxt)
+    return False
+
+
+# Numeric-limit patterns, tried in order on each exception's text (and on
+# serialized provider bodies, whose message may not reach str(exc)).
+_CONTEXT_LIMIT_PATTERNS = (
+    r"context_length[^0-9]{0,40}?limit['\"]?\s*[:=]\s*(\d+)",
+    r"maximum context (?:length|limit)\s+is\s+(\d+)",
+    r"while limit is\s+(\d+)",
+)
+
+
+def extract_context_limit(exc: BaseException | None) -> int | None:
+    """Upstream context limit carried by a context_length failure, if any.
+
+    NVIDIA's 400 for an over-window request reads just "Invalid request"
+    to LiteLLM, so it maps to a generic BadRequestError — but the mapped
+    error keeps the provider body's ``details`` (``{"type":
+    "context_length", "limit": 262144, "actual": 265267}``). Walk the
+    exception chain and any body/response payloads for that shape; fall
+    back to limit patterns in the message text (OpenAI's "maximum context
+    length is N", Cerebras' "Current length is X while limit is Y", a
+    ``context_length ... limit N`` pattern). Returns None for unrelated
+    errors and for context errors that carry no usable limit — the caller
+    then falls back to the request's own token estimate as the bound.
+    """
+    import json as _json
+    import re as _re
+
+    seen: set[int] = set()
+    queue: list[object] = [exc]
+    while queue:
+        current = queue.pop(0)
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        texts: list[str] = [str(current)]
+        for attr in ("body", "response"):
+            payload = getattr(current, attr, None)
             limit = _context_limit_from_payload(payload)
             if limit is not None:
                 return limit
-        text = str(current)
-        match = _re.search(
-            r"context_length[^0-9]{0,40}?limit['\"]?\s*[:=]\s*(\d+)", text, _re.IGNORECASE
-        )
-        if match:
-            try:
-                return int(match.group(1))
-            except ValueError:
-                pass
+            for d in _payload_dicts(payload):
+                texts.append(_json.dumps(d, default=str))
+        for text in texts:
+            for pattern in _CONTEXT_LIMIT_PATTERNS:
+                match = _re.search(pattern, text, _re.IGNORECASE)
+                if match:
+                    try:
+                        return int(match.group(1))
+                    except ValueError:
+                        continue
         for attr in ("__cause__", "__context__"):
             nxt = getattr(current, attr, None)
             if nxt is not None:
@@ -1449,23 +1553,14 @@ def extract_context_limit(exc: BaseException | None) -> int | None:
 
 
 def _context_limit_from_payload(payload: object) -> int | None:
-    import json as _json
-
-    if isinstance(payload, str):
-        try:
-            payload = _json.loads(payload)
-        except Exception:
-            return None
-    if not isinstance(payload, dict):
-        return None
-    details = payload.get("details")
-    if isinstance(details, dict) and details.get("type") in (
-        "context_length",
-        "context_length_exceeded",
-    ):
+    for details in _context_details_items(payload):
         limit = details.get("limit")
-        if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0:
+        if isinstance(limit, bool):
+            continue
+        if isinstance(limit, int) and limit > 0:
             return limit
+        if isinstance(limit, str) and limit.isdigit() and int(limit) > 0:
+            return int(limit)
     return None
 
 

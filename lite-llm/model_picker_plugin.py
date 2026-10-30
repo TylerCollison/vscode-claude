@@ -251,8 +251,44 @@ def _retry_not_found_errors() -> None:
         logger.warning("model_picker: could not install NotFoundError retry patch (%s)", e)
 
 
+def _record_context_learning_on_retry() -> None:
+    """Learn a model's real window on every router retry attempt.
+
+    LiteLLM's failure callback only fires once the whole call fails (or
+    never, when a later retry succeeds), so intermediate context errors
+    in the router's retry loop never reach the stats logger — the same
+    context-window walk repeats request after request. Router.log_retry
+    runs for every failed attempt with the request kwargs and the error,
+    so wrap it: on a context-window error, learn the window right there
+    (provider-stated limit when the error carries one, else one token
+    below the request's estimate). Learning must never break retries.
+    """
+    try:
+        from litellm.router import Router as _Router
+
+        original = _Router.log_retry
+        if getattr(original, "_model_picker_patch", None) is not None:
+            return
+
+        def log_retry(self, kwargs=None, e=None, *args, **kwargs2):
+            try:
+                logger_instance = globals().get("stats_logger")
+                if logger_instance is not None and kwargs is not None and e is not None:
+                    logger_instance.learn_context_limit(kwargs, e)
+            except Exception:  # noqa: BLE001 — learning must never break retries
+                pass
+            return original(self, kwargs, e, *args, **kwargs2)
+
+        log_retry._model_picker_patch = True  # marker for tests/introspection
+        _Router.log_retry = log_retry
+        logger.debug("model_picker: context-learning log_retry patch installed")
+    except Exception as e:  # noqa: BLE001 — a patch failure must not break the proxy
+        logger.warning("model_picker: could not install context-learning log_retry patch (%s)", e)
+
+
 _preserve_legacy_max_tokens()
 _retry_not_found_errors()
+_record_context_learning_on_retry()
 _fallback_model_info_for_unmapped_models()
 
 # ---------------------------------------------------------------------------
@@ -1002,21 +1038,68 @@ class ModelPickerStatsLogger(CustomLogger):
             return
         self.stats.record_success(group, _event_ttft_seconds(kwargs, start_time))
 
+    def learn_context_limit(self, kwargs, exception, group=None) -> bool:
+        """Teach the fit filter a model's real window from a context error.
+
+        Returns True when a window was recorded. A provider-stated limit
+        wins when the error carries one; otherwise the request's own token
+        estimate is the conservative bound — the model proved it cannot
+        serve a request of that size, so the learned window is one token
+        below it (the fit filter drops a request whose estimate exceeds
+        the window, so recording the estimate itself would still admit
+        the same-size request). The model stays eligible for smaller
+        requests. A limit is only recorded for a group that names a
+        tracked candidate; ambiguous or unknown names record nothing
+        rather than polluting a sibling's stats.
+
+        Called from the failure hook (once, when the whole call fails),
+        from the log_retry patch (per router retry attempt), and from the
+        exclusion walk (per walk retry): the failure callback never fires
+        for intermediate attempts when a later retry succeeds, so without
+        the per-attempt calls the same context-window walk repeats
+        request after request.
+        """
+        if group is None:
+            group = self._event_group(kwargs or {})
+            if not group:
+                group = self._event_group({"litellm_metadata": {"model_group": _response_model_name(exception)}})
+        if not group or not model_picker.is_context_window_error(exception):
+            return False
+        names = self.manager.peek_candidate_names()
+        if names is not None and group not in names:
+            logger.debug("model_picker: not learning a window for untracked group %s", group)
+            return False
+        limit = model_picker.extract_context_limit(exception)
+        if limit is not None:
+            self.stats.record_context_limit(group, limit)
+            logger.info("model_picker: learned context window for %s: %d tokens", group, limit)
+            return True
+        estimate = model_picker.estimate_tokens((kwargs or {}).get("messages") or [])
+        if estimate > 1:
+            self.stats.record_context_limit(group, estimate - 1)
+            logger.info(
+                "model_picker: learned context window for %s: %d tokens (estimate fallback; request was %d tokens)",
+                group,
+                estimate - 1,
+                estimate,
+            )
+            return True
+        return False
+
     async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
         group = self._event_group(kwargs)
         if not group:
             return
         exception = kwargs.get("exception")
+        if model_picker.is_context_window_error(exception):
+            # A context overflow proves the model's window, not its health:
+            # learn the window only. A persistent failure here would
+            # wrongly demote a model that is merely too small for this
+            # request (and the fit filter already excludes it for
+            # oversized ones).
+            self.learn_context_limit(kwargs, exception, group=group)
+            return
         self.stats.record_failure(group, model_picker.classify_exception(exception))
-        # A context_length 400 proves the model's real window, which the
-        # catalog overstated (minimax-m3.1-flash: catalog 1,048,576, NIM
-        # 262,144). Learn it so the fit filter never picks this model for
-        # an oversized request again — the lie costs one failure, not
-        # every oversized request until the session is compacted.
-        limit = model_picker.extract_context_limit(exception)
-        if limit is not None:
-            self.stats.record_context_limit(group, limit)
-            logger.info("model_picker: learned context window for %s: %d tokens", group, limit)
 
     # -- soft-failure interception ------------------------------------------
 
@@ -1176,7 +1259,7 @@ class ModelPickerStatsLogger(CustomLogger):
         self,
         request_data: dict,
         first_group: str,
-        first_failure_class: str = model_picker.FAILURE_CLASS_SOFT,
+        first_failure_class: str | None = model_picker.FAILURE_CLASS_SOFT,
         first_failure_label: str = "soft failure",
     ):
         """Retry the request until a model succeeds or none are left to try.
@@ -1185,9 +1268,13 @@ class ModelPickerStatsLogger(CustomLogger):
         available candidate failed. Each failed attempt is recorded and
         excluded from the next pick; soft failures (200-with-error-content),
         thinking-only responses, and hard exceptions all continue the walk.
-        Termination: the walk is bounded by the candidate-pool size, and a
-        re-offered already-failed model means the picker has nothing fresh
-        left.
+        A context-window exception records no persistent failure (None):
+        the retry hook already recorded the learned window, which is the
+        scoped response — a failure entry would wrongly demote a model
+        that is merely too small for this request. The model is still
+        excluded for this request. Termination: the walk is bounded by the
+        candidate-pool size, and a re-offered already-failed model means
+        the picker has nothing fresh left.
 
         The intercepted attempt's failure class is caller-chosen: soft
         failures are deterministic per model+account, so SOFT (instant
@@ -1211,7 +1298,8 @@ class ModelPickerStatsLogger(CustomLogger):
                 logger.info("model_picker: candidate pool exhausted after %d attempts", attempts)
                 break
             if group:
-                self.stats.record_failure(group, pending_class)
+                if pending_class is not None:
+                    self.stats.record_failure(group, pending_class)
                 self._exclude_group(request_data, group)
                 failed_groups.append(group)
                 logger.info("model_picker: %s intercepted for %s; retrying", pending_label, group)
@@ -1226,8 +1314,18 @@ class ModelPickerStatsLogger(CustomLogger):
             except Exception as e:  # noqa: BLE001 — one bad provider must not end the walk
                 last_reason = f"upstream error ({type(e).__name__})"
                 group = self._event_group({"litellm_metadata": {"model_group": _response_model_name(e)}})
-                pending_class = model_picker.FAILURE_CLASS_SOFT
-                pending_label = "soft failure"
+                if model_picker.is_context_window_error(e):
+                    # The learned window is the scoped response; record it
+                    # here too (the retry hook covers the router path, this
+                    # covers the walk's own retries). No persistent
+                    # failure: the model is still excluded for this request,
+                    # but it must not demote for being too small for it.
+                    self.learn_context_limit(request_data, e, group=group)
+                    pending_class = None
+                    pending_label = "context window exceeded"
+                else:
+                    pending_class = model_picker.FAILURE_CLASS_SOFT
+                    pending_label = "soft failure"
                 logger.warning("model_picker: retry attempt failed (%s); trying next candidate", e)
                 continue
             text = model_picker.extract_response_text(retry_resp)

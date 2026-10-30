@@ -988,6 +988,58 @@ class TestSoftFailureRetry:
         ranked = lib.rank_candidates([gated, healthy], lib.TIER_DEFAULT, logger.stats, cfg, now=now)
         assert ranked[0].candidate.name == "pollinations/openai/healthy"
 
+    def test_walk_context_error_learns_window_without_persistent_failure(self, mp, monkeypatch):
+        lib, plugin = mp
+        logger = self._make_logger(lib, plugin)
+        credits = "The account behind this API key doesn't have enough credits. Please top up."
+        events = self._anthropic_events("Could not process", credits)
+        good_resp = litellm.ModelResponse(
+            choices=[{"message": {"role": "assistant", "content": "Hello!"}, "finish_reason": "stop"}],
+            usage={"prompt_tokens": 3, "completion_tokens": 2},
+        )
+        calls = {"n": 0}
+
+        async def flaky_then_good(retry_data):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise litellm.ContextWindowExceededError(
+                    message="ContextWindowExceededError: nim - Invalid request",
+                    model="pollinations/community/y",
+                    llm_provider="nim",
+                )
+            return good_resp
+
+        monkeypatch.setattr(logger, "_router_acompletion", flaky_then_good)
+
+        async def stream():
+            for e in events:
+                yield e
+
+        request_data = {
+            "model": "lite-llm/complexity",
+            "messages": [{"role": "user", "content": "x" * 4000}],
+            "litellm_metadata": {"model_group": "pollinations/community/x"},
+        }
+
+        async def run():
+            out = []
+            async for chunk in logger.async_post_call_streaming_iterator_hook(None, stream(), request_data):
+                out.append(chunk)
+            return out
+
+        out = asyncio.run(run())
+        flat = "".join(plugin._event_text(c) for c in out)
+        assert "Hello!" in flat
+        # The context-overflowing model was excluded for this request and
+        # taught the fit filter (4000 chars -> 1000-token estimate -> 999),
+        # but recorded no persistent failure: an overflow proves the
+        # window, not the model's health.
+        assert "pollinations/community/y" in request_data["litellm_metadata"]["model_picker_exclude"]
+        assert logger.stats.learned_window("pollinations/community/y") == 999
+        assert logger.stats.derived("pollinations/community/y").failures == 0
+        # ...while the soft failure that started the walk still recorded.
+        assert logger.stats.derived("pollinations/community/x").soft_failures == 1
+
     def test_streaming_clean_response_passes_through_untouched(self, mp, monkeypatch):
         lib, plugin = mp
         logger = self._make_logger(lib, plugin)
@@ -3110,3 +3162,176 @@ class TestContextOverflow:
             )
         )
         assert stats.learned_window("nvidia_nim/minimaxai/minimax-m3.1-flash") == 262144
+
+    def test_extract_context_limit_openai_and_cerebras_messages(self, mp):
+        lib, _ = mp
+        # OpenAI's wording carries the limit in plain text, no details body.
+        assert (
+            lib.extract_context_limit(ValueError("This model's maximum context length is 262144 tokens")) == 262144
+        )
+        # Cerebras reports "Current length is X while limit is Y".
+        assert lib.extract_context_limit(ValueError("Current length is 300000 while limit is 262144")) == 262144
+        # A limit carried as a string in the details body still parses.
+        class StringLimit(Exception):
+            def __init__(self):
+                super().__init__("Invalid request")
+                self.body = {"details": {"type": "context_length_exceeded", "limit": "131072"}}
+
+        assert lib.extract_context_limit(StringLimit()) == 131072
+        # ...but a bare "Invalid request" with no context marker carries none.
+        assert lib.extract_context_limit(ValueError("Invalid request")) is None
+
+    def test_is_context_window_error(self, mp):
+        lib, _ = mp
+
+        class ContextWindowExceededError(Exception):
+            pass
+
+        assert lib.is_context_window_error(ContextWindowExceededError("boom"))
+        assert lib.is_context_window_error(ValueError("This model's maximum context length is 131072 tokens"))
+        assert lib.is_context_window_error(ValueError("exceed context limit")) is True
+        assert lib.is_context_window_error(ValueError("boom")) is False
+        assert lib.is_context_window_error(None) is False
+
+        class DetailsNoLimit(Exception):
+            def __init__(self):
+                super().__init__("Invalid request")
+                self.body = {"details": {"type": "context_length_exceeded"}}
+
+        # A context_length details body identifies the error even when the
+        # limit itself is missing (the estimate fallback then applies).
+        assert lib.is_context_window_error(DetailsNoLimit()) is True
+
+    def test_failure_event_learns_from_litellm_mapped_cwe(self, mp, fresh):
+        """A LiteLLM-mapped ContextWindowExceededError with no details body
+        still teaches the window, via the limit in its message text."""
+        lib, plugin = mp
+        _lib, _test_plugin, _cfg, stats, manager = fresh
+        logger = plugin.ModelPickerStatsLogger(stats=stats, manager=manager)
+        manager._snapshot = lib.CatalogSnapshot(
+            candidates=[favored_candidate(lib, "nvidia_nim/minimaxai/minimax-m3.1-flash", ctx=1048576)]
+        )
+        exc = litellm.ContextWindowExceededError(
+            message="ContextWindowExceededError: openai - This model's maximum context length is 131072 tokens",
+            model="nvidia_nim/minimaxai/minimax-m3.1-flash",
+            llm_provider="openai",
+        )
+        import asyncio
+
+        asyncio.run(
+            logger.async_log_failure_event(
+                {"litellm_metadata": {"model_group": "nvidia_nim/minimaxai/minimax-m3.1-flash"}, "exception": exc},
+                None,
+                None,
+                None,
+            )
+        )
+        assert stats.learned_window("nvidia_nim/minimaxai/minimax-m3.1-flash") == 131072
+
+    def test_failure_event_estimate_fallback_for_unparseable_cwe(self, mp, fresh):
+        """A context error carrying no limit anywhere falls back to the
+        request's own estimate: the model proved it cannot serve a request
+        of that size, so the learned window is one token below it — and a
+        context overflow records no persistent failure (it proves the
+        window, not the model's health)."""
+        lib, plugin = mp
+        _lib, _test_plugin, _cfg, stats, manager = fresh
+        logger = plugin.ModelPickerStatsLogger(stats=stats, manager=manager)
+        manager._snapshot = lib.CatalogSnapshot(
+            candidates=[favored_candidate(lib, "nvidia_nim/minimaxai/minimax-m3.1-flash", ctx=1048576)]
+        )
+        exc = litellm.ContextWindowExceededError(
+            message="ContextWindowExceededError: nim - Invalid request",
+            model="nvidia_nim/minimaxai/minimax-m3.1-flash",
+            llm_provider="nim",
+        )
+        import asyncio
+
+        asyncio.run(
+            logger.async_log_failure_event(
+                {
+                    "litellm_metadata": {"model_group": "nvidia_nim/minimaxai/minimax-m3.1-flash"},
+                    "exception": exc,
+                    "messages": [{"role": "user", "content": "x" * 4000}],
+                },
+                None,
+                None,
+                None,
+            )
+        )
+        # 4000 chars -> 1000-token estimate -> learned window 999: the
+        # same-size request is filtered next time, smaller ones still fit.
+        assert stats.learned_window("nvidia_nim/minimaxai/minimax-m3.1-flash") == 999
+        assert stats.derived("nvidia_nim/minimaxai/minimax-m3.1-flash").failures == 0
+
+    def test_learn_context_limit_ignores_untracked_group(self, mp, fresh):
+        lib, plugin = mp
+        _lib, _test_plugin, _cfg, stats, manager = fresh
+        logger = plugin.ModelPickerStatsLogger(stats=stats, manager=manager)
+        manager._snapshot = lib.CatalogSnapshot(
+            candidates=[favored_candidate(lib, "nvidia_nim/minimaxai/minimax-m3.1-flash", ctx=1048576)]
+        )
+        exc = litellm.ContextWindowExceededError(
+            message="ContextWindowExceededError: nim - Invalid request",
+            model="pollinations/unknown/model",
+            llm_provider="nim",
+        )
+        assert (
+            logger.learn_context_limit(
+                {
+                    "litellm_metadata": {"model_group": "pollinations/unknown/model"},
+                    "exception": exc,
+                    "messages": [{"role": "user", "content": "x" * 4000}],
+                },
+                exc,
+            )
+            is False
+        )
+        assert stats.learned_window("pollinations/unknown/model") is None
+        # ...and a non-context error never teaches a window, tracked or not.
+        assert (
+            logger.learn_context_limit(
+                {
+                    "litellm_metadata": {"model_group": "nvidia_nim/minimaxai/minimax-m3.1-flash"},
+                    "exception": ValueError("boom"),
+                    "messages": [{"role": "user", "content": "x" * 4000}],
+                },
+                ValueError("boom"),
+            )
+            is False
+        )
+        assert stats.learned_window("nvidia_nim/minimaxai/minimax-m3.1-flash") is None
+
+    def test_log_retry_patch_installed_and_learns_per_attempt(self, mp, fresh, monkeypatch):
+        """Router.log_retry is wrapped (per failed attempt, with the request
+        kwargs and the error) and the wrapper learns the window — the
+        observation point the failure callback cannot provide, since it
+        fires only once the whole call fails."""
+        lib, plugin = mp
+        _lib, _test_plugin, _cfg, stats, manager = fresh
+        from litellm.router import Router
+
+        assert getattr(Router.log_retry, "_model_picker_patch", None) is not None
+        logger = plugin.ModelPickerStatsLogger(stats=stats, manager=manager)
+        manager._snapshot = lib.CatalogSnapshot(
+            candidates=[favored_candidate(lib, "nvidia_nim/minimaxai/minimax-m3.1-flash", ctx=1048576)]
+        )
+        monkeypatch.setattr(plugin, "stats_logger", logger)
+
+        class FakeRouter:
+            def _deployment_params_base_model(self, deployment_id):
+                return None
+
+        exc = litellm.ContextWindowExceededError(
+            message="ContextWindowExceededError: nim - Invalid request",
+            model="nvidia_nim/minimaxai/minimax-m3.1-flash",
+            llm_provider="nim",
+        )
+        kwargs = {
+            "model": "nvidia_nim/minimaxai/minimax-m3.1-flash",
+            "messages": [{"role": "user", "content": "x" * 4000}],
+            "litellm_metadata": {"model_group": "nvidia_nim/minimaxai/minimax-m3.1-flash", "model_info": {}},
+        }
+        returned = Router.log_retry(FakeRouter(), kwargs=kwargs, e=exc)
+        assert returned is kwargs
+        assert stats.learned_window("nvidia_nim/minimaxai/minimax-m3.1-flash") == 999
