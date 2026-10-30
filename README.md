@@ -124,6 +124,13 @@ This container supports extensive configuration through environment variables.
 | Variable | Description |
 |----------|-------------|
 | `CLAUDE_CODE_PERMISSION_MODE` | Permission mode (`acceptEdits`, `bypassPermissions`, `default`, `plan`, `dontAsk`) |
+| `CLAUDE_STREAM_FIRST_BYTE_TIMEOUT_MS` | Stream first byte timeout in milliseconds (2 hours / 7200000) — prevents mid-stream cutoffs during long-running operations |
+| `API_TIMEOUT_MS` | API timeout in milliseconds (2 hours / 7200000) — extends timeout for API calls |
+| `CLAUDE_STREAM_IDLE_TIMEOUT_MS` | Stream idle timeout in milliseconds (2 hours / 7200000) — prevents timeouts during idle periods |
+| `CLAUDE_ENABLE_STREAM_WATCHDOG` | Set to `0` to disable the stream watchdog — prevents forced disconnections during extended streams |
+| `CLAUDE_ENABLE_BYTE_WATCHDOG` | Set to `0` to disable the byte watchdog — prevents forced disconnections based on byte boundaries |
+| `CLAUDE_CODE_RETRY_WATCHDOG` | Set to `0` to disable the retry watchdog — prevents automatic retries that may cause mid-stream cutoffs |
+| `LITELLM_DANGEROUSLY_PERMIT_WEAK_OR_UNSET_MASTER_KEY` | Allow LiteLLM to operate with weak/unset master keys for development flexibility |
 
 ### Plugins Marketplace Configuration
 

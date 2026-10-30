@@ -39,6 +39,13 @@ ENV ANTHROPIC_DEFAULT_OPUS_MODEL="lite-llm/router"
 ENV ANTHROPIC_DEFAULT_SONNET_MODEL="lite-llm/router"
 ENV ANTHROPIC_DEFAULT_HAIKU_MODEL="lite-llm/router"
 ENV CLAUDE_CODE_SUBAGENT_MODEL="lite-llm/router"
+# Increase timeout lengths and disable watchdogs to prevent mid-stream cutoffs
+ENV CLAUDE_STREAM_FIRST_BYTE_TIMEOUT_MS=7200000
+ENV API_TIMEOUT_MS=7200000
+ENV CLAUDE_STREAM_IDLE_TIMEOUT_MS=7200000
+ENV CLAUDE_ENABLE_STREAM_WATCHDOG=0
+ENV CLAUDE_ENABLE_BYTE_WATCHDOG=0
+ENV CLAUDE_CODE_RETRY_WATCHDOG=0
 
 # Configure Happier default environment variables
 ENV HAPPIER_CACHE_DIR=/config/.cache
@@ -308,6 +315,9 @@ RUN pip install --break-system-packages \
 
 # Copy LiteLLM config files and custom routing callback
 COPY lite-llm/ /lite-llm/
+
+# Allow LiteLLM to operate with weak/unset master keys for development flexibility
+ENV LITELLM_DANGEROUSLY_PERMIT_WEAK_OR_UNSET_MASTER_KEY=true
 
 # Install the Beads web UI (bead-me-up-scotty) — standalone Next.js server
 # that shells out to the `bd` CLI. Runs as abc on /opt/bead-me-up-scotty.
