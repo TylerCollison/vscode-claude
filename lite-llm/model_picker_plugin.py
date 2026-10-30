@@ -13,7 +13,7 @@ The plugin runs AFTER the complexity router's tier classification (it is the
 sanctioned downstream hook: ComplexityRouter._pick_model_for_tier runs
 complexity_router_config.plugins against the chosen tier's pool and routes to
 the surviving value with no pool validation). It narrows the pool to the single
-best free chat model per the tier rubric and may return a dynamic
+best model per the tier rubric and may return a dynamic
 ``pollinations/<catalog-id>`` name served by the ``pollinations/*`` wildcard
 model_list entry, or any existing static group name.
 
@@ -42,6 +42,15 @@ post-call hooks, so they must go back through the router's anthropic_messages
 entry — handing them to acompletion ships anthropic blocks to OpenAI-format
 providers and 400s every candidate on a payload the provider never saw fit to
 accept.
+
+Thinking-only responses — a completed response whose message is thinking
+(or redacted thinking) with no actionable text or tool block, on a
+turn-ending stop reason — get the same retry-with-exclusion, and ONLY then:
+the check runs on the completed response, never mid-stream, and never when
+text or tool calls give the turn something to continue from. Thinking-only
+failures record ERROR, not SOFT, because they are prompt-class-dependent
+(the same model answers plain prompts) and must not fire the instant
+demotion proof; the per-request exclusion is what unblocks the turn.
 
 litellm's ``get_instance_fn`` exec's this file with spec_from_file_location
 WITHOUT registering it in sys.modules, so a plain ``import model_picker``
@@ -242,8 +251,44 @@ def _retry_not_found_errors() -> None:
         logger.warning("model_picker: could not install NotFoundError retry patch (%s)", e)
 
 
+def _record_context_learning_on_retry() -> None:
+    """Learn a model's real window on every router retry attempt.
+
+    LiteLLM's failure callback only fires once the whole call fails (or
+    never, when a later retry succeeds), so intermediate context errors
+    in the router's retry loop never reach the stats logger — the same
+    context-window walk repeats request after request. Router.log_retry
+    runs for every failed attempt with the request kwargs and the error,
+    so wrap it: on a context-window error, learn the window right there
+    (provider-stated limit when the error carries one, else one token
+    below the request's estimate). Learning must never break retries.
+    """
+    try:
+        from litellm.router import Router as _Router
+
+        original = _Router.log_retry
+        if getattr(original, "_model_picker_patch", None) is not None:
+            return
+
+        def log_retry(self, kwargs=None, e=None, *args, **kwargs2):
+            try:
+                logger_instance = globals().get("stats_logger")
+                if logger_instance is not None and kwargs is not None and e is not None:
+                    logger_instance.learn_context_limit(kwargs, e)
+            except Exception:  # noqa: BLE001 — learning must never break retries
+                pass
+            return original(self, kwargs, e, *args, **kwargs2)
+
+        log_retry._model_picker_patch = True  # marker for tests/introspection
+        _Router.log_retry = log_retry
+        logger.debug("model_picker: context-learning log_retry patch installed")
+    except Exception as e:  # noqa: BLE001 — a patch failure must not break the proxy
+        logger.warning("model_picker: could not install context-learning log_retry patch (%s)", e)
+
+
 _preserve_legacy_max_tokens()
 _retry_not_found_errors()
+_record_context_learning_on_retry()
 _fallback_model_info_for_unmapped_models()
 
 # ---------------------------------------------------------------------------
@@ -252,7 +297,10 @@ _fallback_model_info_for_unmapped_models()
 
 _TIER_BY_POOL = {
     frozenset({"lite-llm/default"}): model_picker.TIER_DEFAULT,
-    frozenset({"lite-llm/think"}): model_picker.TIER_THINK,
+    # COMPLEX (think) uses the default rubric: health floor, then top-N%
+    # healthiest, then most capable. Only REASONING (ultra-think) keeps
+    # the capability-first rubric.
+    frozenset({"lite-llm/think"}): model_picker.TIER_DEFAULT,
     frozenset({"lite-llm/ultra-think"}): model_picker.TIER_THINK,
 }
 
@@ -262,6 +310,8 @@ def detect_tier(candidate_models: list[str]) -> str | None:
 
     The pool is the tier's configured model group(s), possibly intersected with
     a context-fit filter. Anything unrecognized passes through untouched.
+    The think pool maps to the default rubric; only ultra-think maps to the
+    capability-first rubric.
     """
     return _TIER_BY_POOL.get(frozenset(candidate_models or []))
 
@@ -318,6 +368,10 @@ class ModelPickerPlugin:
         tier = detect_tier(context.candidate_models)
         if tier is None:
             return context
+        # The tier pool itself, for the pick log: think requests now log as
+        # tier=default (they use the default rubric), so the pool is what
+        # tells them apart from default requests.
+        pool = list(context.candidate_models or [])
 
         # context.metadata is a pydantic COPY of the request metadata — safe to
         # read (litellm stamps attempted_retries into the real dict before the
@@ -360,8 +414,9 @@ class ModelPickerPlugin:
 
         pick = ranked[0].candidate
         logger.info(
-            "model_picker: tier=%s estimate=%dtok pick=%s (score=%.3f ctx=%s provider=%s free=%s bench=%s stale=%s attempt_excluded=%s)",
+            "model_picker: tier=%s pool=%s estimate=%dtok pick=%s (score=%.3f ctx=%s provider=%s free=%s bench=%s stale=%s attempt_excluded=%s)",
             tier,
+            pool,
             estimate,
             pick.name,
             ranked[0].health_score,
@@ -396,16 +451,28 @@ def _resolve_group_name(kwargs: dict) -> str:
     """Model group a success/failure event belongs to.
 
     The router stamps ``deployment_model_name`` (the group) into the request
-    metadata; fall back to the standard model_group/model fields.
+    metadata; fall back to the standard model_group/model fields. A wildcard
+    deployment name (``nvidia_nim/*``) is NOT a model — recording stats
+    under it orphans them, because no candidate is ever named that (this
+    is how NIM failures in production never demoted the picked model).
+    Wildcard names are skipped here so callers fall through to a resolved
+    name, or to "" when none is available.
     """
+    values: list[str] = []
     for holder in (kwargs.get("litellm_metadata"), kwargs.get("metadata"), kwargs.get("litellm_params")):
         if isinstance(holder, dict):
             for key in ("deployment_model_name", "model_group"):
                 value = holder.get(key)
                 if value:
-                    return str(value)
-    group = kwargs.get("model_group") or kwargs.get("model")
-    return str(group) if group else ""
+                    values.append(str(value))
+    for key in ("model_group", "model"):
+        value = kwargs.get(key)
+        if value:
+            values.append(str(value))
+    for value in values:
+        if "*" not in value:
+            return value
+    return ""
 
 
 def _event_ttft_seconds(kwargs: dict, start_time: datetime) -> float | None:
@@ -702,6 +769,172 @@ def _response_model_name(response_obj: object) -> str:
     return str(model) if model else ""
 
 
+# Turn-ending stop reasons: the agent loop terminates the turn on these
+# when the message carries nothing to execute and nothing to show.
+# tool_use/pause_turn name a continuation, and refusal is a policy outcome,
+# not a model failure — none of those may trigger a thinking-only retry.
+_TURN_ENDING_STOP_REASONS = frozenset({"end_turn", "max_tokens", "stop_sequence"})
+
+
+def _block_type(block: object) -> str:
+    if isinstance(block, dict):
+        return str(block.get("type") or "")
+    return str(getattr(block, "type", "") or "")
+
+
+def _block_text(block: object) -> str:
+    if isinstance(block, dict):
+        text = block.get("text")
+        return text if isinstance(text, str) else ""
+    text = getattr(block, "text", None)
+    return text if isinstance(text, str) else ""
+
+
+def _anthropic_blocks_thinking_only(blocks: object) -> bool:
+    """Shape rule for an anthropic content list: at least one thinking or
+    redacted_thinking block, and nothing else but whitespace-only text.
+
+    A thinking block plus an empty text block (what the bridge emits for a
+    reasoning-only upstream response with empty content) is still
+    thinking-only: the empty text gives the turn nothing to show. Any
+    other block type (tool_use, server_tool_use, ...) means the turn
+    continues from that block, so it breaks thinking-only.
+    """
+    if not isinstance(blocks, (list, tuple)) or not blocks:
+        return False
+    saw_thinking = False
+    for block in blocks:
+        btype = _block_type(block)
+        if btype in ("thinking", "redacted_thinking"):
+            saw_thinking = True
+        elif btype == "text":
+            if _block_text(block).strip():
+                return False
+        else:
+            return False
+    return saw_thinking
+
+
+def _openai_message_thinking_only(message: object) -> bool:
+    """Shape rule for one OpenAI chat message (dict or object).
+
+    Reasoning present (reasoning_content or thinking_blocks), content
+    absent/blank, and no tool calls: the model thought and then stopped
+    without answering or acting.
+    """
+    if isinstance(message, dict):
+        reasoning = message.get("reasoning_content") or message.get("reasoning")
+        thinking_blocks = message.get("thinking_blocks")
+        content = message.get("content")
+        tool_calls = message.get("tool_calls")
+    else:
+        reasoning = getattr(message, "reasoning_content", None) or getattr(message, "reasoning", None)
+        thinking_blocks = getattr(message, "thinking_blocks", None)
+        content = getattr(message, "content", None)
+        tool_calls = getattr(message, "tool_calls", None)
+    has_reasoning = bool(isinstance(reasoning, str) and reasoning.strip()) or bool(thinking_blocks)
+    if not has_reasoning or tool_calls:
+        return False
+    if isinstance(content, str):
+        return not content.strip()
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, str):
+                if part.strip():
+                    return False
+            elif isinstance(part, dict):
+                if isinstance(part.get("text"), str) and part["text"].strip():
+                    return False
+                if part.get("type") not in ("text", None):
+                    return False
+        return True
+    return content is None
+
+
+def _response_is_thinking_only(response_obj: object) -> bool:
+    """True when a COMPLETED response is thinking-only on a turn-ending
+    stop reason — the message the agent loop would terminate on with
+    nothing to show and nothing to execute.
+
+    This is deliberately a completed-response check only: it must never
+    run on a partial stream (thinking deltas precede text in every normal
+    reasoning response). The streaming hook evaluates it once, after the
+    stream ends; the non-streaming hook evaluates the whole response.
+
+    "The turn would have stopped" is operationalized as: the finished
+    message gives the loop nothing to execute (no tool_use or server-tool
+    block) and nothing to show (no non-blank text), on a stop reason that
+    terminates the turn. A missing reason counts as turn-ending (a stream
+    that ends without message_delta, or a response carrying no reason,
+    still ends the turn). Unrecognized shapes fail closed (False): a
+    response the detector cannot classify is never retried on this rule.
+    """
+    try:
+        if isinstance(response_obj, dict):
+            content = response_obj.get("content")
+            if isinstance(content, list):
+                stop = response_obj.get("stop_reason")
+                if stop is not None and str(stop) not in _TURN_ENDING_STOP_REASONS:
+                    return False
+                return _anthropic_blocks_thinking_only(content)
+            choices = response_obj.get("choices") or []
+            if choices and isinstance(choices[0], dict):
+                choice = choices[0]
+                message = choice.get("message") or choice.get("delta") or {}
+                mapped = _STOP_REASON_MAP.get(str(choice.get("finish_reason") or ""), "end_turn")
+                if mapped not in _TURN_ENDING_STOP_REASONS:
+                    return False
+                return _openai_message_thinking_only(message)
+            return False
+        choices = getattr(response_obj, "choices", None) or []
+        if choices:
+            choice = choices[0]
+            message = getattr(choice, "message", None) or getattr(choice, "delta", None)
+            mapped = _STOP_REASON_MAP.get(str(getattr(choice, "finish_reason", None) or ""), "end_turn")
+            if mapped not in _TURN_ENDING_STOP_REASONS:
+                return False
+            return _openai_message_thinking_only(message)
+        return False
+    except Exception:  # noqa: BLE001 — classification must never fail the request
+        return False
+
+
+def _classify_stream_event(event: dict) -> tuple[bool, bool]:
+    """(thinking, actionable) flags contributed by one anthropic stream event.
+
+    thinking: a thinking/redacted_thinking block started, or a thinking_delta.
+    actionable: a non-whitespace text_delta, a tool_use/server_tool_use block
+    started, or tool input streaming (input_json_delta) — anything the agent
+    loop would continue the turn from. Anything else contributes neither.
+    """
+    if not isinstance(event, dict):
+        return False, False
+    etype = event.get("type")
+    if etype == "content_block_start":
+        block = event.get("content_block") or {}
+        btype = _block_type(block)
+        if btype in ("thinking", "redacted_thinking"):
+            return True, False
+        if btype in ("tool_use", "server_tool_use"):
+            return False, True
+        return False, False
+    if etype == "content_block_delta":
+        delta = event.get("delta") or {}
+        if not isinstance(delta, dict):
+            return False, False
+        dtype = delta.get("type")
+        if dtype == "thinking_delta" or ("thinking" in delta and dtype != "text_delta"):
+            return True, False
+        if dtype == "text_delta":
+            return False, bool(str(delta.get("text") or "").strip())
+        if dtype == "input_json_delta":
+            return False, True
+        if "text" in delta:
+            return False, bool(str(delta.get("text") or "").strip())
+        return False, False
+    return False, False
+
+
 class ModelPickerStatsLogger(CustomLogger):
     """Records per-group success/failure/TTFT observations for the picker."""
 
@@ -736,19 +969,48 @@ class ModelPickerStatsLogger(CustomLogger):
         as ``pollinations/community/x`` records its health under
         ``community/x``, so the picker's per-candidate lookups never match.
         Re-prefix from the cached catalog snapshot when unambiguous.
+
+        Two attribution rules that fix production misattribution (#2):
+
+        * The picker's own pick record (PriorPickRegistry, keyed by
+          litellm_call_id when the event carries one) is authoritative and
+          wins over any stamped name — it is the only channel that knows
+          which provider a pick came from.
+        * A bare id shared by several providers (e.g. ``z-ai/glm-5.3``
+          exists under both ``pollinations/`` and ``nvidia_nim/``) is
+          ambiguous and must NOT be guessed into ``pollinations/<id>``.
+          Guessing is how NIM failures demoted the pollinations twin while
+          the NIM model itself stayed "untried". Ambiguous bare ids return
+          "" (unattributable: the caller records nothing rather than
+          polluting a sibling's stats). A wildcard name likewise returns "".
         """
+        if isinstance(kwargs, dict):
+            call_id = ""
+            for holder in (kwargs.get("litellm_metadata"), kwargs.get("metadata")):
+                if isinstance(holder, dict) and holder.get("litellm_call_id"):
+                    call_id = str(holder["litellm_call_id"])
+                    break
+            if not call_id and kwargs.get("litellm_call_id"):
+                call_id = str(kwargs["litellm_call_id"])
+            if call_id:
+                picks = self.prior_picks.get(call_id)
+                if picks:
+                    return picks[-1]
         group = _resolve_group_name(kwargs)
-        if not group or group.startswith("pollinations/"):
-            return group
+        if not group or "*" in group:
+            return ""
         names = self.manager.peek_candidate_names()
         if not names:
             return group
-        candidate = f"pollinations/{group}"
-        # only rewrite when unambiguous: the prefixed name is a tracked
-        # candidate and the bare name is not itself one (static groups like
-        # `z-ai/glm-5.3` record under their own names).
-        if candidate in names and group not in names:
-            return candidate
+        if group in names:
+            return group
+        # Bare / unqualified id: resolve by candidate suffix only when the
+        # match is unique across providers.
+        suffix_matches = [name for name in names if name.endswith("/" + group)]
+        if len(suffix_matches) == 1:
+            return suffix_matches[0]
+        if len(suffix_matches) > 1:
+            return ""
         return group
 
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
@@ -764,13 +1026,79 @@ class ModelPickerStatsLogger(CustomLogger):
             logger.info("model_picker: soft failure recorded for %s (content=%r)", group, snippet)
             self.stats.record_failure(group, model_picker.FAILURE_CLASS_SOFT)
             return
+        if _response_is_thinking_only(response_obj):
+            # a 200 "success" that ends the turn on thinking alone must not
+            # reinforce the model the way a real answer would — and, like a
+            # soft failure, it must not be recorded as a success on paths
+            # where the post-call hook did not already retry it. ERROR, not
+            # SOFT: thinking-only is prompt-class-dependent, so one
+            # observation must not fire the instant-demotion proof.
+            logger.info("model_picker: thinking-only response recorded as failure for %s (no actionable content)", group)
+            self.stats.record_failure(group, model_picker.FAILURE_CLASS_ERROR)
+            return
         self.stats.record_success(group, _event_ttft_seconds(kwargs, start_time))
+
+    def learn_context_limit(self, kwargs, exception, group=None) -> bool:
+        """Teach the fit filter a model's real window from a context error.
+
+        Returns True when a window was recorded. A provider-stated limit
+        wins when the error carries one; otherwise the request's own token
+        estimate is the conservative bound — the model proved it cannot
+        serve a request of that size, so the learned window is one token
+        below it (the fit filter drops a request whose estimate exceeds
+        the window, so recording the estimate itself would still admit
+        the same-size request). The model stays eligible for smaller
+        requests. A limit is only recorded for a group that names a
+        tracked candidate; ambiguous or unknown names record nothing
+        rather than polluting a sibling's stats.
+
+        Called from the failure hook (once, when the whole call fails),
+        from the log_retry patch (per router retry attempt), and from the
+        exclusion walk (per walk retry): the failure callback never fires
+        for intermediate attempts when a later retry succeeds, so without
+        the per-attempt calls the same context-window walk repeats
+        request after request.
+        """
+        if group is None:
+            group = self._event_group(kwargs or {})
+            if not group:
+                group = self._event_group({"litellm_metadata": {"model_group": _response_model_name(exception)}})
+        if not group or not model_picker.is_context_window_error(exception):
+            return False
+        names = self.manager.peek_candidate_names()
+        if names is not None and group not in names:
+            logger.debug("model_picker: not learning a window for untracked group %s", group)
+            return False
+        limit = model_picker.extract_context_limit(exception)
+        if limit is not None:
+            self.stats.record_context_limit(group, limit)
+            logger.info("model_picker: learned context window for %s: %d tokens", group, limit)
+            return True
+        estimate = model_picker.estimate_tokens((kwargs or {}).get("messages") or [])
+        if estimate > 1:
+            self.stats.record_context_limit(group, estimate - 1)
+            logger.info(
+                "model_picker: learned context window for %s: %d tokens (estimate fallback; request was %d tokens)",
+                group,
+                estimate - 1,
+                estimate,
+            )
+            return True
+        return False
 
     async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
         group = self._event_group(kwargs)
         if not group:
             return
         exception = kwargs.get("exception")
+        if model_picker.is_context_window_error(exception):
+            # A context overflow proves the model's window, not its health:
+            # learn the window only. A persistent failure here would
+            # wrongly demote a model that is merely too small for this
+            # request (and the fit filter already excludes it for
+            # oversized ones).
+            self.learn_context_limit(kwargs, exception, group=group)
+            return
         self.stats.record_failure(group, model_picker.classify_exception(exception))
 
     # -- soft-failure interception ------------------------------------------
@@ -800,7 +1128,11 @@ class ModelPickerStatsLogger(CustomLogger):
             if picks:
                 candidates.append(picks[-1])
         # the stream's logging object carries the router-stamped deployment
-        # group (the same channel the stats logger records from)
+        # group (the same channel the stats logger records from) — and,
+        # crucially, the resolved model after wildcard substitution, which
+        # is the name that actually served the request. The wildcard
+        # deployment name itself is never a candidate and is dropped by
+        # _event_group; the resolved model is what fixes NIM attribution.
         call_details = getattr(logging_obj, "model_call_details", None)
         if isinstance(call_details, dict):
             holder = call_details.get("litellm_metadata")
@@ -809,6 +1141,15 @@ class ModelPickerStatsLogger(CustomLogger):
                     value = holder.get(key)
                     if value:
                         candidates.append(str(value))
+            for key in ("model", "model_group"):
+                value = call_details.get(key)
+                if isinstance(value, str) and value:
+                    candidates.append(value)
+            params = call_details.get("litellm_params")
+            if isinstance(params, dict):
+                value = params.get("model")
+                if isinstance(value, str) and value:
+                    candidates.append(value)
         model = getattr(response, "model", None)
         if isinstance(model, str) and model:
             candidates.append(model)
@@ -820,6 +1161,15 @@ class ModelPickerStatsLogger(CustomLogger):
             reconciled = self._event_group({"litellm_metadata": {"model_group": group}})
             if reconciled and (known is None or reconciled in known):
                 return reconciled
+        # Fallback: the metadata group, already vetted by _event_group
+        # (wildcard and ambiguous bare ids come back as ""). A
+        # fully-qualified name is worth recording even when it is not in
+        # the current snapshot — catalogs churn, and stats outlive
+        # snapshots, so a model that re-enters the catalog later still
+        # carries its failure history. Only wildcard/ambiguous names
+        # (now "") are dropped, because recording under "nvidia_nim/*"
+        # or a sibling provider's twin pollutes a bucket that never ranks
+        # while leaving the failed model "untried".
         return metadata_group
 
     @staticmethod
@@ -905,19 +1255,40 @@ class ModelPickerStatsLogger(CustomLogger):
         except Exception:  # noqa: BLE001 — the walk must stay bounded regardless
             return _RETRY_WALK_SAFETY_CAP
 
-    async def _retry_until_clean(self, request_data: dict, first_group: str):
+    async def _retry_until_clean(
+        self,
+        request_data: dict,
+        first_group: str,
+        first_failure_class: str | None = model_picker.FAILURE_CLASS_SOFT,
+        first_failure_label: str = "soft failure",
+    ):
         """Retry the request until a model succeeds or none are left to try.
 
         Returns (response, failure_summary) — response is None when every
         available candidate failed. Each failed attempt is recorded and
-        excluded from the next pick; both soft failures (200-with-error-
-        content) and hard exceptions continue the walk. Termination: the walk
-        is bounded by the candidate-pool size, and a re-offered already-failed
-        model means the picker has nothing fresh left.
+        excluded from the next pick; soft failures (200-with-error-content),
+        thinking-only responses, and hard exceptions all continue the walk.
+        A context-window exception records no persistent failure (None):
+        the retry hook already recorded the learned window, which is the
+        scoped response — a failure entry would wrongly demote a model
+        that is merely too small for this request. The model is still
+        excluded for this request. Termination: the walk is bounded by the
+        candidate-pool size, and a re-offered already-failed model means
+        the picker has nothing fresh left.
+
+        The intercepted attempt's failure class is caller-chosen: soft
+        failures are deterministic per model+account, so SOFT (instant
+        demotion proof) is right for them, but a thinking-only response is
+        prompt-class-dependent — the same model answers plain prompts fine —
+        so thinking-only entries record ERROR instead: per-request exclusion
+        still applies, but persistent demotion needs the normal failure
+        proof (repeated thinking-only turns), not a single observation.
         """
         failed_groups: list[str] = []
         last_reason = "unknown"
         group = first_group
+        pending_class = first_failure_class
+        pending_label = first_failure_label
         attempts = 1  # the intercepted attempt
         cap = await self._candidate_cap()
         while attempts < cap:
@@ -927,10 +1298,11 @@ class ModelPickerStatsLogger(CustomLogger):
                 logger.info("model_picker: candidate pool exhausted after %d attempts", attempts)
                 break
             if group:
-                self.stats.record_failure(group, model_picker.FAILURE_CLASS_SOFT)
+                if pending_class is not None:
+                    self.stats.record_failure(group, pending_class)
                 self._exclude_group(request_data, group)
                 failed_groups.append(group)
-                logger.info("model_picker: soft failure intercepted for %s; retrying", group)
+                logger.info("model_picker: %s intercepted for %s; retrying", pending_label, group)
             retry_data = self._retry_data(request_data)
             if retry_data is None:
                 break
@@ -942,12 +1314,35 @@ class ModelPickerStatsLogger(CustomLogger):
             except Exception as e:  # noqa: BLE001 — one bad provider must not end the walk
                 last_reason = f"upstream error ({type(e).__name__})"
                 group = self._event_group({"litellm_metadata": {"model_group": _response_model_name(e)}})
+                if model_picker.is_context_window_error(e):
+                    # The learned window is the scoped response; record it
+                    # here too (the retry hook covers the router path, this
+                    # covers the walk's own retries). No persistent
+                    # failure: the model is still excluded for this request,
+                    # but it must not demote for being too small for it.
+                    self.learn_context_limit(request_data, e, group=group)
+                    pending_class = None
+                    pending_label = "context window exceeded"
+                else:
+                    pending_class = model_picker.FAILURE_CLASS_SOFT
+                    pending_label = "soft failure"
                 logger.warning("model_picker: retry attempt failed (%s); trying next candidate", e)
                 continue
             text = model_picker.extract_response_text(retry_resp)
             if model_picker.is_soft_failure_response(text, retry_resp):
                 last_reason = "provider error in response content"
                 group = self._event_group({"litellm_metadata": {"model_group": _response_model_name(retry_resp)}})
+                pending_class = model_picker.FAILURE_CLASS_SOFT
+                pending_label = "soft failure"
+                continue
+            if _response_is_thinking_only(retry_resp):
+                # a retry that also comes back thinking-only is not a clean
+                # answer: keep walking instead of handing the client a
+                # notice while untried candidates remain
+                last_reason = "thinking-only response"
+                group = self._event_group({"litellm_metadata": {"model_group": _response_model_name(retry_resp)}})
+                pending_class = model_picker.FAILURE_CLASS_ERROR
+                pending_label = "thinking-only response"
                 continue
             return retry_resp, {"tried": attempts, "reason": last_reason, "groups": failed_groups}
         return None, {"tried": attempts, "reason": last_reason, "groups": failed_groups}
@@ -966,10 +1361,16 @@ class ModelPickerStatsLogger(CustomLogger):
         agent turns recovered mid-flight keep their working tool calls, and
         the message closes with the retry's stop reason and usage in
         anthropic vocabulary.
+
+        The fallback notice applies ONLY when there is no response at all
+        (the walk was exhausted): a successful retry whose answer is
+        tool-only — the normal agent-turn shape — carries no text, and
+        filling it with the "every model was tried" notice would lie to
+        the client about a request that actually succeeded.
         """
-        text = model_picker.extract_response_text(response_obj) or fallback_text or _FALLBACK_REPLY.format(
-            tried=0, reason="unknown"
-        )
+        text = model_picker.extract_response_text(response_obj)
+        if not text and response_obj is None:
+            text = fallback_text or _FALLBACK_REPLY.format(tried=0, reason="unknown")
         tool_uses = _response_tool_uses(response_obj)
         for i, tool_use in enumerate(tool_uses):
             if not tool_use["id"]:
@@ -1049,6 +1450,18 @@ class ModelPickerStatsLogger(CustomLogger):
         excluded. The retry's answer continues the same SSE stream — appended
         after any partial content already delivered — so an incomplete
         answer never stands as the turn's final answer.
+
+        Thinking-only responses get the same retry, but ONLY when the turn
+        would otherwise have stopped: the check runs once, after the stream
+        ends normally, and fires only when the assembled message is thinking
+        (or redacted thinking) with no actionable text or tool block and a
+        turn-ending stop reason. Thinking deltas mid-stream never fire —
+        they precede text in every normal reasoning response — and a
+        thinking block alongside text or tool calls never fires, because
+        the turn continues from those. Terminal message_delta/message_stop
+        events are held back until the stream ends so a thinking-only close
+        can be replaced by the retry's tail instead of ending the turn
+        empty; clean streams yield them unchanged, in order, at the end.
         """
         open_block: tuple[int, str] | None = None
         next_index = 0
@@ -1057,9 +1470,16 @@ class ModelPickerStatsLogger(CustomLogger):
         in_band_error = False  # litellm converted a mid-stream failure into an error event
         saw_text = False  # content text already delivered to the client
         saw_any_chunk = False  # anything at all delivered
+        saw_thinking = False  # a thinking/redacted_thinking block appeared
+        saw_actionable = False  # non-blank text or a tool block appeared
+        stream_stop_reason: str | None = None  # from message_delta, when seen
+        pending_terminal: list = []  # terminal-only chunks held for the end decision
+        terminal_yielded = False  # a terminal event already went out (mixed chunk)
         try:
             async for chunk in response:
                 saw_any_chunk = True
+                text = ""
+                chunk_terminal_only = False
                 try:
                     if _is_in_band_error(chunk):
                         # litellm's adapter already swallowed the upstream
@@ -1072,8 +1492,27 @@ class ModelPickerStatsLogger(CustomLogger):
                     text = _event_text(chunk)
                     if text:
                         accumulated += text
-                    for event in _chunk_events(chunk):
+                    events = _chunk_events(chunk)
+                    chunk_terminal_only = bool(events) and all(
+                        e.get("type") in ("message_delta", "message_stop") for e in events
+                    )
+                    for event in events:
                         etype = event.get("type")
+                        if etype in ("message_delta", "message_stop"):
+                            if etype == "message_delta":
+                                delta = event.get("delta") or {}
+                                if isinstance(delta, dict) and delta.get("stop_reason"):
+                                    stream_stop_reason = str(delta["stop_reason"])
+                            if not chunk_terminal_only:
+                                # a terminal event riding with content has
+                                # already been delivered with this chunk: the
+                                # stream is closed from the client's side and
+                                # no tail can replace it
+                                terminal_yielded = True
+                            continue
+                        thinking, actionable = _classify_stream_event(event)
+                        saw_thinking = saw_thinking or thinking
+                        saw_actionable = saw_actionable or actionable
                         if etype == "content_block_start":
                             block = event.get("content_block") or {}
                             open_block = (int(event.get("index", 0) or 0), str(block.get("type") or "text"))
@@ -1088,7 +1527,10 @@ class ModelPickerStatsLogger(CustomLogger):
                     logger.debug("model_picker: stream sniff error (%s)", e)
                 if text:
                     saw_text = True
-                yield chunk
+                if chunk_terminal_only:
+                    pending_terminal.append(chunk)
+                else:
+                    yield chunk
         except (asyncio.CancelledError, GeneratorExit):
             raise
         except Exception as e:
@@ -1119,6 +1561,42 @@ class ModelPickerStatsLogger(CustomLogger):
             soft_text = soft_text or "in-band error event"
 
         if soft_text is None:
+            # Normal completion — the only place the thinking-only rule may
+            # fire. The stream already delivered the thinking block (it
+            # cannot be un-yielded), but the held terminal events have not
+            # gone out, so the retry's tail replaces the empty close: the
+            # assembled message gains the retry's text/tool blocks and the
+            # turn continues instead of ending on thinking alone.
+            if (
+                saw_thinking
+                and not saw_actionable
+                and not terminal_yielded
+                and (stream_stop_reason is None or stream_stop_reason in _TURN_ENDING_STOP_REASONS)
+            ):
+                try:
+                    group = self._failed_group(request_data, response)
+                    retry_resp, summary = await self._retry_until_clean(
+                        request_data,
+                        group,
+                        first_failure_class=model_picker.FAILURE_CLASS_ERROR,
+                        first_failure_label="thinking-only response",
+                    )
+                    if retry_resp is None:
+                        logger.warning(
+                            "model_picker: retry walk exhausted after %d attempts (%s); replying with fallback notice",
+                            summary["tried"],
+                            summary["groups"],
+                        )
+                    fallback = _FALLBACK_REPLY.format(tried=summary["tried"], reason=summary["reason"])
+                    for event in self._synthesize_tail_events(retry_resp, open_block, next_index, fallback):
+                        yield _sse_frame(event)
+                except Exception as e:  # noqa: BLE001 — retry errors must not crash the SSE stream
+                    logger.warning("model_picker: thinking-only retry error (%s)", e)
+                    for event in self._synthesize_tail_events(None, open_block, next_index):
+                        yield _sse_frame(event)
+                return
+            for chunk in pending_terminal:
+                yield chunk
             return
 
         if not saw_any_chunk:
@@ -1159,12 +1637,18 @@ class ModelPickerStatsLogger(CustomLogger):
                 model_picker.extract_response_text(response)[:60],
             )
         text = model_picker.extract_response_text(response)
-        if not text or not model_picker.is_soft_failure_response(text, response):
+        thinking_only = _response_is_thinking_only(response)
+        if not thinking_only and (not text or not model_picker.is_soft_failure_response(text, response)):
             return response
         anthropic_shape = isinstance(response, dict) and isinstance(response.get("content"), list)
         try:
             group = self._failed_group(data if isinstance(data, dict) else {}, response)
-            retry_resp, summary = await self._retry_until_clean(data, group)
+            retry_resp, summary = await self._retry_until_clean(
+                data,
+                group,
+                first_failure_class=model_picker.FAILURE_CLASS_ERROR if thinking_only else model_picker.FAILURE_CLASS_SOFT,
+                first_failure_label="thinking-only response" if thinking_only else "soft failure",
+            )
             if retry_resp is not None:
                 if anthropic_shape:
                     return self._as_anthropic_dict(response, retry_resp, "")

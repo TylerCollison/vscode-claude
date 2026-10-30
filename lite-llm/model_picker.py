@@ -12,22 +12,29 @@ Design (beads workspace-c8o, revised in workspace-4wr):
 
 - Candidates: chat-capable models discovered live from every provider's
   catalog API — the pollinations listing (metric-backed; official and
-  community both eligible, paid_only/down excluded; its pollen pricing
-  discerns free-tier models, which the backend intermittently credit-gates)
-  plus NIM and LLM7 listings. NIM publishes no metrics
-  (metric-less; NIM filters non-chat families by id). LLM7 publishes
-  availability telemetry, per-token pricing and context windows: only its
-  FREE models (zero/absent pricing) are eligible, and those with
-  availability telemetry rank as metric-backed on the published health.
+  community both eligible, paid_only/down excluded, and only FREE models
+  admitted: a nonzero pollen rate drops the model at parse time, exactly
+  like llm7's free-only pool) plus NIM and LLM7 listings. NIM publishes no
+  metrics and no pricing (metric-less; NIM filters non-chat families by
+  id); all NIM models are treated as free, per the operator's assumption.
+  LLM7 publishes availability telemetry, per-token pricing and context
+  windows: only its FREE models (zero/absent pricing) are eligible, and
+  those with availability telemetry rank as metric-backed on the
+  published health. The picker only selects free models: parsers admit
+  only free candidates, and rank_candidates additionally drops any
+  non-free candidate, so a stale snapshot, the fallback snapshot, or a
+  future provider cannot leak a paid model into a pick.
   Each provider's listing is served through a wildcard model_list entry
   (pollinations/*, nvidia_nim/*, llm7/*); a failed provider
   refresh keeps that provider's last-known candidates.
-- Ranking classes: UNKNOWN (untried metric-less, favored — ranks above
-  everything on the health dimension, except deprioritized providers such as
-  llm7 whose untried groups start at a neutral prior below healthy
-  metric-backed candidates), METRIC (published health, or our own tracked
-  health once the group has observations), KNOWN (demoted while the current
-  observation window proves it bad).
+- Ranking classes: UNKNOWN (untried metric-less, favored — starts at the
+  neutral prior (0.5, MODEL_PICKER_UNTRIED_PRIOR_SCORE), below healthy
+  metric-backed candidates, so known-healthier models outrank it; the
+  favored class still breaks ties and health blocks in its favor, and
+  deprioritized providers such as llm7 start at the same prior but as
+  METRIC, so they lose ties to other untried models), METRIC (published
+  health, or our own tracked health once the group has observations),
+  KNOWN (demoted while the current observation window proves it bad).
 - Self-tracked health (workspace-4wr): once a metric-less group has
   observations it competes on the decayed, rate-limit-weighted success rate
   (Laplace-smoothed), so a sustained 429 streak (e.g. an llm7 daily token
@@ -41,9 +48,28 @@ Design (beads workspace-c8o, revised in workspace-4wr):
   model+account, so one observation is conclusive); or an AuthenticationError
   (dead until a success). Rate-limit failures never fire the hard proof
   (busy-but-working) but do weigh down the tracked score.
-- Rubric: default tier sorts health-first then context; think tiers sort
-  context-first then health (class only breaks ties). Latency-demoted models
-  carry a class floor below all metric-backed candidates in the default tier.
+- Rubric: default tier filters first — hard health floor
+  (MODEL_PICKER_MIN_HEALTH, default 0.3), then the top N% healthiest
+  (MODEL_PICKER_HEALTH_TOP_PERCENT, default 25) — and picks the most
+  capable model (highest modelgrep benchmark, then largest context) from
+  the survivors, with health breaking ties; demoted models never enter the
+  cohort. The think (COMPLEX) pool uses this same default rubric. Only
+  ultra-think (REASONING) sorts context first, then modelgrep benchmark,
+  then the health blocks (known-strong, untried, known-weak, demoted),
+  then health. So on equal context and equal benchmark, demonstrated good
+  health beats an unmeasured model; a higher-benchmark untried model
+  still wins over a lower-benchmark known-strong one — but only on
+  ultra-think. Latency-
+  demoted models carry a class floor below all metric-backed candidates in
+  the default tier.
+- Learned health is durable: StatsRegistry can persist its per-group event
+  logs to disk (MODEL_PICKER_STATS_PATH, or /config/.model-picker/ in the
+  code-server container), so a LiteLLM restart does not reset a model to
+  "untried". Per-request attempt exclusion still resets per request — that
+  list is "models already tried in this request" — but a model that failed
+  stays excluded in practice across turns because its persisted stats
+  demote it; a literal forever ban on one transient failure would be wrong
+  for a flaky upstream, so demotion still recovers on successes / decay.
 - Recency guard: a candidate whose most recent observation is a failure within
   the recency window is skipped; one success restores eligibility.
 """
@@ -51,12 +77,14 @@ Design (beads workspace-c8o, revised in workspace-4wr):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import os
 import re
 import time
 from collections import deque
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 logger = logging.getLogger("model_picker")
@@ -96,6 +124,28 @@ DEFAULT_DEPRIORITIZED_PROVIDERS = "llm7"
 # Score an untried deprioritized-provider group competes with: below healthy
 # metric-backed candidates (published wilson > 0.5), above zero-evidence ones.
 DEFAULT_UNTRIED_PRIOR_SCORE = 0.5
+# Health at or above this is "known strong" for the ultra-think tier's health
+# blocks: well above the neutral 0.5 prior, so a model has to have actually
+# demonstrated good health (published Wilson bound, or tracked success rate)
+# to outrank an untried model there. Untried models still outrank known-but-weak
+# health. (The default tier no longer uses health blocks; see below.)
+DEFAULT_STRONG_HEALTH_THRESHOLD = 0.75
+# Hard health floor for the default tier: a model below this is too unhealthy
+# to be helpful and is filtered out before the capability pick. Lenient by
+# design — a sanity gate, not a quality bar (the top-percent filter does the
+# quality selection) — and below the 0.5 untried prior, so unmeasured models
+# are not eliminated by the floor.
+DEFAULT_MIN_HEALTH = 0.3
+# Share of the healthiest default-tier candidates that survive to the
+# capability pick: after the floor, only the top N% by health compete, and
+# the most capable among them wins. With a ~30-model pool, 25% leaves about
+# 8 finalists.
+DEFAULT_HEALTH_TOP_PERCENT = 25.0
+# Default durable stats location in the code-server container, where /config
+# is the persistent volume. Overridden by MODEL_PICKER_STATS_PATH; when
+# neither applies (local dev, tests), StatsRegistry stays in-memory unless
+# a path is passed explicitly.
+DEFAULT_STATS_PATH = "/config/.model-picker/model_picker_stats.json"
 
 CATALOG_FETCH_TIMEOUT_SECONDS = 10.0
 
@@ -103,9 +153,10 @@ CATALOG_FETCH_TIMEOUT_SECONDS = 10.0
 
 def _env_float(name: str, default: float) -> float:
     try:
-        return float(os.environ[name])
+        value = float(os.environ[name])
     except (KeyError, TypeError, ValueError):
         return default
+    return default if value != value else value  # NaN is never a usable knob
 
 
 def _env_int(name: str, default: int) -> int:
@@ -113,6 +164,17 @@ def _env_int(name: str, default: int) -> int:
         return int(os.environ[name])
     except (KeyError, TypeError, ValueError):
         return default
+
+
+def _clamp(value: object, lo: float, hi: float, default: float) -> float:
+    """Clamp a config value into [lo, hi]; non-numeric or NaN falls back to default."""
+    try:
+        v = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    if v != v:  # NaN
+        return default
+    return min(hi, max(lo, v))
 
 
 class PickerConfig:
@@ -133,6 +195,13 @@ class PickerConfig:
             if p.strip()
         )
         self.untried_prior_score = _env_float("MODEL_PICKER_UNTRIED_PRIOR_SCORE", DEFAULT_UNTRIED_PRIOR_SCORE)
+        self.strong_health_threshold = _env_float(
+            "MODEL_PICKER_STRONG_HEALTH_THRESHOLD", DEFAULT_STRONG_HEALTH_THRESHOLD
+        )
+        self.min_health = _env_float("MODEL_PICKER_MIN_HEALTH", DEFAULT_MIN_HEALTH)
+        self.health_top_percent = _env_float(
+            "MODEL_PICKER_HEALTH_TOP_PERCENT", DEFAULT_HEALTH_TOP_PERCENT
+        )
         self.modelgrep_url = os.environ.get("MODEL_PICKER_MODELGREP_URL", MODELGREP_MODELS_URL)
         self.benchmark_ttl_seconds = _env_float("MODEL_PICKER_BENCHMARK_TTL_SECONDS", DEFAULT_BENCHMARK_TTL_SECONDS)
         self.benchmarks_enabled = os.environ.get("MODEL_PICKER_BENCHMARKS_OFF", "").strip().lower() not in ("1", "true", "yes", "on")
@@ -160,7 +229,10 @@ class ModelCandidate:
     requests: int = 0  # published sample size
     available: bool = True  # False when the provider's catalog dropped it
     source: str = "prior"  # pollinations_api | prior
-    free: bool = False  # pollinations: no nonzero pollen rate (free tier; credit-gated server-side)
+    free: bool = False  # True when the model is free-tier: pollinations zero
+    # pollen rate, all NIM models (no pricing in NIM's catalog; treated as
+    # free per the operator's assumption), llm7 zero pricing. Unknown or
+    # priced models default to not-free and are never picked.
     benchmark_score: float = 0.0  # 0..1 modelgrep composite (coding, tool calling, SWE)
     benchmarked: bool = False  # False when modelgrep has no scores for the match
     modelgrep_id: str = ""  # matched modelgrep entry ("" when unmatched -> gated out)
@@ -209,8 +281,10 @@ def parse_pollinations_models(payload: dict) -> list[ModelCandidate]:
     Official and community models are both eligible; the catalog's pricing
     metadata discerns free-tier models (no nonzero pollen rate), which the
     pollinations backend currently gates behind account credits — sometimes
-    even spuriously. The ``free`` flag is surfaced for observability; the
-    soft-failure sniffing in the stats logger handles the gating dynamically.
+    even spuriously. Only free-tier models are admitted: a nonzero pollen
+    rate drops the model here, not just flags it — the picker only selects
+    free models, and the soft-failure sniffing in the stats logger handles
+    the credit gating dynamically for the free models that remain.
     """
     out: list[ModelCandidate] = []
     for m in (payload or {}).get("data") or []:
@@ -220,6 +294,8 @@ def parse_pollinations_models(payload: dict) -> list[ModelCandidate]:
         if not model_id:
             continue
         if m.get("paid_only"):
+            continue
+        if not has_free_pricing(m.get("pricing")):
             continue
         output_modalities = m.get("output_modalities") or []
         input_modalities = m.get("input_modalities") or []
@@ -284,7 +360,12 @@ def _bare_catalog_entries(payload: dict | list) -> list[dict]:
 
 
 def parse_nim_models(payload: dict | list) -> list[ModelCandidate]:
-    """Parse NIM's /v1/models into chat-capable metric-less candidates."""
+    """Parse NIM's /v1/models into chat-capable metric-less candidates.
+
+    NIM's catalog carries no pricing, so every admitted model is treated
+    as free (operator assumption): the picker only selects free models,
+    and NIM is the free-tier provider in this deployment.
+    """
     out: list[ModelCandidate] = []
     for m in _bare_catalog_entries(payload):
         model_id = str(m["id"])
@@ -297,6 +378,7 @@ def parse_nim_models(payload: dict | list) -> list[ModelCandidate]:
                 context_length=int(m.get("context_length") or 0),
                 metricless=True,
                 source="prior",
+                free=True,
             )
         )
     return out
@@ -440,6 +522,24 @@ def modelgrep_benchmark_score(entry: dict) -> tuple[float, bool]:
 # model, which is worse than dropping it. The pipeline tries alias variants
 # of the candidate's upstream id in decreasing confidence order, then a
 # structured family resolver guarded by version/variant/size equality.
+# Only when every strict stage fails does the bidirectional-substring
+# fallback run: a candidate matches an entry when either normalized bare
+# segment contains the other on token boundaries. That rescues relay names
+# carrying vendor prefixes (vercel-nemotron-3.5-lightning -> the
+# nemotron-3.5-lightning entry), but it is deliberately unique-hit-only
+# (with maker disambiguation) so a generic fragment can never silently
+# claim an ambiguous model — and it relaxes the variant guard by design:
+# a bare -flash relay now matches a -flash-lite entry when that is the
+# unique substring hit.
+# Dashless equality runs between the alias loop and the family stage: a
+# candidate alias form and an entry id/segment are compared with dashes
+# removed, so a provider spelling with different word boundaries
+# (Nemotron3.5Lightning) still equals its entry. It is equality, not
+# containment, so the variant guard survives (flash != flash-lite) and
+# the dashed tokenization the family stage depends on is untouched.
+# Unique-hit-only, with maker disambiguation for segment hits, so a
+# dashless collision across entries (3-1 vs 31) gates out instead of
+# picking one arbitrarily.
 _NAME_SEPARATORS = re.compile(r"[\s_:]+")
 _NAME_SEPARATORS_KEEPING_DOTS = re.compile(r"[\s_]+")
 _NAME_COLLAPSE = re.compile(r"-{2,}")
@@ -472,6 +572,11 @@ def _norm_name(name: str) -> str:
     # versions: dots and dashes are the same model across providers
     lowered = lowered.replace(".", "-")
     return _NAME_COLLAPSE.sub("-", lowered)
+
+
+def _dashless(name: str) -> str:
+    """Separator-free comparison form: _norm_name with dashes removed."""
+    return _norm_name(name).replace("-", "")
 
 
 def _strip_decorations(segment: str) -> list[str]:
@@ -564,13 +669,33 @@ def _size_rank(size_tokens: tuple[str, ...]) -> float:
     return best
 
 
+def _boundary_contains(haystack: str, needle: str) -> bool:
+    """True when needle occurs in haystack on '-' or '/' boundaries.
+
+    Equality, a leading segment, a trailing segment, or a middle segment
+    all count; a mid-token occurrence (beam in sunbeam) does not.
+    """
+    if not needle or needle not in haystack:
+        return False
+    if haystack == needle:
+        return True
+    if haystack.startswith(needle + "-") or haystack.startswith(needle + "/"):
+        return True
+    if haystack.endswith("-" + needle) or haystack.endswith("/" + needle):
+        return True
+    return ("-" + needle + "-") in haystack or ("/" + needle + "/") in haystack
+
+
 class ModelGrepIndex:
     """Lookup structures over modelgrep entries for candidate matching."""
 
     def __init__(self, entries: list[dict]) -> None:
         self._by_id: dict[str, dict] = {}
         self._by_segment: dict[str, list[dict]] = {}
+        self._by_dashless_id: dict[str, list[dict]] = {}
+        self._by_dashless_segment: dict[str, list[dict]] = {}
         self._by_key: dict[tuple, list[dict]] = {}
+        self._entry_forms: list[tuple[dict, str, str]] = []
         for entry in entries:
             mg_id = str(entry.get("id") or "")
             if not mg_id:
@@ -579,7 +704,10 @@ class ModelGrepIndex:
             self._by_id[norm_id] = entry
             segment = norm_id.split("/")[-1]
             self._by_segment.setdefault(segment, []).append(entry)
+            self._by_dashless_id.setdefault(_dashless(norm_id), []).append(entry)
+            self._by_dashless_segment.setdefault(_dashless(segment), []).append(entry)
             self._by_key.setdefault(_segment_key(segment), []).append(entry)
+            self._entry_forms.append((entry, segment, norm_id))
 
     def _by_full_id(self, alias: str) -> dict | None:
         return self._by_id.get(alias)
@@ -595,8 +723,14 @@ class ModelGrepIndex:
 
         entry is None when nothing matches within the guarded rules (the
         caller gates the candidate out). Version/variant/size equality is
-        enforced in the family stage, so glm-5.3 can never match glm-5.2 and
-        -flash can never match -flash-lite.
+        enforced in the family stage, so glm-5.3 can never match glm-5.2.
+        The dashless-equality stage runs after the whole alias loop, so
+        it can never override an exact, decoration, or prefix hit, and
+        before family, so a true equality beats a family resemblance.
+        The substring fallback runs last, after every strict stage, and
+        matches bidirectionally on token boundaries — so a -flash relay
+        can match a -flash-lite entry when that is the unique substring
+        hit. See the module comment above for the rationale.
         """
         for alias, confidence, stage in _candidate_aliases(upstream_id):
             hit = self._by_full_id(alias) if "/" in alias else None
@@ -604,6 +738,13 @@ class ModelGrepIndex:
                 hit = self._by_bare_segment(alias)
             if hit is not None:
                 return hit, stage, confidence
+        # Dashless equality: same model spelled with different word
+        # boundaries or casing (Nemotron3.5Lightning -> the
+        # nemotron-3.5-lightning entry). Unique-hit-only, with maker
+        # disambiguation for segment hits; ambiguity gates out.
+        dash, dash_ambiguous = self._dashless_match(upstream_id)
+        if dash is not None:
+            return dash, "dashless", 0.9
         # structured family resolution: exact (alpha, version, size) equality,
         # with the bare-generation -> size-decorated sibling allowance
         key = _segment_key(upstream_id.split("/")[-1])
@@ -619,7 +760,93 @@ class ModelGrepIndex:
                 # deterministic: prefer the largest parameter count
                 best = max(siblings, key=lambda e: _size_rank(_segment_key(str(e.get("id") or "").split("/")[-1])[2]))
                 return best, "family-size-sibling-multi", 0.45
-        return None, ("ambiguous" if len(hits) > 1 else "unmatched"), 0.0
+        # Bidirectional-substring fallback, last: the entry's bare segment
+        # contains the candidate's (vendor-prefixed relays), or the
+        # candidate's contains the entry's, on token boundaries. Unique
+        # hits only — ambiguity still gates out.
+        sub, sub_ambiguous = self._substring_match(upstream_id)
+        if sub is not None:
+            return sub, "substring", 0.4
+        return None, ("ambiguous" if len(hits) > 1 or dash_ambiguous or sub_ambiguous else "unmatched"), 0.0
+
+    def _dashless_match(self, upstream_id: str) -> tuple[dict | None, bool]:
+        """Dashless equality on the candidate's alias forms.
+
+        Each form is compared with dashes removed, against both the
+        entry's dashless full id (when the form carries a path) and its
+        dashless bare segment. Full-id hits must be unique; segment hits
+        may be narrowed by maker, otherwise ambiguity gates out.
+        Forms are the alias loop's aliases plus decoration-stripped
+        variants of the normalized bare segment — stripping after
+        normalization, so a colon-suffixed :free relay strips correctly
+        too (the alias loop strips the raw segment, where :free is not
+        a -free suffix). Returns (entry, ambiguous).
+        """
+        forms: list[str] = []
+        seen: set[str] = set()
+        for alias, _confidence, _stage in _candidate_aliases(upstream_id):
+            if alias not in seen:
+                seen.add(alias)
+                forms.append(alias)
+        bare = _norm_name(upstream_id.split("/")[-1])
+        for variant in _strip_decorations(bare):
+            if variant not in seen:
+                seen.add(variant)
+                forms.append(variant)
+        ambiguous = False
+        for form in forms:
+            if "/" in form:
+                hits = self._by_dashless_id.get(_dashless(form)) or []
+                if len(hits) == 1:
+                    return hits[0], False
+                if len(hits) > 1:
+                    ambiguous = True
+            seg_hits = self._by_dashless_segment.get(_dashless(form.split("/")[-1])) or []
+            if seg_hits:
+                narrowed = self._disambiguate_by_maker(seg_hits, upstream_id)
+                if len(narrowed) == 1:
+                    return narrowed[0], False
+                ambiguous = True
+        return None, ambiguous
+
+    def _substring_match(self, upstream_id: str) -> tuple[dict | None, bool]:
+        """Bidirectional token-boundary substring match on the bare segment.
+
+        Variants are the normalized bare segment plus its decoration-stripped
+        forms (stripping after normalization, so colon-suffixed :free relays
+        strip correctly too). A variant matches an entry when either side
+        contains the other on a '-' or '/' boundary, and the shorter side
+        is at least 4 chars, so 1-3 char fragments cannot claim a model.
+        Returns (entry, ambiguous): ambiguous is True when some variant hit
+        several entries that maker disambiguation could not narrow to one.
+        """
+        variants: list[str] = []
+        seen: set[str] = set()
+        bare = _norm_name(upstream_id.split("/")[-1])
+        for variant in _strip_decorations(bare):
+            if variant and variant not in seen and len(variant) >= 4:
+                seen.add(variant)
+                variants.append(variant)
+        ambiguous = False
+        for variant in variants:
+            hits: list[dict] = []
+            for entry, segment, full_id in self._entry_forms:
+                if len(segment) < 4:
+                    continue
+                if (
+                    _boundary_contains(segment, variant)
+                    or _boundary_contains(variant, segment)
+                    or _boundary_contains(full_id, variant)
+                ):
+                    hits.append(entry)
+            if len(hits) == 1:
+                return hits[0], False
+            if len(hits) > 1:
+                narrowed = self._disambiguate_by_maker(hits, upstream_id)
+                if len(narrowed) == 1:
+                    return narrowed[0], False
+                ambiguous = True
+        return None, ambiguous
 
     @staticmethod
     def _maker_of(entry: dict) -> str:
@@ -980,12 +1207,123 @@ class GroupStats:
         )
 
 
-class StatsRegistry:
-    """Per-group rolling stats shared by the plugin and the stats logger."""
+def default_stats_path() -> str | None:
+    """Durable stats path for this deployment, or None for in-memory only.
 
-    def __init__(self, half_life_seconds: float = DEFAULT_HALF_LIFE_SECONDS) -> None:
+    Explicit env wins; otherwise the code-server container's persistent
+    /config volume is used when present. Anywhere else (local dev, tests)
+    the default is in-memory, so nothing is written to the repo by accident.
+    """
+    env_path = os.environ.get("MODEL_PICKER_STATS_PATH", "").strip()
+    if env_path:
+        return env_path
+    if os.path.isdir("/config"):
+        return DEFAULT_STATS_PATH
+    return None
+
+
+class StatsRegistry:
+    """Per-group rolling stats shared by the plugin and the stats logger.
+
+    Optionally durable: when ``path`` is set (explicitly, or via
+    ``default_stats_path()`` for the shared registry), every recorded event
+    is flushed to a JSON file atomically (temp file + os.replace), and the
+    file is reloaded on construction. Persistence is fail-soft — a bad path
+    or corrupt file logs a warning and falls back to in-memory stats, never
+    breaking routing. The file holds only per-model aggregate event data
+    (timestamps, success/failure class, TTFT); no prompts, responses, or
+    credentials.
+    """
+
+    def __init__(
+        self,
+        half_life_seconds: float = DEFAULT_HALF_LIFE_SECONDS,
+        path: str | None = None,
+    ) -> None:
         self.half_life_seconds = half_life_seconds
+        self.path = path
         self._groups: dict[str, GroupStats] = {}
+        # Upstream-proven context windows, per group: a catalog window is
+        # a claim, and catalogs lie (minimax-m3.1-flash claims 1,048,576
+        # while NIM serves it at 262,144). A context_length 400 proves the
+        # real limit, so it is recorded here and used as the fit filter's
+        # effective window from then on — the lie costs one failed
+        # request per model, not every oversized request forever.
+        self._learned_windows: dict[str, int] = {}
+        if path:
+            self._load()
+
+    def _load(self) -> None:
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                payload = json.load(f)
+            groups = payload.get("groups") if isinstance(payload, dict) else None
+            if not isinstance(groups, dict):
+                return
+            for name, data in groups.items():
+                if not isinstance(name, str) or not isinstance(data, dict):
+                    continue
+                stats = GroupStats(self.half_life_seconds)
+                events = data.get("events") or []
+                for event in events:
+                    if not isinstance(event, list) or len(event) != 4:
+                        continue
+                    ts, ok, ttft, failure_class = event
+                    if not isinstance(ts, (int, float)) or not isinstance(ok, bool):
+                        continue
+                    stats._events.append(
+                        (
+                            float(ts),
+                            ok,
+                            float(ttft) if isinstance(ttft, (int, float)) else None,
+                            str(failure_class) if isinstance(failure_class, str) else None,
+                        )
+                    )
+                stats.dead = bool(data.get("dead", False))
+                stats.demoted = bool(data.get("demoted", False))
+                last_ts = data.get("last_obs_ts")
+                stats.last_obs_ts = float(last_ts) if isinstance(last_ts, (int, float)) else None
+                stats.last_obs_was_failure = bool(data.get("last_obs_was_failure", False))
+                self._groups[name] = stats
+            learned = payload.get("learned_windows") if isinstance(payload, dict) else None
+            if isinstance(learned, dict):
+                for name, limit in learned.items():
+                    if isinstance(name, str) and isinstance(limit, int) and not isinstance(limit, bool) and limit > 0:
+                        self._learned_windows[name] = limit
+        except FileNotFoundError:
+            pass
+        except Exception as e:  # noqa: BLE001 — corrupt stats must never break routing
+            logger.warning("model_picker: stats file %s unreadable (%s); starting fresh", self.path, e)
+
+    def _save(self) -> None:
+        if not self.path:
+            return
+        try:
+            parent = os.path.dirname(self.path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            payload = {
+                "version": 1,
+                "learned_windows": dict(self._learned_windows),
+                "groups": {
+                    name: {
+                        "events": [
+                            [ts, ok, ttft, failure_class] for ts, ok, ttft, failure_class in stats._events
+                        ],
+                        "dead": stats.dead,
+                        "demoted": stats.demoted,
+                        "last_obs_ts": stats.last_obs_ts,
+                        "last_obs_was_failure": stats.last_obs_was_failure,
+                    }
+                    for name, stats in self._groups.items()
+                },
+            }
+            tmp_path = f"{self.path}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+            os.replace(tmp_path, self.path)
+        except Exception as e:  # noqa: BLE001 — persistence must never break routing
+            logger.warning("model_picker: could not save stats to %s (%s)", self.path, e)
 
     def group(self, name: str) -> GroupStats:
         stats = self._groups.get(name)
@@ -995,10 +1333,42 @@ class StatsRegistry:
         return stats
 
     def record_success(self, name: str, ttft_seconds: float | None = None, now: float | None = None) -> None:
+        if not name:
+            return
         self.group(name).record_success(time.time() if now is None else now, ttft_seconds)
+        self._save()
 
     def record_failure(self, name: str, failure_class: str, now: float | None = None) -> None:
+        if not name:
+            return
         self.group(name).record_failure(time.time() if now is None else now, failure_class)
+        self._save()
+
+    def record_context_limit(self, name: str, limit: int) -> None:
+        """Record an upstream-proven context window for a group.
+
+        The minimum wins: if a provider ever reports a smaller limit,
+        that is the binding constraint for fit filtering.
+        """
+        if not name or not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+            return
+        previous = self._learned_windows.get(name)
+        if previous is None or limit < previous:
+            self._learned_windows[name] = limit
+            self._save()
+
+    def learned_window(self, name: str) -> int | None:
+        return self._learned_windows.get(name)
+
+    def effective_window(self, candidate: "ModelCandidate") -> int:
+        """Window the fit filter trusts: the smaller of catalog and learned.
+
+        A learned window never widens a catalog window — upstream proved
+        the smaller number, and a catalog claim above it is exactly the
+        lie that 400s oversized requests.
+        """
+        windows = [w for w in (candidate.context_length, self._learned_windows.get(candidate.name)) if w]
+        return min(windows) if windows else 0
 
     def derived(self, name: str, now: float | None = None) -> DerivedStats:
         return self.group(name).derived(time.time() if now is None else now)
@@ -1009,6 +1379,8 @@ class StatsRegistry:
 # ---------------------------------------------------------------------------
 
 TIER_DEFAULT = "default"
+# Capability-first rubric; now used only by the ultra-think pool (the
+# think pool uses TIER_DEFAULT).
 TIER_THINK = "think"
 
 _CLASS_FAVORED = 0
@@ -1035,21 +1407,197 @@ def tracked_health_score(stats: DerivedStats) -> float:
     return (stats.successes + 1.0) / (stats.successes + stats.failures + 2.0)
 
 
+# Wordings that identify a context-window overflow in an error message
+# (LiteLLM's own detection list in exception_mapping_utils, plus the
+# context_length_exceeded code). Used to recognize a context error even
+# when the error carries no usable numeric limit.
+_CONTEXT_WINDOW_MESSAGE_MARKERS = (
+    "exceed context limit",
+    "this model's maximum context length is",
+    "model's maximum context limit",
+    "is longer than the model's context length",
+    "input tokens exceed the configured limit",
+    "`inputs` tokens + `max_new_tokens` must be",
+    "exceeds the available context size",
+    "exceeds the maximum number of tokens allowed",
+    "context_length_exceeded",
+    "context window exceeded",
+)
+
+
+def _payload_dicts(payload: object) -> Iterator[dict]:
+    """Dicts inside a provider body: itself, nested error dicts, list items."""
+    import json as _json
+
+    if isinstance(payload, str):
+        try:
+            payload = _json.loads(payload)
+        except Exception:
+            return
+    if isinstance(payload, list):
+        for item in payload:
+            yield from _payload_dicts(item)
+        return
+    if not isinstance(payload, dict):
+        return
+    yield payload
+    nested = payload.get("error")
+    if isinstance(nested, dict):
+        yield from _payload_dicts(nested)
+
+
+def _context_details_items(payload: object) -> Iterator[dict]:
+    """context_length details dicts inside a provider body, if any."""
+    for d in _payload_dicts(payload):
+        details = d.get("details")
+        items = [details] if isinstance(details, dict) else (details if isinstance(details, list) else [])
+        for item in items:
+            if isinstance(item, dict) and item.get("type") in (
+                "context_length",
+                "context_length_exceeded",
+            ):
+                yield item
+
+
+def is_context_window_error(exc: BaseException | None) -> bool:
+    """Whether an exception is a context-window overflow, by type or wording.
+
+    LiteLLM maps provider context errors to ContextWindowExceededError, but
+    some providers' bare 400s never map (NVIDIA's "Invalid request") while
+    still carrying a context_length details body — so check the type name,
+    the details payload (and its code), and LiteLLM's own context-error
+    substrings. A bare "Invalid request" with no context marker is not one.
+    """
+    if exc is None:
+        return False
+    if "contextwindow" in type(exc).__name__.lower().replace("_", ""):
+        return True
+    seen: set[int] = set()
+    queue: list[object] = [exc]
+    while queue:
+        current = queue.pop(0)
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        for attr in ("body", "response"):
+            payload = getattr(current, attr, None)
+            if next(_context_details_items(payload), None) is not None:
+                return True
+            for d in _payload_dicts(payload):
+                if d.get("code") == "context_length_exceeded":
+                    return True
+        text = str(current).lower()
+        if any(marker in text for marker in _CONTEXT_WINDOW_MESSAGE_MARKERS):
+            return True
+        for attr in ("__cause__", "__context__"):
+            nxt = getattr(current, attr, None)
+            if nxt is not None:
+                queue.append(nxt)
+    return False
+
+
+# Numeric-limit patterns, tried in order on each exception's text (and on
+# serialized provider bodies, whose message may not reach str(exc)).
+_CONTEXT_LIMIT_PATTERNS = (
+    r"context_length[^0-9]{0,40}?limit['\"]?\s*[:=]\s*(\d+)",
+    r"maximum context (?:length|limit)\s+is\s+(\d+)",
+    r"while limit is\s+(\d+)",
+)
+
+
+def extract_context_limit(exc: BaseException | None) -> int | None:
+    """Upstream context limit carried by a context_length failure, if any.
+
+    NVIDIA's 400 for an over-window request reads just "Invalid request"
+    to LiteLLM, so it maps to a generic BadRequestError — but the mapped
+    error keeps the provider body's ``details`` (``{"type":
+    "context_length", "limit": 262144, "actual": 265267}``). Walk the
+    exception chain and any body/response payloads for that shape; fall
+    back to limit patterns in the message text (OpenAI's "maximum context
+    length is N", Cerebras' "Current length is X while limit is Y", a
+    ``context_length ... limit N`` pattern). Returns None for unrelated
+    errors and for context errors that carry no usable limit — the caller
+    then falls back to the request's own token estimate as the bound.
+    """
+    import json as _json
+    import re as _re
+
+    seen: set[int] = set()
+    queue: list[object] = [exc]
+    while queue:
+        current = queue.pop(0)
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        texts: list[str] = [str(current)]
+        for attr in ("body", "response"):
+            payload = getattr(current, attr, None)
+            limit = _context_limit_from_payload(payload)
+            if limit is not None:
+                return limit
+            for d in _payload_dicts(payload):
+                texts.append(_json.dumps(d, default=str))
+        for text in texts:
+            for pattern in _CONTEXT_LIMIT_PATTERNS:
+                match = _re.search(pattern, text, _re.IGNORECASE)
+                if match:
+                    try:
+                        return int(match.group(1))
+                    except ValueError:
+                        continue
+        for attr in ("__cause__", "__context__"):
+            nxt = getattr(current, attr, None)
+            if nxt is not None:
+                queue.append(nxt)
+    return None
+
+
+def _context_limit_from_payload(payload: object) -> int | None:
+    for details in _context_details_items(payload):
+        limit = details.get("limit")
+        if isinstance(limit, bool):
+            continue
+        if isinstance(limit, int) and limit > 0:
+            return limit
+        if isinstance(limit, str) and limit.isdigit() and int(limit) > 0:
+            return int(limit)
+    return None
+
+
+def _countable_chars(value: object) -> int:
+    """Chars that count toward a prompt-size estimate, recursively.
+
+    Anthropic-shaped messages nest the bulk of a coding session inside
+    tool_result blocks (``{"type": "tool_result", "content": [{"type":
+    "text", "text": ...}]}``) — a counter that only reads top-level
+    ``text`` parts sees ~7k tokens of a 265k-token request and the fit
+    filter passes a model whose real window the request already exceeds.
+    Count every string under a message's content, recursing into nested
+    content lists/dicts (tool results, tool inputs). Image blocks are
+    skipped: their base64 ``source``/``data`` is not prompt text.
+    """
+    if isinstance(value, str):
+        return len(value)
+    if isinstance(value, list):
+        return sum(_countable_chars(item) for item in value)
+    if isinstance(value, dict):
+        if value.get("type") in ("image", "image_url"):
+            return 0
+        return sum(
+            _countable_chars(item)
+            for key, item in value.items()
+            if key not in ("source", "data", "type", "tool_use_id")
+        )
+    return 0
+
+
 def estimate_tokens(messages: list[dict]) -> int:
-    """Cheap chars/4 token estimate over OpenAI-shaped messages."""
+    """Cheap chars/4 token estimate over OpenAI- or Anthropic-shaped messages."""
     total_chars = 0
     for msg in messages or []:
         if not isinstance(msg, dict):
             continue
-        content = msg.get("content")
-        if isinstance(content, str):
-            total_chars += len(content)
-        elif isinstance(content, list):
-            for part in content:
-                if isinstance(part, dict):
-                    text = part.get("text")
-                    if isinstance(text, str):
-                        total_chars += len(text)
+        total_chars += _countable_chars(msg.get("content"))
     return total_chars // 4
 
 
@@ -1092,18 +1640,22 @@ def _classify_candidate(
         return _CLASS_METRIC, candidate.wilson_score, ""
 
     if stats.n_obs <= 0:
-        # Never tried. Untested static groups get the benefit of the doubt —
-        # except deprioritized providers (llm7: no published metrics, groups
-        # that trip daily token quotas), which start at a neutral prior below
-        # healthy metric-backed candidates and compete on tracked evidence
-        # from the first observation.
+        # Never tried. Untested groups start at the neutral prior (0.5 by
+        # default) — no benefit of the doubt — so known-healthier models
+        # outrank them in the health sort; they still pass the default
+        # floor and can win on capability once the cohort reaches them.
+        # Deprioritized providers (llm7: no published metrics, groups that
+        # trip daily token quotas) start at the same prior but as METRIC,
+        # so they lose the favored block and health-tiebreaks to other
+        # untried models, and compete on tracked evidence from the first
+        # observation.
         if candidate.provider in cfg.deprioritized_providers:
             return _CLASS_METRIC, cfg.untried_prior_score, ""
-        return _CLASS_FAVORED, 1.0, ""
+        return _CLASS_FAVORED, cfg.untried_prior_score, ""
 
     # Tried: rank on OUR OWN tracked health (429-weighted, decayed) instead of
-    # a static 1.0, so sustained rate-limiting demotes without waiting for a
-    # hard-failure proof.
+    # a static placeholder, so sustained rate-limiting demotes without
+    # waiting for a hard-failure proof.
     return _CLASS_METRIC, tracked_health_score(stats), ""
 
 
@@ -1164,16 +1716,35 @@ def rank_candidates(
     # "below". Auth and latency proofs remain active.
     best_metric_score = max(metric_scores) if metric_scores else 0.0
 
+    # Context fit: only enforced where the context length is actually known;
+    # metric-less groups with unknown context bypass fit. The window
+    # used is the effective one — the smaller of the catalog claim and
+    # any upstream-proven learned limit — because a catalog claim above
+    # the real window is exactly what 400s an oversized request.
+    # If fit empties the pool, keep all: an oversized request is still
+    # better served by the best-ranked (largest-window, healthiest)
+    # candidate than by passing the tier pool through to the router's
+    # arbitrary selection. This mirrors the recency guard below.
     pool: list[tuple[ModelCandidate, DerivedStats]] = []
+    fit_dropped: list[tuple[ModelCandidate, DerivedStats]] = []
     for c in candidates:
         if not c.available:
             continue
-        # Context fit: only enforced where the context length is actually known;
-        # metric-less groups with unknown context bypass fit (the in-request
-        # retry mechanism backstops a genuine overflow).
-        if c.context_length and estimate > c.context_length:
+        # Free-only: the picker only selects free models. Parsers admit
+        # only free candidates, and this rank-time filter is the backstop
+        # for stale snapshots, the (paid) fallback snapshot, and future
+        # providers — a non-free candidate can never be picked, even if
+        # it somehow reaches the snapshot.
+        if not c.free:
             continue
-        pool.append((c, stats_registry.derived(c.name, now)))
+        entry = (c, stats_registry.derived(c.name, now))
+        window = stats_registry.effective_window(c)
+        if window and estimate > window:
+            fit_dropped.append(entry)
+            continue
+        pool.append(entry)
+    if not pool and fit_dropped:
+        pool = fit_dropped
 
     ranked: list[RankedCandidate] = []
     for c, dstats in pool:
@@ -1200,8 +1771,8 @@ def rank_candidates(
 
     # Latency-demoted models carry a class floor below all metric-backed
     # candidates in the default tier (health dimension). Failure-demoted models
-    # compete on evidence alongside metric-backed ones. In think tiers the
-    # rubric is context-first and rank_class already resolves ties.
+    # compete on evidence alongside metric-backed ones. In the ultra-think
+    # rubric the sort is context-first and rank_class already resolves ties.
     latency_demoted_names: set[str] = set()
     for r in ranked:
         if r.rank_class == _CLASS_KNOWN:
@@ -1209,33 +1780,122 @@ def rank_candidates(
             if d.ttft_n >= cfg.min_obs and d.ttft_mean > cfg.demote_ttft_seconds:
                 latency_demoted_names.add(r.candidate.name)
 
+    # Shared health blocks, used by both tiers: a model that has
+    # *demonstrated* strong health beats an unmeasured one, and an
+    # unmeasured one still beats a model known to be weak; demoted models
+    # sort last. An untried model's nominal health is the neutral prior
+    # (0.5), so health alone already puts known-strong models ahead of it;
+    # the block still does real work below that — it keeps untried models
+    # above known-weak ones, whose tracked or published health can sit
+    # just above the prior.
+    def block_for(r: RankedCandidate) -> int:
+        if r.rank_class == _CLASS_KNOWN:
+            return 3
+        if r.rank_class == _CLASS_FAVORED:
+            return 1
+        if r.health_score >= cfg.strong_health_threshold:
+            return 0
+        return 2
+
+    def effective_score(r: RankedCandidate) -> float:
+        return r.health_score - (1.0 if r.candidate.name in latency_demoted_names else 0.0)
+
+    def class_order(r: RankedCandidate) -> int:
+        # Tiebreak only, used by the default tier: on equal health, an
+        # untried (FAVORED) model outranks a neutral-prior (METRIC) one, so
+        # deprioritized providers (llm7) still lose ties to other untried
+        # models now that both start at the same 0.5 prior. KNOWN never
+        # reaches the cohort.
+        return {_CLASS_FAVORED: 0, _CLASS_METRIC: 1, _CLASS_KNOWN: 2}[r.rank_class]
+
     if tier == TIER_THINK:
-        # Context-first; class breaks context ties (favored > metric > known),
-        # then health, then modelgrep benchmarks.
+        # Ultra-think only (the think pool now uses the default rubric):
+        # Context first, then modelgrep benchmark (capability), then the
+        # health blocks, then health, then name. So a higher-benchmark
+        # untried model still beats a lower-benchmark known-strong one
+        # (exploration by capability), but on equal context *and* equal
+        # benchmark, demonstrated good health beats being unmeasured —
+        # equally capable models are decided by evidence, not novelty.
+        # Demoted models still sort last within their context/benchmark.
         ranked.sort(
             key=lambda r: (
                 -r.candidate.context_length,
-                r.rank_class,
-                -r.health_score,
                 -r.candidate.benchmark_score,
+                block_for(r),
+                -effective_score(r),
                 r.candidate.name,
             )
         )
-    else:  # TIER_DEFAULT: favored block first, then health (availability),
-        # then context length, then modelgrep benchmarks — name breaks exact
-        # ties. Latency-demoted models carry the health floor.
-        def sort_key(r: RankedCandidate):
-            favored = 0 if r.rank_class == _CLASS_FAVORED else 1
-            effective_score = r.health_score - (1.0 if r.candidate.name in latency_demoted_names else 0.0)
+    else:  # TIER_DEFAULT: health-filtered capability pick. The default tier
+        # no longer always picks the healthiest model. It filters first —
+        # hard health floor, then the top N% healthiest — and picks the most
+        # capable model (highest benchmark, then largest context) from the
+        # survivors, with health breaking ties. The think pool uses this
+        # rubric too (it maps to TIER_DEFAULT). Health here is the effective
+        # score (the latency floor already applied), so slow models are
+        # filtered on their penalized health. Benchmark outranks context
+        # everywhere capability is compared in this tier — the capability
+        # pick, the top-% cutoff's tiebreak, and the tail order — while
+        # ultra-think keeps its own context-first order.
+        #
+        # Demoted (KNOWN-class) models never enter the cohort: demotion is a
+        # proven-bad signal, stronger than the health number, and letting a
+        # demoted-but-capable model jump the queue would regress the
+        # demotion proofs. If every candidate is demoted, the old block order
+        # below is kept as a last resort. If the floor empties the cohort,
+        # the floor is ignored for this request (mirroring the fit-empty
+        # fallback) and the top-% + capability steps still run on the full
+        # cohort. The cohort leads the returned list in capability order
+        # and the rest follow in the old block order, so anything iterating
+        # past the pick still sees every eligible candidate.
+        def default_sort_key(r: RankedCandidate):
             return (
-                favored,
-                -effective_score,
-                -r.candidate.context_length,
+                block_for(r),
+                -effective_score(r),
                 -r.candidate.benchmark_score,
+                -r.candidate.context_length,
                 r.candidate.name,
             )
 
-        ranked.sort(key=sort_key)
+        eligible = [r for r in ranked if r.rank_class != _CLASS_KNOWN]
+        if eligible:
+            floor = _clamp(cfg.min_health, 0.0, 1.0, DEFAULT_MIN_HEALTH)
+            cohort = [r for r in eligible if effective_score(r) >= floor]
+            if not cohort:
+                logger.debug(
+                    "model_picker: health floor %.3f emptied the default pool; ignoring floor for this request",
+                    floor,
+                )
+                cohort = eligible
+            pct = _clamp(cfg.health_top_percent, 1.0, 100.0, DEFAULT_HEALTH_TOP_PERCENT)
+            cohort.sort(
+                key=lambda r: (
+                    -effective_score(r),
+                    class_order(r),
+                    -r.candidate.benchmark_score,
+                    -r.candidate.context_length,
+                    r.candidate.name,
+                )
+            )
+            keep = max(1, math.ceil(len(cohort) * pct / 100.0))
+            cohort = cohort[:keep]
+            cohort.sort(
+                key=lambda r: (
+                    -r.candidate.benchmark_score,
+                    -r.candidate.context_length,
+                    -effective_score(r),
+                    class_order(r),
+                    r.candidate.name,
+                )
+            )
+            cohort_names = {r.candidate.name for r in cohort}
+            rest = sorted(
+                (r for r in ranked if r.candidate.name not in cohort_names),
+                key=default_sort_key,
+            )
+            ranked = cohort + rest
+        else:
+            ranked.sort(key=default_sort_key)
     return ranked
 
 
@@ -1467,7 +2127,7 @@ def get_shared_manager() -> CatalogManager:
 def get_shared_stats() -> StatsRegistry:
     global _shared_stats
     if _shared_stats is None:
-        _shared_stats = StatsRegistry()
+        _shared_stats = StatsRegistry(path=default_stats_path())
     return _shared_stats
 
 
