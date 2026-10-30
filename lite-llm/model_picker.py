@@ -27,12 +27,14 @@ Design (beads workspace-c8o, revised in workspace-4wr):
   Each provider's listing is served through a wildcard model_list entry
   (pollinations/*, nvidia_nim/*, llm7/*); a failed provider
   refresh keeps that provider's last-known candidates.
-- Ranking classes: UNKNOWN (untried metric-less, favored — ranks above
-  everything on the health dimension, except deprioritized providers such as
-  llm7 whose untried groups start at a neutral prior below healthy
-  metric-backed candidates), METRIC (published health, or our own tracked
-  health once the group has observations), KNOWN (demoted while the current
-  observation window proves it bad).
+- Ranking classes: UNKNOWN (untried metric-less, favored — starts at the
+  neutral prior (0.5, MODEL_PICKER_UNTRIED_PRIOR_SCORE), below healthy
+  metric-backed candidates, so known-healthier models outrank it; the
+  favored class still breaks ties and health blocks in its favor, and
+  deprioritized providers such as llm7 start at the same prior but as
+  METRIC, so they lose ties to other untried models), METRIC (published
+  health, or our own tracked health once the group has observations),
+  KNOWN (demoted while the current observation window proves it bad).
 - Self-tracked health (workspace-4wr): once a metric-less group has
   observations it competes on the decayed, rate-limit-weighted success rate
   (Laplace-smoothed), so a sustained 429 streak (e.g. an llm7 daily token
@@ -1543,18 +1545,22 @@ def _classify_candidate(
         return _CLASS_METRIC, candidate.wilson_score, ""
 
     if stats.n_obs <= 0:
-        # Never tried. Untested static groups get the benefit of the doubt —
-        # except deprioritized providers (llm7: no published metrics, groups
-        # that trip daily token quotas), which start at a neutral prior below
-        # healthy metric-backed candidates and compete on tracked evidence
-        # from the first observation.
+        # Never tried. Untested groups start at the neutral prior (0.5 by
+        # default) — no benefit of the doubt — so known-healthier models
+        # outrank them in the health sort; they still pass the default
+        # floor and can win on capability once the cohort reaches them.
+        # Deprioritized providers (llm7: no published metrics, groups that
+        # trip daily token quotas) start at the same prior but as METRIC,
+        # so they lose the favored block and health-tiebreaks to other
+        # untried models, and compete on tracked evidence from the first
+        # observation.
         if candidate.provider in cfg.deprioritized_providers:
             return _CLASS_METRIC, cfg.untried_prior_score, ""
-        return _CLASS_FAVORED, 1.0, ""
+        return _CLASS_FAVORED, cfg.untried_prior_score, ""
 
     # Tried: rank on OUR OWN tracked health (429-weighted, decayed) instead of
-    # a static 1.0, so sustained rate-limiting demotes without waiting for a
-    # hard-failure proof.
+    # a static placeholder, so sustained rate-limiting demotes without
+    # waiting for a hard-failure proof.
     return _CLASS_METRIC, tracked_health_score(stats), ""
 
 
@@ -1682,9 +1688,11 @@ def rank_candidates(
     # Shared health blocks, used by both tiers: a model that has
     # *demonstrated* strong health beats an unmeasured one, and an
     # unmeasured one still beats a model known to be weak; demoted models
-    # sort last. An untried model's nominal health is 1.0, so health alone
-    # cannot implement "known-good beats unknown" — the block must come
-    # before health whenever the two are meant to compete.
+    # sort last. An untried model's nominal health is the neutral prior
+    # (0.5), so health alone already puts known-strong models ahead of it;
+    # the block still does real work below that — it keeps untried models
+    # above known-weak ones, whose tracked or published health can sit
+    # just above the prior.
     def block_for(r: RankedCandidate) -> int:
         if r.rank_class == _CLASS_KNOWN:
             return 3
@@ -1696,6 +1704,14 @@ def rank_candidates(
 
     def effective_score(r: RankedCandidate) -> float:
         return r.health_score - (1.0 if r.candidate.name in latency_demoted_names else 0.0)
+
+    def class_order(r: RankedCandidate) -> int:
+        # Tiebreak only, used by the default tier: on equal health, an
+        # untried (FAVORED) model outranks a neutral-prior (METRIC) one, so
+        # deprioritized providers (llm7) still lose ties to other untried
+        # models now that both start at the same 0.5 prior. KNOWN never
+        # reaches the cohort.
+        return {_CLASS_FAVORED: 0, _CLASS_METRIC: 1, _CLASS_KNOWN: 2}[r.rank_class]
 
     if tier == TIER_THINK:
         # Ultra-think only (the think pool now uses the default rubric):
@@ -1760,6 +1776,7 @@ def rank_candidates(
             cohort.sort(
                 key=lambda r: (
                     -effective_score(r),
+                    class_order(r),
                     -r.candidate.benchmark_score,
                     -r.candidate.context_length,
                     r.candidate.name,
@@ -1772,6 +1789,7 @@ def rank_candidates(
                     -r.candidate.benchmark_score,
                     -r.candidate.context_length,
                     -effective_score(r),
+                    class_order(r),
                     r.candidate.name,
                 )
             )

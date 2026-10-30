@@ -767,7 +767,7 @@ Each model group has a fallback chain defined in the YAML config, so if the prim
 
 Notes on the ranking:
 
-- An untried model logs `score=1.000` — that is the "unmeasured" placeholder, not measured health. Its first observation moves it to tracked health, where it then competes on evidence. Because the placeholder tops the health sort, untried models pass the default floor and can fill the top-percent cohort while many models are still unmeasured.
+- An untried model logs `score=0.500` — that is the "unmeasured" placeholder, not measured health (the neutral prior, `MODEL_PICKER_UNTRIED_PRIOR_SCORE`, default 0.5). Its first observation moves it to tracked health, where it then competes on evidence. Because the placeholder sits below any demonstrated health above 0.5, known-healthier models outrank untried ones in the health sort and fill the top-percent cohort first; untried models still pass the default floor and can win on capability when the cohort reaches them.
 - Demotion is re-derived from a rolling window, so recovery is automatic: a single soft failure (a provider error inside a 200 response, e.g. an out-of-credits account) demotes immediately, while hard-failure rate and slow time-to-first-token demote after enough observations.
 - If a pick fails mid-request, the picker retries the next-ranked candidate in-request. Non-retryable errors (notably a 400 context overflow, which LiteLLM does not retry) fall through to the tier's last-resort fallback net instead of ending the session.
 - `lite-llm/webSearch` and `lite-llm/image` are not complexity tiers and keep their static Gemini fallbacks; the picker does not rank them.

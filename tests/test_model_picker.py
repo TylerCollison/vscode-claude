@@ -816,9 +816,29 @@ class TestDefaultHealthFilteredCapabilityPick:
         untried.benchmark_score, untried.benchmarked = 0.9, True
         healthy = metric_candidate(lib, "pollinations/healthy", 0.99, 100, ctx=100000)
         ranked = lib.rank_candidates([untried, healthy], lib.TIER_DEFAULT, stats, cfg)
-        # The untried placeholder score (1.0) passes the floor and the
-        # capability pick then favors its larger context.
+        # The untried placeholder is now the neutral 0.5 prior: it still
+        # passes the floor, and the capability pick then favors its larger
+        # context (and higher benchmark). Untried is no longer excluded —
+        # it is just no longer first on health.
         assert ranked[0].candidate.name == "nvidia_nim/z-ai/glm-5.3"
+
+    def test_known_healthier_models_fill_cohort_before_untried(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        cfg.min_health = 0.3
+        cfg.health_top_percent = 50.0
+        strong = metric_candidate(lib, "pollinations/strong", 0.9997, 87885, ctx=100000)
+        mid = metric_candidate(lib, "pollinations/mid", 0.9, 100, ctx=100000)
+        untried = favored_candidate(lib, "nvidia_nim/z-ai/glm-5.3", ctx=1048576)
+        untried.benchmark_score, untried.benchmarked = 0.9, True
+        weak = metric_candidate(lib, "pollinations/weak", 0.6, 100, ctx=100000)
+        ranked = lib.rank_candidates([untried, weak, mid, strong], lib.TIER_DEFAULT, stats, cfg)
+        # The top 50% of 4 keeps 2: the two known-healthier metric models
+        # fill the cohort, and the untried model — despite the largest
+        # context and highest benchmark — is cut, because at the 0.5 prior
+        # it ranks below every model with demonstrated health above 0.5.
+        names = [r.candidate.name for r in ranked]
+        assert names.index("nvidia_nim/z-ai/glm-5.3") >= 2
+        assert ranked[0].candidate.name == "pollinations/strong"
 
     def test_benchmark_beats_context_in_capability_pick(self, fresh):
         lib, _, cfg, stats, _ = fresh
@@ -848,9 +868,10 @@ class TestDefaultHealthFilteredCapabilityPick:
         ranked = lib.rank_candidates(
             [untried_big_ctx, healthy, untried_mid_bench, untried_high_bench], lib.TIER_DEFAULT, stats, cfg
         )
-        # Three untried models tie at health 1.0; the top 50% of 4 keeps 2,
-        # and the benchmark tiebreak admits the two higher-benchmark ones
-        # — the larger-context low-benchmark model is cut despite its size.
+        # The healthy model leads the health sort; the three untried models
+        # tie at the 0.5 prior, and the benchmark tiebreak admits the
+        # higher-benchmark one as the second cohort member — the
+        # larger-context low-benchmark model is cut despite its size.
         names = [r.candidate.name for r in ranked]
         assert names.index("nvidia_nim/big-ctx") >= 2
         assert ranked[0].candidate.name == "nvidia_nim/high-bench"
@@ -1887,7 +1908,9 @@ class TestRubricRanking:
         nim = favored_candidate(lib, "z-ai/glm-5.3", provider="nvidia_nim")
         llm7_fast = favored_candidate(lib, "fast", provider="llm7")
         ranked = lib.rank_candidates([llm7_fast, nim], lib.TIER_DEFAULT, stats, cfg)
-        # only llm7 loses the untried benefit-of-the-doubt; NIM keeps it
+        # Both untried groups now start at the same 0.5 prior, but only
+        # llm7 loses the favored class — the class tiebreak keeps NIM ahead
+        # on equal health.
         assert [r.candidate.name for r in ranked] == ["z-ai/glm-5.3", "fast"]
 
     def test_ultra_think_tier_context_first_with_class_ties(self, fresh):
@@ -1929,17 +1952,15 @@ class TestRubricRanking:
         ranked2 = lib.rank_candidates([favored, strong_metric], lib.TIER_DEFAULT, stats, cfg, now=after_guard)
         assert ranked2[0].candidate.name == "pollinations/openai/gpt-5.4-nano"
         # once the failure window ages out entirely, the group is promoted back
-        # to untried (no longer KNOWN) — and under the health-filtered
-        # rubric its 1.0 placeholder tops the health sort, so in this
-        # two-model pool the top-25% cohort is just the promoted model and
-        # it retakes the top spot. Promotion restores eligibility *and*,
-        # via the placeholder, cohort leadership in a small pool.
+        # to untried (no longer KNOWN) — and at the 0.5 neutral prior it
+        # sits below the known-strong model, so promotion restores
+        # eligibility, not the top spot.
         ranked3 = lib.rank_candidates(
             [favored, strong_metric], lib.TIER_DEFAULT, stats, cfg, now=now + 5 * cfg.half_life_seconds
         )
         assert [r.candidate.name for r in ranked3] == [
-            "z-ai/glm-5.3",
             "pollinations/openai/gpt-5.4-nano",
+            "z-ai/glm-5.3",
         ]
 
     def test_perfect_small_sample_ranks_on_tracked_evidence(self, fresh):
@@ -1987,8 +2008,10 @@ class TestRubricRanking:
         lib, _, cfg, stats, _ = fresh
         # A latency-demoted model with a PERFECT success record vs a
         # mediocre metric-backed model: the floor holds it below while active,
-        # and once the stale TTFT events age out of the window it competes on
-        # evidence and wins.
+        # and once the stale TTFT events age out of the window the floor is
+        # lifted — but the model returns to untried at the neutral 0.5 prior
+        # (its perfect record aged out with the events), so it no longer
+        # retakes the top spot over demonstrated health.
         favored_slow = favored_candidate(lib, "z-ai/glm-5.3", ctx=1048576)
         mediocre_metric = metric_candidate(lib, "pollinations/degraded/model", 0.75, 20, ctx=1048576)
         base = time.time()
@@ -2002,14 +2025,15 @@ class TestRubricRanking:
             "z-ai/glm-5.3",
         ]
         # long after the slow window: events pruned, ttft_n=0, floor lifted —
-        # demotion stays sticky but the model ranks by its evidence (perfect
-        # record) and overtakes the mediocre metric-backed model.
+        # the model is eligible again at the 0.5 prior, but the mediocre
+        # metric-backed model (Wilson ~0.53) still outranks it. Fresh
+        # successes would be needed to climb back above demonstrated health.
         ranked_after = lib.rank_candidates(
             [favored_slow, mediocre_metric], lib.TIER_DEFAULT, stats, cfg, now=base + 5 * cfg.half_life_seconds
         )
         assert [r.candidate.name for r in ranked_after] == [
-            "z-ai/glm-5.3",
             "pollinations/degraded/model",
+            "z-ai/glm-5.3",
         ]
 
     def test_recency_guard_skip_and_restore(self, fresh):
