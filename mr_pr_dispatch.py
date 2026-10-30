@@ -125,6 +125,9 @@ def compose_worker_env(parent_env, branch, repo_url, mr_pr_id, dispatch_prompt=N
     # container owns worker cleanup.
     env = [e for e in env if not e.startswith("WORKER_REAPER=")]
     env.append("WORKER_REAPER=false")
+    # Force WORKER_KILLER=true so the worker self-shuts down when its MR/PR closes.
+    env = [e for e in env if not e.startswith("WORKER_KILLER=")]
+    env.append("WORKER_KILLER=true")
 
     # Override HAPPIER_MODE to "agent" if parent has it set (don't add if parent doesn't have it)
     parent_has_happier_mode = any(e.startswith("HAPPIER_MODE=") for e in parent_env)
@@ -169,27 +172,6 @@ def worker_name(title, mr_pr_id):
     # Cap the slug portion so the timestamp (which guarantees uniqueness) always
     # survives Docker Swarm's 63-char service name limit.
     return "%s-%s" % (base[:63 - len(ts) - 1], ts)
-
-
-def shutdown_worker_for_mr_pr(mr_pr_id, title, provider, cfg, self_info):
-    """Remove the dispatched worker container/service for the given MR/PR.
-
-    This is called when an MR/PR is closed so that any running worker is torn
-    down instead of lingering forever.
-    """
-    import dispatch_utils as du
-    wname = worker_name(title, mr_pr_id)
-    swarm = du.is_swarm_manager()
-    if swarm:
-        du.log("Shutting down swarm service %s for MR/PR #%s" % (wname, mr_pr_id))
-        rc, out, err = du.run(["docker", "service", "rm", wname])
-    else:
-        du.log("Removing container %s for MR/PR #%s" % (wname, mr_pr_id))
-        rc, out, err = du.run(["docker", "rm", wname])
-    if rc == 0:
-        du.log("Successfully reaped worker %s for MR/PR #%s" % (wname, mr_pr_id))
-    else:
-        du.log("WARNING: failed to reap worker %s for MR/PR #%s: %s" % (wname, mr_pr_id, err or out))
 
 
 def dispatch_mr_pr_worker(mr_pr_info, cfg, self_info):
@@ -307,18 +289,6 @@ def run_daemon(cfg, self_info):
                 continue
 
         du.log("MR/PR trigger received: #%s (%s)" % (mr_pr_info.get("mr_pr_id", "unknown"), mr_pr_info.get("title", "")))
-        # Automatic worker shutdown on MR/PR closure
-        if mr_pr_info.get("close"):
-            try:
-                shutdown_worker_for_mr_pr(
-                    mr_pr_info["mr_pr_id"],
-                    mr_pr_info.get("title", ""),
-                    mr_pr_info.get("provider", "github"),
-                    cfg,
-                    self_info,
-                )
-            except Exception as e:
-                du.log("ERROR: failed to shut down worker for closed MR/PR #%s: %s" % (mr_pr_info.get("mr_pr_id"), e))
         try:
             dispatch_mr_pr(cfg, self_info, mr_pr_info)
         except Exception as e:

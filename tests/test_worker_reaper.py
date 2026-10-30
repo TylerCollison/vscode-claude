@@ -493,7 +493,7 @@ def test_mr_pr_dispatch_stamps_worker_label():
     captured = {}
 
     def fake_dispatch_local(worker, image, env, port, worker_port,
-                            restart_policy, mr_pr_id, net=None, labels=None):
+                            mr_pr_id, net=None, labels=None):
         captured.update({"worker": worker, "labels": labels})
         return 0, "created", ""
 
@@ -526,6 +526,19 @@ def test_worker_env_disables_nested_reaper():
                                       "https://github.com/o/r.git", "42")):
         reaper_vals = [e for e in env if e.startswith("WORKER_REAPER=")]
         assert reaper_vals == ["WORKER_REAPER=false"], reaper_vals
+
+
+def test_worker_env_forces_killer():
+    # The inverse of the reaper flag: the worker killer must be forced ON by
+    # both dispatchers, so the worker self-shuts down when its MR/PR closes.
+    # An overridden (or inherited) parent WORKER_KILLER must not be able to
+    # turn it off.
+    for env in (bdd.compose_worker_env(["WORKER_KILLER=false"], "task/probe-1-x",
+                                       "https://github.com/o/r.git"),
+                md.compose_worker_env(["WORKER_KILLER=false"], "feature/x",
+                                      "https://github.com/o/r.git", "42")):
+        killer_vals = [e for e in env if e.startswith("WORKER_KILLER=")]
+        assert killer_vals == ["WORKER_KILLER=true"], killer_vals
 
 
 if __name__ == "__main__":

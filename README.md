@@ -374,6 +374,29 @@ Then open `http://localhost:3000` in your browser. The workspace (which contains
 | `WORKER_REAPER_INTERVAL` | `60` | Reconciliation interval in seconds |
 | `WORKER_REAPER_STATE_DIR` | `/config/.worker-reaper` | Where the observed-up state file lives |
 
+### Worker Killer Configuration (self-shutdown on MR/PR closure)
+
+The worker killer is a daemon that runs **inside** each dispatched worker and shuts that worker down when the worker's MR/PR closes — merged, closed without merging, or abandoned. Shutdown is self-contained in the worker and independent of the parent node: the decision does not depend on the parent, the dispatcher, or the Docker socket. The parent's Worker Reaper still cleans up the dead service/container object afterwards (the two are complementary, not the mechanism).
+
+Both dispatchers force `WORKER_KILLER=true` into worker env, so it is always on for dispatched workers and never inherited by a worker off. It cannot run in a parent container (the parent never sets it).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WORKER_KILLER` | *(not set)* | Set to `true` to run the killer in the worker; forced on by both dispatchers for dispatched workers |
+| `WORKER_KILLER_INTERVAL` | `300` | Polling interval in seconds for the MR/PR state query |
+| `WORKER_KILLER_GRACE` | `300` | Grace period in seconds (5 min) before a closed/merged MR/PR is acted on |
+| `WORKER_KILLER_STATE_DIR` | `/config/.worker-killer` | Where the grace-period state file lives |
+
+**How it works:**
+
+1. **MR/PR-dispatched workers** already have the MR/PR: the killer reads `MR_PR_ID` (plus `MR_PR_PROVIDER` and `GIT_REPO_URL`) from the worker env and watches exactly that MR/PR. No PR creation step runs for these.
+2. **Beads-dispatched workers** do not have an MR/PR at dispatch time, so a startup step (right after `git-repo-setup`/`configure-beads`, before the prompt session) creates one: it checks for an existing PR/MR for the branch first (never creating a duplicate on retry), makes an `--allow-empty` commit carrying the bead id/title so the branch is PR-able, pushes the branch, and creates a **draft** PR/MR. The association is written to `/config/.worker-pr.json` for the killer and recorded on the bead via `bd update <id> --external-ref`. If `bd show` fails, PR creation still proceeds using the branch name as the title and a placeholder description — `PROMPT` is never used as a title/description source.
+3. On each poll, the killer queries the MR/PR state directly via `gh`/`glab` (as the `abc` user, the same credential pattern as the MR/PR sync scripts). Any of `CLOSED` or `MERGED` triggers the sequence; there is no closed-unmerged exception.
+4. **Grace period:** on first closed observation the time is recorded but no kill happens. After 5 minutes the state is re-verified — still closed, still the same association — before shutdown. A reopen during the grace period cancels the pending shutdown.
+5. **Fail-closed:** an API error, empty response, or auth failure skips the cycle and retries on the next poll. It never kills on a failed lookup, on disappearance from a list, on a name pattern alone, or on an unlabeled container.
+6. **Safety:** before shutting down, the killer re-reads its own container's Docker labels and requires `dispatch.worker=true`. This is what keeps it from ever shutting down the dispatcher, the parent container, or another worker.
+7. **Shutdown:** a best-effort `git push` of the branch (failures ignored), then `exec /usr/local/bin/shutdown` — the existing image script: Happier machine revocation, then SIGTERM to PID 1, then SIGKILL.
+
 ### Auto Start Prompt Configuration
 
 | Variable | Default | Description |
@@ -415,7 +438,7 @@ When you commit and a task is ready (e.g. `probe-n5h`, "Task A"), the dispatcher
 5. The worker (via `git-repo-setup.sh`) clones the repo and **automatically creates the branch off the default branch** (typically `main`) if it doesn't exist, or checks it out if it does. Submodules are initialized recursively on the active branch after checkout (the boot fails fast if a submodule can't be initialized).
 6. The dispatched agent is instructed (via the injected prompt) to **claim the task** (`bd update <issue-id> --claim` — assigns itself and sets it in-progress) and run `bd dolt push` before starting on the work, so the in-progress state is visible on the remote.
 
-The worker inherits the full environment (API keys, providers) but sets `BEADS_DISPATCH=false`, `BEADS_ENABLED=false`, `ENABLE_SCOTTY=false`, `MR_PR_DISPATCH=false`, and `WORKER_REAPER=false`, so workers never dispatch their own workers, enable Beads, start Scotty, respond to MRs/PRs, or reap other workers. Workers do get `BEADS_REMOTE` (the parent's `BEADS_REMOTE` when set, else the repo URL) and bootstrap the Beads task DB from it on startup — the gate carve-out described in the Beads Configuration section — so `bd list` shows the parent's dispatched task. If the parent container has `HAPPIER_MODE` set (to `server` or `agent`), the worker receives `HAPPIER_MODE=agent` to enable web UI access via Happier. Each task is dispatched once — a later commit won't duplicate it (state is tracked in `/config/.beads-dispatch/state.json`).
+The worker inherits the full environment (API keys, providers) but sets `BEADS_DISPATCH=false`, `BEADS_ENABLED=false`, `ENABLE_SCOTTY=false`, `MR_PR_DISPATCH=false`, and `WORKER_REAPER=false`, so workers never dispatch their own workers, enable Beads, start Scotty, respond to MRs/PRs, or reap other workers. It also forces `WORKER_KILLER=true`, so each worker shuts itself down when its MR/PR closes (see "Worker Killer Configuration"). Workers do get `BEADS_REMOTE` (the parent's `BEADS_REMOTE` when set, else the repo URL) and bootstrap the Beads task DB from it on startup — the gate carve-out described in the Beads Configuration section — so `bd list` shows the parent's dispatched task. If the parent container has `HAPPIER_MODE` set (to `server` or `agent`), the worker receives `HAPPIER_MODE=agent` to enable web UI access via Happier. Each task is dispatched once — a later commit won't duplicate it (state is tracked in `/config/.beads-dispatch/state.json`).
 
 > **Prerequisite:** the parent container must be able to sync the Dolt DB to its origin (a credential helper / token), or to `BEADS_REMOTE` when set — otherwise the dispatcher logs a clear error and skips the task.
 

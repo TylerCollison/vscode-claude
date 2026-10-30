@@ -217,21 +217,32 @@ def default_dispatch_prompt(issue_id, branch, repo_url):
     3. Push the beads Dolt DB so the in-progress state syncs to the remote
     4. Complete the task
     5. Commit and push changes
-    6. Create a GitHub or GitLab MR (using gh/glab CLI)
-    7. Update beads to mark the task as complete
-    8. Push the update to beads
+    6. Update the existing draft PR/MR description based on changes made
+       (a draft PR/MR is created automatically at worker startup; do not create a duplicate)
+    7. Mark the PR/MR ready for review when done
+    8. Update beads to mark the task as complete
+    9. Push the update to beads
+
+    Note: Closing the bead does not shut the worker down; PR/MR closure does,
+    so the worker stays alive for review follow-up after the bead is closed.
     """
     # Detect if it's a GitHub or GitLab repo from the URL
     is_github = "github.com" in repo_url.lower()
     is_gitlab = "gitlab.com" in repo_url.lower()
 
-    mr_instruction = ""
-    if is_github:
-        mr_instruction = "Create a GitHub Pull Request using 'gh pr create' for the changes."
-    elif is_gitlab:
-        mr_instruction = "Create a GitLab Merge Request using 'glab mr create' for the changes."
-    else:
-        mr_instruction = "Create a merge/pull request using the appropriate CLI (gh or glab) for the changes."
+    mr_cli = "gh" if is_github else ("glab" if is_gitlab else "gh/glab")
+    mr_type = "Pull Request" if is_github else ("Merge Request" if is_gitlab else "PR/MR")
+
+    mr_instruction = (
+        "A draft %s already exists for your branch (look it up by branch, or from the "
+        "bead's external reference if you have the URL). Do not create a duplicate. "
+        "Update its description based on the changes you actually made, and mark it "
+        "ready for review when done.\n"
+        "Fallback: if no draft %s exists for your branch, create one from bead data "
+        "obtained via 'bd show' if available, otherwise with the branch name as the "
+        "title and a placeholder description (never from PROMPT), using the %s CLI "
+        "for your repo." % (mr_type, mr_type, mr_cli)
+    )
 
     return (
         "You are a worker agent dispatched to complete a Beads task.\n"
@@ -247,6 +258,9 @@ def default_dispatch_prompt(issue_id, branch, repo_url):
         "6. %s\n"
         "7. Run 'bd close <issue-id>' to mark the task as complete in Beads.\n"
         "8. Run 'bd dolt push' to sync the Beads database with the remote.\n"
+        "\n"
+        "Note: Closing the bead does not shut the worker down; PR/MR closure does,\n"
+        "so the worker stays alive for review follow-up after the bead is closed.\n"
         "\n"
         "Use the appropriate CLI tools (gh for GitHub, glab for GitLab) as needed."
     ) % (issue_id, branch, mr_instruction)
@@ -272,6 +286,9 @@ def compose_worker_env(parent_env, branch, repo_url, beads_remote=None, dispatch
     # container owns worker cleanup.
     env = [e for e in env if not e.startswith("WORKER_REAPER=")]
     env.append("WORKER_REAPER=false")
+    # Force WORKER_KILLER=true so the worker self-shuts down when its PR/MR closes.
+    env = [e for e in env if not e.startswith("WORKER_KILLER=")]
+    env.append("WORKER_KILLER=true")
 
     # Override HAPPIER_MODE to "agent" if parent has it set (don't add if parent doesn't have it)
     parent_has_happier_mode = any(e.startswith("HAPPIER_MODE=") for e in parent_env)

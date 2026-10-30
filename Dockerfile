@@ -341,13 +341,15 @@ COPY start-claude-threads.sh /101-start-claude-threads
 COPY start-happier.sh /102-start-happier
 COPY configure-buildx.sh /103-configure-buildx
 COPY configure-beads.sh /104-configure-beads
-COPY start-scotty.sh /105-start-scotty
-COPY start-beads-dispatch.sh /106-start-beads-dispatch
-COPY start-beads-sync.sh /107-start-beads-sync
-COPY start-prompt-session.sh /108-start-prompt-session
-COPY start-mr-pr-sync.sh /109-start-mr-pr-sync
-COPY start-mr-pr-dispatch.sh /110-start-mr-pr-dispatch
-COPY start-worker-reaper.sh /112-start-worker-reaper
+COPY start-worker-pr-setup.sh /105-start-worker-pr-setup
+COPY start-scotty.sh /106-start-scotty
+COPY start-beads-dispatch.sh /107-start-beads-dispatch
+COPY start-beads-sync.sh /108-start-beads-sync
+COPY start-prompt-session.sh /109-start-prompt-session
+COPY start-worker-killer.sh /110-start-worker-killer
+COPY start-mr-pr-sync.sh /111-start-mr-pr-sync
+COPY start-mr-pr-dispatch.sh /112-start-mr-pr-dispatch
+COPY start-worker-reaper.sh /113-start-worker-reaper
 COPY shutdown.sh /111-shutdown
 COPY happier-tls-tunnel.js /app/happier-tls-tunnel.js
 
@@ -360,6 +362,12 @@ COPY mr_pr_dispatch.py /usr/local/bin/mr_pr_dispatch.py
 
 # Install the worker reaper (removes dispatched workers once they completed)
 COPY worker_reaper.py /usr/local/bin/worker_reaper.py
+
+# Install the worker killer (worker self-shutdown when its MR/PR closes)
+COPY worker_killer.py /usr/local/bin/worker_killer.py
+
+# Install the worker PR/MR setup (gives a beads worker its draft PR/MR)
+COPY worker_pr_setup.py /usr/local/bin/worker_pr_setup.py
 
 # Copy master startup script to cont-init.d (so it runs automatically)
 COPY master-startup.sh /etc/cont-init.d/90-master-startup
@@ -390,18 +398,22 @@ RUN chmod +x /92-configure-code-server-theme \
     /102-start-happier \
     /103-configure-buildx \
     /104-configure-beads \
-    /105-start-scotty \
-    /106-start-beads-dispatch \
-    /107-start-beads-sync \
-    /109-start-mr-pr-sync \
-    /110-start-mr-pr-dispatch \
-    /112-start-worker-reaper \
+    /105-start-worker-pr-setup \
+    /106-start-scotty \
+    /107-start-beads-dispatch \
+    /108-start-beads-sync \
+    /109-start-prompt-session \
+    /110-start-worker-killer \
+    /111-start-mr-pr-sync \
+    /112-start-mr-pr-dispatch \
+    /113-start-worker-reaper \
     /111-shutdown \
-    /108-start-prompt-session \
     /usr/local/bin/beads-dispatch \
     /usr/local/bin/dispatch_utils.py \
     /usr/local/bin/mr_pr_dispatch.py \
-    /usr/local/bin/worker_reaper.py
+    /usr/local/bin/worker_reaper.py \
+    /usr/local/bin/worker_killer.py \
+    /usr/local/bin/worker_pr_setup.py
 
 # Remove build toolchain packages no longer needed at runtime
 # (gcc, g++, binutils, and their dev headers were only needed to compile
