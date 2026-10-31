@@ -33,6 +33,12 @@ This Docker image bundles a web-based IDE (VS Code Server), Claude Code, a LiteL
   - WebSocket-based bidirectional communication
   - Multi-platform support (Mattermost)
 
+- **Plugins Marketplace** - Bundled skills that teach agent harnesses how to use container features
+  - [Plugins Marketplace README](plugins/README.md) - Full reference: marketplace structure, installation, and authoring
+  - One set of environment variables installs plugins across all agent harnesses (Claude Code, Codex, OpenCode) on startup
+  - Follows the [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) format with agentskills.io-compatible skills
+  - See "Plugins Marketplace Configuration" for the install variables
+
 ### Development Tools
 
 - **cconx** - ClaudeConX Docker Management Tool
@@ -165,6 +171,8 @@ environment:
   - PLUGINS_SCOPE=user # Optional (user, project, or both)
   - OPENCODE_PLUGINS=opencode-helicone-session # Optional (OpenCode plugin npm packages)
 ```
+
+For the complete plugins marketplace reference — directory layout, the bundled plugins table, cross-harness skill discovery paths, and the checklist for adding a new plugin — see the [Plugins Marketplace README](plugins/README.md) in `plugins/`.
 
 ### LiteLLM Router Configuration
 | Variable | Description |
@@ -1105,6 +1113,7 @@ docker exec claude-dev curl -I http://localhost:3000
 - **Scotty (Bead UI)**: [bead-me-up-scotty GitHub](https://github.com/brendan-appstart/bead-me-up-scotty)
 - **cconx**: [cconx GitHub](https://github.com/TylerCollison/vscode-claude/tree/main/cconx)
 - **build-env**: [build-env GitHub](https://github.com/TylerCollison/vscode-claude/tree/main/build-env)
+- **Plugins Marketplace**: [Plugins Marketplace README](plugins/README.md)
 - **tylercollison2089/vscode-claude**: [ClaudeConX GitHub](https://github.com/TylerCollison/vscode-claude/tree/main)
 
 ### Issues
