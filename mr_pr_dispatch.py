@@ -108,6 +108,9 @@ def compose_worker_env(parent_env, branch, repo_url, mr_pr_id, dispatch_prompt=N
     # container owns worker cleanup.
     env = [e for e in env if not e.startswith("WORKER_REAPER=")]
     env.append("WORKER_REAPER=false")
+    # Force WORKER_KILLER=true so the worker self-shuts down when its MR/PR closes.
+    env = [e for e in env if not e.startswith("WORKER_KILLER=")]
+    env.append("WORKER_KILLER=true")
 
     # Override HAPPIER_MODE to "agent" if parent has it set (don't add if parent doesn't have it)
     parent_has_happier_mode = any(e.startswith("HAPPIER_MODE=") for e in parent_env)
