@@ -109,12 +109,15 @@ def run_as_abc(cmd, env=None, cwd=None):
     if env:
         full_env.update(env)
     full_env["HOME"] = ABC_HOME
+    if cmd and cmd[0] == "glab":
+        full_env.setdefault("GLAB_SEND_TELEMETRY", "false")
     setpriv = ["setpriv", "--reuid=%s" % ABC_USER, "--regid=%s" % ABC_USER,
                "--init-groups", "env"]
     for key, val in full_env.items():
         setpriv.append("%s=%s" % (key, val))
     setpriv.extend(cmd)
-    return subprocess.run(setpriv, capture_output=True, text=True, cwd=cwd)
+    result = subprocess.run(setpriv, capture_output=True, text=True, cwd=cwd)
+    return result.returncode, result.stdout, result.stderr
 
 
 def _bead_ids_from_db():

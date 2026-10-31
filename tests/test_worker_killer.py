@@ -427,10 +427,11 @@ def test_killer_cycle_beads_worker_reads_pr_info_file():
 
 
 def test_killer_cycle_beads_worker_fallback_to_branch_lookup():
-    """Beads worker: falls back to branch lookup when .worker-pr.json missing."""
+    """Beads worker: auto-detects provider and branch without a state file."""
     with _StateDir() as cfg:
         os.environ["GIT_REPO_URL"] = "https://github.com/o/r.git"
-        os.environ["MR_PR_PROVIDER"] = "github"
+        os.environ.pop("MR_PR_PROVIDER", None)
+        os.environ.pop("MR_PR_ID", None)
         try:
             # No .worker-pr.json, no MR_PR_ID in env. The branch lookup returns
             # "<id>|<state>|" while the subsequent state query returns
@@ -439,8 +440,11 @@ def test_killer_cycle_beads_worker_fallback_to_branch_lookup():
                 if "pr" in cmd and "list" in cmd:
                     return 0, "42|OPEN|", ""
                 return 0, "OPEN|", ""
-            with mock.patch.object(wk, "get_worker_branch", return_value="task/probe-1-slug"), \
-                    _mock_run_as_abc(side_effect=by_cmd), \
+            with mock.patch.object(wk, "run_as_abc",
+                                    side_effect=lambda cmd, env=None, cwd=None: (
+                                        (0, "task/probe-1-slug\n", "") if "rev-parse" in cmd
+                                        else by_cmd(cmd, env, cwd)
+                                    )), \
                     _mock_worker_label_true():
                 with mock.patch.object(wk.du, "log", lambda msg: None):
                     wk.killer_cycle(cfg)
@@ -455,7 +459,7 @@ def test_killer_cycle_beads_worker_branch_lookup_ambiguous_no_action():
     """Branch lookup returns multiple PRs -> no action."""
     with _StateDir() as cfg:
         os.environ["GIT_REPO_URL"] = "https://github.com/o/r.git"
-        os.environ["MR_PR_PROVIDER"] = "github"
+        os.environ.pop("MR_PR_PROVIDER", None)
         try:
             with mock.patch.object(wk, "get_worker_branch", return_value="task/probe-1-slug"), \
                     _mock_run_as_abc(returncode=0, stdout="42|OPEN|\n43|OPEN|", stderr=""):
@@ -537,20 +541,29 @@ def test_killer_cycle_label_check_fails_no_shutdown():
 # --------------------------------------------------------------------------- attempt_shutdown
 
 def test_attempt_shutdown_execs_shutdown():
-    with mock.patch("subprocess.run") as mock_run, \
-            mock.patch("os.execv") as mock_execv:
+    with mock.patch.object(wk, "get_worker_branch", return_value="task/probe-1-x"), \
+            mock.patch.object(wk, "run_as_abc", return_value=(0, "", "")) as mock_run, \
+            mock.patch.object(wk.os, "execv") as mock_execv:
         wk.attempt_shutdown()
+        mock_run.assert_called_once_with(
+            ["git", "push", "origin", "HEAD:task/probe-1-x"], cwd=wk.WORKSPACE
+        )
         mock_execv.assert_called_once_with("/usr/local/bin/shutdown", ["/usr/local/bin/shutdown"])
 
 
-def test_get_worker_branch():
-    # This function has try/except that swallows exceptions; mocking it
-    # reliably requires the mock to be applied before the function is
-    # defined, which is tricky. Instead test the logic indirectly via
-    # attempt_shutdown which calls it, or just verify it doesn't crash.
-    # Here we just exercise the fallback path (no git repo) -> None.
-    # The happy path is covered by attempt_shutdown test.
-    with mock.patch("subprocess.run", side_effect=FileNotFoundError("no git")):
+def test_attempt_shutdown_logs_push_failure_and_still_shuts_down():
+    logs = []
+    with mock.patch.object(wk, "get_worker_branch", return_value="task/probe-1-x"), \
+            mock.patch.object(wk, "run_as_abc", return_value=(1, "", "rejected")), \
+            mock.patch.object(wk.os, "execv") as mock_execv, \
+            mock.patch.object(wk, "log", side_effect=logs.append):
+        wk.attempt_shutdown()
+    assert any("Push failed (ignored): rejected" in line for line in logs)
+    mock_execv.assert_called_once_with("/usr/local/bin/shutdown", ["/usr/local/bin/shutdown"])
+
+
+def test_get_worker_branch_handles_git_execution_error():
+    with mock.patch.object(wk, "run_as_abc", side_effect=FileNotFoundError("no git")):
         assert wk.get_worker_branch() is None
 
 
@@ -926,6 +939,46 @@ def test_pr_setup_detect_provider():
     assert wps.detect_provider("gitlab.home.com") is None
 
 
+# --------------------------------------------------------------------------- subprocess contracts
+
+def test_worker_pr_setup_run_as_abc_returns_tuple():
+    completed = subprocess.CompletedProcess(
+        args=["gh"], returncode=0, stdout="42|https://github.com/o/r/pull/42\n", stderr=""
+    )
+    with mock.patch.object(wps.subprocess, "run", return_value=completed):
+        rc, out, err = wps.run_as_abc(["gh", "pr", "list"])
+    assert (rc, out, err) == (0, completed.stdout, completed.stderr)
+
+
+def test_worker_pr_setup_provider_lookup_accepts_completed_process():
+    completed = subprocess.CompletedProcess(
+        args=["gh"], returncode=0, stdout="42|https://github.com/o/r/pull/42\n", stderr=""
+    )
+    with mock.patch.object(wps.subprocess, "run", return_value=completed):
+        assert wps.find_existing_pr_github("o/r", "task/probe-1-x") == (
+            "42", "https://github.com/o/r/pull/42"
+        )
+
+
+def test_worker_killer_run_as_abc_returns_tuple():
+    completed = subprocess.CompletedProcess(
+        args=["git"], returncode=0, stdout="task/probe-1-slug\n", stderr=""
+    )
+    with mock.patch.object(wk.subprocess, "run", return_value=completed):
+        rc, out, err = wk.run_as_abc(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+    assert (rc, out, err) == (0, completed.stdout, completed.stderr)
+
+
+def test_get_worker_branch_reads_successful_output():
+    with mock.patch.object(wk, "run_as_abc", return_value=(0, "task/probe-1-slug\n", "")):
+        assert wk.get_worker_branch() == "task/probe-1-slug"
+
+
+def test_get_worker_branch_returns_none_on_git_failure():
+    with mock.patch.object(wk, "run_as_abc", return_value=(128, "", "not a git repository")):
+        assert wk.get_worker_branch() is None
+
+
 # --------------------------------------------------------------------------- worker_pr_setup: orchestration
 
 def test_setup_reuses_existing_pr_and_skips_all_creation():
@@ -1137,6 +1190,19 @@ def test_state_file_matches_killer_default():
     assert str(SETUP_DEFAULT_PR_INFO) == "/config/.worker-pr.json"
     assert str(KILLER_DEFAULT_PR_INFO) == "/config/.worker-pr.json"
     assert str(SETUP_DEFAULT_PR_INFO) == str(KILLER_DEFAULT_PR_INFO)
+
+
+def test_killer_state_paths_honor_shared_overrides():
+    state_dir = "/tmp/custom-killer-state"
+    pr_info_file = "/tmp/custom-worker-pr.json"
+    with mock.patch.dict(os.environ, {
+        "WORKER_KILLER_STATE_DIR": state_dir,
+        "WORKER_PR_STATE_FILE": pr_info_file,
+    }):
+        # Reload to exercise import-time path configuration.
+        module = _load("worker_killer_overrides", "worker_killer.py")
+    assert str(module.STATE_FILE) == state_dir + "/state.json"
+    assert str(module.PR_INFO_FILE) == pr_info_file
 
 
 if __name__ == "__main__":

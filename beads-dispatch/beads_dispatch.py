@@ -222,9 +222,6 @@ def default_dispatch_prompt(issue_id, branch, repo_url):
     7. Mark the PR/MR ready for review when done
     8. Update beads to mark the task as complete
     9. Push the update to beads
-
-    Note: Closing the bead does not shut the worker down; PR/MR closure does,
-    so the worker stays alive for review follow-up after the bead is closed.
     """
     # Detect if it's a GitHub or GitLab repo from the URL
     is_github = "github.com" in repo_url.lower()
@@ -258,9 +255,6 @@ def default_dispatch_prompt(issue_id, branch, repo_url):
         "6. %s\n"
         "7. Run 'bd close <issue-id>' to mark the task as complete in Beads.\n"
         "8. Run 'bd dolt push' to sync the Beads database with the remote.\n"
-        "\n"
-        "Note: Closing the bead does not shut the worker down; PR/MR closure does,\n"
-        "so the worker stays alive for review follow-up after the bead is closed.\n"
         "\n"
         "Use the appropriate CLI tools (gh for GitHub, glab for GitLab) as needed."
     ) % (issue_id, branch, mr_instruction)

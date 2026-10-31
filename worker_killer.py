@@ -81,8 +81,10 @@ from pathlib import Path
 
 import dispatch_utils as du
 
-STATE_FILE = Path("/config/.worker-killer/state.json")
-PR_INFO_FILE = Path("/config/.worker-pr.json")
+WORKSPACE = os.environ.get("DEFAULT_WORKSPACE", "/workspace")
+STATE_DIR = Path(os.environ.get("WORKER_KILLER_STATE_DIR", "/config/.worker-killer"))
+STATE_FILE = STATE_DIR / "state.json"
+PR_INFO_FILE = Path(os.environ.get("WORKER_PR_STATE_FILE", "/config/.worker-pr.json"))
 
 # Default intervals (seconds)
 DEFAULT_POLL_INTERVAL = 300
@@ -120,6 +122,8 @@ def run_as_abc(cmd, env=None, cwd=None):
     if env:
         full_env.update(env)
     full_env["HOME"] = "/config"
+    if cmd and cmd[0] == "glab":
+        full_env.setdefault("GLAB_SEND_TELEMETRY", "false")
     # Use setpriv to drop to abc user (UID/GID typically 911:911)
     setpriv_cmd = ["setpriv", "--reuid=abc", "--regid=abc", "--init-groups", "env"]
     for k, v in full_env.items():
@@ -251,9 +255,8 @@ def query_mr_state_by_branch_gitlab(owner_repo, branch):
 def get_worker_branch():
     """Get the current branch name from git."""
     try:
-        rc, out, err = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True, cwd="/workspace"
+        rc, out, _ = run_as_abc(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=WORKSPACE
         )
         if rc == 0:
             return out.strip()
@@ -301,9 +304,8 @@ def attempt_shutdown():
     branch = get_worker_branch()
     if branch and branch != "HEAD":
         try:
-            rc, out, err = subprocess.run(
-                ["git", "push", "origin", f"HEAD:{branch}"],
-                capture_output=True, text=True, cwd="/workspace", timeout=30
+            rc, out, err = run_as_abc(
+                ["git", "push", "origin", f"HEAD:{branch}"], cwd=WORKSPACE
             )
             if rc == 0:
                 log(f"Pushed branch {branch} before shutdown")
@@ -340,29 +342,22 @@ def killer_cycle(cfg):
         branch = get_worker_branch()
         if branch:
             log("No MR/PR association found — attempting branch lookup for %s" % branch)
-            # We still need provider/repo to know what to query
-            if not provider:
-                provider = os.environ.get("MR_PR_PROVIDER")
-            if not repo_url:
-                repo_url = os.environ.get("GIT_REPO_URL")
-            if provider and repo_url:
-                host, owner, repo = parse_repo_url(repo_url)
-                if owner and repo:
-                    owner_repo = f"{owner}/{repo}"
-                    provider = get_provider(host, provider)
-                    if provider:
-                        # Query by branch (returns id + state if unique)
-                        if provider == "github":
-                            mr_pr_id, state = query_pr_state_by_branch_github(owner_repo, branch)
-                        else:
-                            mr_pr_id, state = query_mr_state_by_branch_gitlab(owner_repo, branch)
-                        if mr_pr_id and state:
-                            # Found unique PR/MR: proceed with this association
-                            log("Branch lookup found %s #%s (state=%s)" % (provider, mr_pr_id, state))
-                            # Fall through to grace logic below
-                        else:
-                            log("Branch lookup returned no unique PR/MR for %s — skipping cycle." % branch)
-                            return
+            repo_url = repo_url or os.environ.get("GIT_REPO_URL")
+            host, owner, repo = parse_repo_url(repo_url) if repo_url else (None, None, None)
+            provider = get_provider(host, provider or os.environ.get("MR_PR_PROVIDER"))
+            if provider and owner and repo:
+                owner_repo = f"{owner}/{repo}"
+                # Query by branch (returns id + state if unique)
+                if provider == "github":
+                    mr_pr_id, state = query_pr_state_by_branch_github(owner_repo, branch)
+                else:
+                    mr_pr_id, state = query_mr_state_by_branch_gitlab(owner_repo, branch)
+                if mr_pr_id and state:
+                    # Found unique PR/MR: proceed with that association.
+                    log("Branch lookup found %s #%s (state=%s)" % (provider, mr_pr_id, state))
+                else:
+                    log("Branch lookup returned no unique PR/MR for %s — skipping cycle." % branch)
+                    return
     # If still no association, skip cycle
     if not mr_pr_id or not provider or not repo_url:
         log("No MR/PR association found and no branch lookup possible. Skipping cycle.")
