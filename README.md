@@ -181,6 +181,7 @@ For the complete plugins marketplace reference — directory layout, the bundled
 | `NIM_API_KEY` | Nvidia NIM API key (enables the Nvidia NIM models used by every other tier, if set) |
 | `EXA_API_KEY` | EXA AI web search API key (enables EXA AI web search, if set) |
 | `MODEL_PICKER_ENABLED` | Set to `true` to enable model picker mode (dynamic catalog discovery and health-ranked model selection; see "LiteLLM Router") |
+| `LITELLM_CONFIG_PATH` | Path to a custom LiteLLM config file (mounted file or a file inside a mounted folder) to use instead of the built-in config — see "Overriding the LiteLLM Config" |
 | `POLLINATION_API_KEY` | Pollinations API key — **model picker mode only**. Lets the picker rank and serve Pollinations community models; the catalog is public and can be listed without it, but request routing needs the key |
 | `LLM7_API_KEY` | LLM7 API key — **model picker mode only**. Lets the picker rank and serve LLM7 models; like Pollinations, the catalog can be listed without it |
 
@@ -636,6 +637,8 @@ services:
       - GOOGLE_API_KEY=your-google-ai-studio-api-key # Required to use Google models
       - NIM_API_KEY=your-nvidia-nim-api-key # Required to use NIM models
       - EXA_API_KEY=your-exa-api-key # Required for EXA AI websearch
+      # LiteLLM custom router config (optional) - see "Overriding the LiteLLM Config"
+      # - LITELLM_CONFIG_PATH=/config/litellm/my-litellm.yaml
       # Plugins Marketplace (optional)
       - PLUGINS_MARKETPLACES=https://github.com/TylerCollison/vscode-claude.git,anthropics/claude-plugins-official
       - PLUGINS=claude-conx-build-env,claude-conx-happier,ralph-loop,superpowers
@@ -700,6 +703,7 @@ services:
       - /path/to/happier-cli-credentials:/config/.happier # Persist Happier CLI credentials & profiles
       - /path/to/happier-server:/config/.happy # Persist Happier server DB & TLS cert (server mode)
       # - /path/to/beads-data:/config/.beads # Persist Beads database in stealth mode
+      # - /path/to/my-litellm.yaml:/config/litellm/my-litellm.yaml:ro # Custom LiteLLM config (see "Overriding the LiteLLM Config")
     restart: unless-stopped
 ```
 
@@ -774,6 +778,75 @@ Each model group has a fallback chain defined in the YAML config, so if the prim
 **Model picker mode** (`MODEL_PICKER_ENABLED=true`): the proxy loads `/lite-llm/lite-llm-picker.yaml` instead of the default config. A routing plugin discovers free chat-capable models live from the Pollinations, NVIDIA NIM, and LLM7 catalogs, ranks them by published and self-tracked health (latency, failure and rate-limit history), and serves each request from the best-ranked candidate for its tier — retrying in-request through the next-ranked model when a provider fails or truncates mid-stream, so a partial answer is never returned as if complete.
 
 **Health checks:** run `litellm-health-check` inside the container to probe every configured model through the router and produce console, Markdown, and JSON health reports.
+
+#### Overriding the LiteLLM Config
+
+The router reads its config from a YAML file at startup. To use your own instead of the built-in one, mount a config file into the container and point `LITELLM_CONFIG_PATH` at it. The config path is resolved once, when the proxy starts, so **restart the container** after changing the mounted file or the variable.
+
+The built-in configs are:
+
+| Config | Used when |
+|--------|-----------|
+| `/lite-llm/lite-llm-default.yaml` | Default routing pipeline (`MODEL_PICKER_ENABLED` unset) |
+| `/lite-llm/lite-llm-picker.yaml` | Model picker mode (`MODEL_PICKER_ENABLED=true`) |
+
+**Mount a single file** (recommended — mount anywhere you like and point the variable at it):
+
+```bash
+docker run -d \
+  --name=claude-dev \
+  -e NIM_API_KEY=your-nvidia-nim-api-key \
+  -v /path/to/my-litellm.yaml:/config/litellm/my-litellm.yaml:ro \
+  -e LITELLM_CONFIG_PATH=/config/litellm/my-litellm.yaml \
+  ... # the rest of your usual docker run flags
+```
+
+Docker Compose:
+
+```yaml
+services:
+  claude-dev:
+    environment:
+      - LITELLM_CONFIG_PATH=/config/litellm/my-litellm.yaml
+    volumes:
+      - ./my-litellm.yaml:/config/litellm/my-litellm.yaml:ro
+```
+
+**Mount a folder** — keep several config files in one directory and select between them with the variable, so you can switch without changing the mount:
+
+```yaml
+services:
+  claude-dev:
+    environment:
+      - LITELLM_CONFIG_PATH=/config/litellm/prod-litellm.yaml
+      # Include the mounted directory so custom callback/plugin modules import.
+      - PYTHONPATH=/config/litellm:/usr/local/bin
+    volumes:
+      - ./litellm-configs:/config/litellm:ro
+```
+
+If your config references custom Python callback or plugin modules, mount those files alongside the config in `/config/litellm` and include that directory on `PYTHONPATH` as shown above. Keep `/usr/local/bin` on the path as well; add any other paths your setup needs.
+
+**Replace the built-in config in place** — mounting a file directly over the baked-in path needs no environment variable:
+
+```bash
+docker run -d \
+  --name=claude-dev \
+  -v /path/to/my-litellm.yaml:/lite-llm/lite-llm-default.yaml:ro \
+  ...
+```
+
+In model picker mode, mount over `/lite-llm/lite-llm-picker.yaml` instead.
+
+> **Note:** Don't mount a folder over `/lite-llm` itself. The configs reference custom callback modules by name (`router_callback`, `model_picker_plugin`), which the proxy imports relative to its working directory — `/lite-llm`. Shadowing that directory hides those modules and the proxy fails to start. Mount your config somewhere else (for example `/config/litellm/`) and use `LITELLM_CONFIG_PATH`.
+
+**Notes:**
+
+- On startup the proxy logs which config it loaded (`Starting LiteLLM proxy with config ...`) — check it with `docker logs claude-dev`.
+- If `LITELLM_CONFIG_PATH` is set but the file does not exist inside the container, the proxy logs a warning and falls back to the built-in config, so a typo in the path breaks your routing rather than the container.
+- API keys still come from the environment (`NIM_API_KEY`, `GOOGLE_API_KEY`, `EXA_API_KEY`, ...). Your config only decides which models and groups are served.
+- Model groups you define must match what Claude Code is configured to call — by default `lite-llm/router` for `ANTHROPIC_DEFAULT_OPUS_MODEL`/`ANTHROPIC_DEFAULT_SONNET_MODEL`/`ANTHROPIC_DEFAULT_HAIKU_MODEL`/`CLAUDE_CODE_SUBAGENT_MODEL`. Rename them and Claude Code needs its model variables updated to match (see "Claude Code Setup").
+- Verify the router came up healthy with `curl -s http://127.0.0.1:5090/health` inside the container. Then run `litellm-health-check --config "$LITELLM_CONFIG_PATH"` to probe a custom config, or pass `/lite-llm/lite-llm-default.yaml` (default mode) or `/lite-llm/lite-llm-picker.yaml` (picker mode) explicitly. The health-check command defaults to the built-in default config, not whichever config the proxy loaded.
 
 ### Claude Threads
 
