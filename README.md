@@ -811,9 +811,13 @@ services:
   claude-dev:
     environment:
       - LITELLM_CONFIG_PATH=/config/litellm/prod-litellm.yaml
+      # Include the mounted directory so custom callback/plugin modules import.
+      - PYTHONPATH=/config/litellm:/usr/local/bin
     volumes:
       - ./litellm-configs:/config/litellm:ro
 ```
+
+If your config references custom Python callback or plugin modules, mount those files alongside the config in `/config/litellm` and include that directory on `PYTHONPATH` as shown above. Keep `/usr/local/bin` on the path as well; add any other paths your setup needs.
 
 **Replace the built-in config in place** — mounting a file directly over the baked-in path needs no environment variable:
 
@@ -834,7 +838,7 @@ In model picker mode, mount over `/lite-llm/lite-llm-picker.yaml` instead.
 - If `LITELLM_CONFIG_PATH` is set but the file does not exist inside the container, the proxy logs a warning and falls back to the built-in config, so a typo in the path breaks your routing rather than the container.
 - API keys still come from the environment (`NIM_API_KEY`, `GOOGLE_API_KEY`, `EXA_API_KEY`, ...). Your config only decides which models and groups are served.
 - Model groups you define must match what Claude Code is configured to call — by default `lite-llm/router` for `ANTHROPIC_DEFAULT_OPUS_MODEL`/`ANTHROPIC_DEFAULT_SONNET_MODEL`/`ANTHROPIC_DEFAULT_HAIKU_MODEL`/`CLAUDE_CODE_SUBAGENT_MODEL`. Rename them and Claude Code needs its model variables updated to match (see "Claude Code Setup").
-- Verify the router came up healthy with `curl -s http://127.0.0.1:5090/health` inside the container, then `litellm-health-check` to probe every model in your config.
+- Verify the router came up healthy with `curl -s http://127.0.0.1:5090/health` inside the container. Then run `litellm-health-check --config "$LITELLM_CONFIG_PATH"` to probe a custom config, or pass `/lite-llm/lite-llm-default.yaml` (default mode) or `/lite-llm/lite-llm-picker.yaml` (picker mode) explicitly. The health-check command defaults to the built-in default config, not whichever config the proxy loaded.
 
 ### Claude Threads
 

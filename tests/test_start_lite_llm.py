@@ -37,6 +37,7 @@ def stub_litellm(tmp_path):
         "#!/usr/bin/env bash\n"
         'printf \'%s\\n\' "$@" > "$RECORD_ARGS_FILE"\n'
         'pwd >> "$RECORD_ARGS_FILE"\n'
+        'touch "$RECORD_ARGS_FILE.done"\n'
     )
     stub.chmod(0o755)
     return bindir
@@ -61,12 +62,10 @@ def _run_script(tmp_path, stub_litellm, **env):
     # litellm is backgrounded by the script, so the stub's output may land
     # slightly after the script itself exits.
     used = cwd = None
+    done_file = args_file.with_suffix(args_file.suffix + ".done")
     for _ in range(50):
-        try:
+        if done_file.exists():
             lines = [line for line in args_file.read_text().splitlines() if line]
-        except FileNotFoundError:
-            lines = []
-        if lines:
             used = lines[lines.index("--config") + 1] if "--config" in lines else None
             cwd = lines[-1]  # the stub's trailing `pwd`
             break
