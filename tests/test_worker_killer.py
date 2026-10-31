@@ -833,7 +833,9 @@ def test_find_existing_mr_gitlab_error_returns_none():
 # --------------------------------------------------------------------------- worker_pr_setup: bead data lookup
 
 def test_get_bead_info_from_bd_show():
-    data = {"title": "Fix the login probe", "description": "It is broken."}
+    # Real `bd show <id> --json` (bd 1.3.2) returns a list with one issue
+    # dict, not a bare dict — unwrapping it is what the worker actually does.
+    data = [{"title": "Fix the login probe", "description": "It is broken."}]
     proc = mock.Mock()
     proc.returncode = 0
     proc.stdout = json.dumps(data)
@@ -841,6 +843,15 @@ def test_get_bead_info_from_bd_show():
         title, description = wps.get_bead_info("probe-1")
         assert title == "Fix the login probe"
         assert description == "It is broken."
+
+
+def test_get_bead_info_bd_show_empty_list_returns_none():
+    """An empty list from `bd show` means the bead was not found."""
+    proc = mock.Mock()
+    proc.returncode = 0
+    proc.stdout = "[]"
+    with mock.patch("subprocess.run", return_value=proc):
+        assert wps.get_bead_info("probe-1") == (None, None)
 
 
 def test_get_bead_info_bd_show_failure_returns_none():

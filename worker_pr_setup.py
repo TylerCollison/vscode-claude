@@ -283,6 +283,14 @@ def get_bead_info(bead_id):
         data = json.loads(proc.stdout)
     except json.JSONDecodeError:
         return None, None
+    # `bd show <id> --json` returns a list with one issue dict, not a dict
+    # itself (bd 1.3.2). An empty list means the bead was not found.
+    if isinstance(data, list):
+        if not data:
+            return None, None
+        data = data[0]
+    if not isinstance(data, dict):
+        return None, None
     return data.get("title") or None, data.get("description") or None
 
 
