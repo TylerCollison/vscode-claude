@@ -926,6 +926,54 @@ def test_push_branch_without_provider_still_runs_as_abc():
     assert not any("credential.helper" in arg for arg in seen["cmd"])
 
 
+# --------------------------------------------------------------------------- worker_pr_setup: base branch
+
+def test_resolve_default_branch_prefers_checkout_base_branch():
+    """GIT_CHECKOUT_BASE_BRANCH wins: the task branch was cut from it, so
+    the draft PR must target it, not the remote default (main)."""
+    old = os.environ.get("GIT_CHECKOUT_BASE_BRANCH")
+    os.environ["GIT_CHECKOUT_BASE_BRANCH"] = "beads"
+    try:
+        with mock.patch.object(wps, "git", side_effect=AssertionError("no git")):
+            assert wps.resolve_default_branch() == "beads"
+    finally:
+        if old is None:
+            os.environ.pop("GIT_CHECKOUT_BASE_BRANCH", None)
+        else:
+            os.environ["GIT_CHECKOUT_BASE_BRANCH"] = old
+
+
+def test_resolve_default_branch_falls_back_to_remote_head():
+    """No checkout base: the remote's default branch (remote HEAD)."""
+    os.environ.pop("GIT_CHECKOUT_BASE_BRANCH", None)
+    proc = subprocess.CompletedProcess([], 0, stdout="refs/remotes/origin/main\n")
+    with mock.patch.object(wps, "git", return_value=proc):
+        assert wps.resolve_default_branch() == "main"
+
+
+def test_resolve_default_branch_blank_checkout_base_falls_back():
+    """A blank GIT_CHECKOUT_BASE_BRANCH is treated as unset."""
+    old = os.environ.get("GIT_CHECKOUT_BASE_BRANCH")
+    os.environ["GIT_CHECKOUT_BASE_BRANCH"] = "   "
+    try:
+        proc = subprocess.CompletedProcess([], 0, stdout="refs/remotes/origin/beads\n")
+        with mock.patch.object(wps, "git", return_value=proc):
+            assert wps.resolve_default_branch() == "beads"
+    finally:
+        if old is None:
+            os.environ.pop("GIT_CHECKOUT_BASE_BRANCH", None)
+        else:
+            os.environ["GIT_CHECKOUT_BASE_BRANCH"] = old
+
+
+def test_resolve_default_branch_falls_back_to_main():
+    """No checkout base and no remote HEAD: hardcoded "main"."""
+    os.environ.pop("GIT_CHECKOUT_BASE_BRANCH", None)
+    proc = subprocess.CompletedProcess([], 1, stdout="")
+    with mock.patch.object(wps, "git", return_value=proc):
+        assert wps.resolve_default_branch() == "main"
+
+
 # --------------------------------------------------------------------------- worker_pr_setup: creation both providers
 
 def test_create_draft_pr_github_parses_id_and_url():

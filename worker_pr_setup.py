@@ -352,7 +352,20 @@ def git(args, cwd=WORKSPACE):
 
 
 def resolve_default_branch():
-    """The remote's default branch (remote HEAD), never hardcoded to main."""
+    """The branch the draft PR/MR should target.
+
+    Precedence: GIT_CHECKOUT_BASE_BRANCH when set, then the remote's
+    default branch (remote HEAD), then "main". The checkout base wins
+    because git-repo-setup.sh creates the task branch from it when it
+    is set — so it, not the remote default, is the branch the worker's
+    changes are actually based on. This value is also the comparison
+    base for branch_has_commits(), so a branch cut from e.g. `beads`
+    with no new commits correctly gets the --allow-empty commit instead
+    of being judged ahead of `main` and skipping it.
+    """
+    base = (os.environ.get("GIT_CHECKOUT_BASE_BRANCH") or "").strip()
+    if base:
+        return base
     proc = git(["symbolic-ref", "refs/remotes/origin/HEAD"])
     if proc.returncode == 0 and proc.stdout.strip():
         return proc.stdout.strip()[len("refs/remotes/origin/"):]
