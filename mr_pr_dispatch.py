@@ -125,9 +125,15 @@ def compose_worker_env(parent_env, branch, repo_url, mr_pr_id, dispatch_prompt=N
     # container owns worker cleanup.
     env = [e for e in env if not e.startswith("WORKER_REAPER=")]
     env.append("WORKER_REAPER=false")
-    # Force WORKER_KILLER=true so the worker self-shuts down when its MR/PR closes.
+    # Worker killer is opt-in at the dispatcher: only when the parent node
+    # sets WORKER_KILLER_ENABLED=true does the worker get WORKER_KILLER=true.
+    # Either way, strip any inherited WORKER_KILLER= so it can never leak
+    # into a worker, and keep the dispatcher-side opt-in itself out of
+    # worker env.
     env = [e for e in env if not e.startswith("WORKER_KILLER=")]
-    env.append("WORKER_KILLER=true")
+    env = [e for e in env if not e.startswith("WORKER_KILLER_ENABLED=")]
+    if du.env_value(parent_env, "WORKER_KILLER_ENABLED") == "true":
+        env.append("WORKER_KILLER=true")
 
     # Override HAPPIER_MODE to "agent" if parent has it set (don't add if parent doesn't have it)
     parent_has_happier_mode = any(e.startswith("HAPPIER_MODE=") for e in parent_env)

@@ -620,30 +620,60 @@ def test_get_worker_branch_handles_git_execution_error():
         assert wk.get_worker_branch() is None
 
 
-# --------------------------------------------------------------------------- dispatcher contract: WORKER_KILLER=true in worker env
+# --------------------------------------------------------------------------- dispatcher contract: WORKER_KILLER is opt-in
 
-def test_beads_dispatch_worker_env_has_worker_killer():
+def test_beads_dispatch_worker_env_has_worker_killer_when_opted_in():
+    """Parent opts in via WORKER_KILLER_ENABLED=true: worker gets WORKER_KILLER=true."""
     bdd = _load("beads_dispatch", "beads-dispatch/beads_dispatch.py")
     env = bdd.compose_worker_env(
-        parent_env=["WORKER_KILLER=false"],
+        parent_env=["WORKER_KILLER_ENABLED=true", "WORKER_KILLER=false"],
         branch="task/probe-1-x",
         repo_url="https://github.com/o/r.git",
         beads_remote="https://github.com/o/r.git"
     )
     killer_vals = [e for e in env if e.startswith("WORKER_KILLER=")]
     assert killer_vals == ["WORKER_KILLER=true"], killer_vals
+    assert not [e for e in env if e.startswith("WORKER_KILLER_ENABLED=")]
 
 
-def test_mr_pr_dispatch_worker_env_has_worker_killer():
+def test_beads_dispatch_worker_env_no_worker_killer_when_not_opted_in():
+    """No opt-in on the parent: worker gets no WORKER_KILLER at all, and an
+    inherited WORKER_KILLER=true must not leak into the worker."""
+    bdd = _load("beads_dispatch", "beads-dispatch/beads_dispatch.py")
+    env = bdd.compose_worker_env(
+        parent_env=["WORKER_KILLER=true"],
+        branch="task/probe-1-x",
+        repo_url="https://github.com/o/r.git",
+        beads_remote="https://github.com/o/r.git"
+    )
+    assert not [e for e in env if e.startswith("WORKER_KILLER=")], env
+
+
+def test_mr_pr_dispatch_worker_env_has_worker_killer_when_opted_in():
+    """Parent opts in via WORKER_KILLER_ENABLED=true: worker gets WORKER_KILLER=true."""
     md = _load("mr_pr_dispatch", "mr_pr_dispatch.py")
     env = md.compose_worker_env(
-        parent_env=["WORKER_KILLER=false"],
+        parent_env=["WORKER_KILLER_ENABLED=true", "WORKER_KILLER=false"],
         branch="feature/x",
         repo_url="https://github.com/o/r.git",
         mr_pr_id="42"
     )
     killer_vals = [e for e in env if e.startswith("WORKER_KILLER=")]
     assert killer_vals == ["WORKER_KILLER=true"], killer_vals
+    assert not [e for e in env if e.startswith("WORKER_KILLER_ENABLED=")]
+
+
+def test_mr_pr_dispatch_worker_env_no_worker_killer_when_not_opted_in():
+    """No opt-in on the parent: worker gets no WORKER_KILLER at all, and an
+    inherited WORKER_KILLER=true must not leak into the worker."""
+    md = _load("mr_pr_dispatch", "mr_pr_dispatch.py")
+    env = md.compose_worker_env(
+        parent_env=["WORKER_KILLER=true"],
+        branch="feature/x",
+        repo_url="https://github.com/o/r.git",
+        mr_pr_id="42"
+    )
+    assert not [e for e in env if e.startswith("WORKER_KILLER=")], env
 
 
 # --------------------------------------------------------------------------- no PROMPT usage in PR creation

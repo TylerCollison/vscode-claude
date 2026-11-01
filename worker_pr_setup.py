@@ -14,7 +14,8 @@ The PR/MR does not exist at dispatch time for a beads worker, and the
 design requires the worker — not the dispatcher, and not by monitoring
 provider CLI activity — to create it. Keeping it in the worker keeps the
 feature parent-independent and keeps the change to the dispatcher minimal
-(the dispatcher only forces WORKER_KILLER=true and rewrites its prompt).
+(the dispatcher only sets WORKER_KILLER=true when the parent opts in via
+WORKER_KILLER_ENABLED=true, and rewrites its prompt).
 
 Sequence
 --------

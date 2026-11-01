@@ -11,9 +11,10 @@ Principles
   MR/PR closes. This makes shutdown independent of the parent node.
 - The parent reaper is complementary: after the worker kills itself,
   the reaper cleans up the lingering service/container object.
-- Forced on by the dispatchers: both beads_dispatch.py and mr_pr_dispatch.py
-  explicitly append WORKER_KILLER=true to the worker env. The killer startup
-  script gates on WORKER_KILLER=true, so parent containers never run it.
+- Opt-in at the dispatcher: both beads_dispatch.py and mr_pr_dispatch.py
+  append WORKER_KILLER=true to the worker env only when the parent node
+  opts in via WORKER_KILLER_ENABLED=true. The killer startup script gates
+  on WORKER_KILLER=true, so parent containers never run it.
 - Other worker flags unchanged: BEADS_DISPATCH=false, MR_PR_DISPATCH=false,
   WORKER_REAPER=false. The killer is separate from the reaper.
 
