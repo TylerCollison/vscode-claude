@@ -480,6 +480,7 @@ def test_default_dispatch_prompt_closes_with_bd_close():
     prompt = bd.default_dispatch_prompt("probe-n5h", "task/probe-n5h-task-a", "https://github.com/o/r.git")
     assert "bd close <issue-id>" in prompt
     assert "bd complete" not in prompt
+    assert "Closing the bead does not shut the worker down" not in prompt
 
 
 def _stub_cfg(state_dir):

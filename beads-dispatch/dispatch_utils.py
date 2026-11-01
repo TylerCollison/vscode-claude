@@ -514,6 +514,12 @@ def dispatch_swarm(worker, image, env, port, worker_port, issue_id, net=None, la
     if labels:
         for k, v in labels.items():
             cmd += ["--label", f"{k}={v}"]
+            # --label stamps the SERVICE object only; the task containers
+            # never see it. The worker killer reads the container's own
+            # labels (docker inspect .Config.Labels), so stamp the same
+            # labels on the containers too. --label stays: the reaper
+            # finds swarm workers through service labels.
+            cmd += ["--container-label", f"{k}={v}"]
     for e in env:
         cmd += ["-e", e]
     cmd += ["--mount", f"type=bind,source={DOCKER_SOCK_SOURCE},target={DOCKER_SOCK_TARGET}"]
