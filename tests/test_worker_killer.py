@@ -471,6 +471,59 @@ def test_killer_cycle_beads_worker_branch_lookup_ambiguous_no_action():
             os.environ.pop("MR_PR_PROVIDER", None)
 
 
+# --------------------------------------------------------------------------- killer: branch lookup only adopts open PRs/MRs
+
+def test_query_pr_state_by_branch_github_lists_open_only():
+    """The branch lookup must ask for open PRs only, and a closed PR that
+    slips through must not be returned as an association."""
+    seen = {}
+
+    def by_cmd(cmd, env=None, cwd=None):
+        seen["cmd"] = cmd
+        return 0, "42|OPEN|", ""
+
+    with mock.patch.object(wk, "run_as_abc", side_effect=by_cmd):
+        assert wk.query_pr_state_by_branch_github("o/r", "task/probe-1-x") == ("42", "open")
+    assert "--state" in seen["cmd"]
+    assert seen["cmd"][seen["cmd"].index("--state") + 1] == "open"
+
+
+def test_query_pr_state_by_branch_github_closed_returns_none():
+    """A closed PR for the branch is not an association to adopt."""
+    with mock.patch.object(wk, "run_as_abc", return_value=(0, "42|CLOSED|", "")):
+        assert wk.query_pr_state_by_branch_github("o/r", "task/probe-1-x") == (None, None)
+
+
+def test_query_pr_state_by_branch_github_merged_returns_none():
+    """A merged PR for the branch is not an association to adopt."""
+    with mock.patch.object(wk, "run_as_abc", return_value=(0, "42|MERGED|2026-11-01T00:00:00Z", "")):
+        assert wk.query_pr_state_by_branch_github("o/r", "task/probe-1-x") == (None, None)
+
+
+def test_query_mr_state_by_branch_gitlab_opened_returns_id():
+    """An opened MR for the branch is adopted."""
+    mrs = [{"iid": 7, "state": "opened"}]
+    with mock.patch.object(wk, "run_as_abc",
+                           return_value=(0, '{"merge_requests": %s}' % json.dumps(mrs), "")):
+        assert wk.query_mr_state_by_branch_gitlab("o/r", "task/probe-1-x") == ("7", "opened")
+
+
+def test_query_mr_state_by_branch_gitlab_closed_returns_none():
+    """A closed MR for the branch is not an association to adopt."""
+    mrs = [{"iid": 7, "state": "closed"}]
+    with mock.patch.object(wk, "run_as_abc",
+                           return_value=(0, '{"merge_requests": %s}' % json.dumps(mrs), "")):
+        assert wk.query_mr_state_by_branch_gitlab("o/r", "task/probe-1-x") == (None, None)
+
+
+def test_query_mr_state_by_branch_gitlab_merged_returns_none():
+    """A merged MR for the branch is not an association to adopt."""
+    mrs = [{"iid": 7, "state": "merged"}]
+    with mock.patch.object(wk, "run_as_abc",
+                           return_value=(0, '{"merge_requests": %s}' % json.dumps(mrs), "")):
+        assert wk.query_mr_state_by_branch_gitlab("o/r", "task/probe-1-x") == (None, None)
+
+
 def test_killer_cycle_no_association_no_action():
     """No PR/MR association at all -> no action."""
     with _StateDir() as cfg:
@@ -804,8 +857,25 @@ def test_find_existing_pr_github_error_returns_none():
         assert wps.find_existing_pr_github("o/r", "task/probe-1-x") == (None, None)
 
 
+def test_find_existing_pr_github_lists_open_only():
+    """The reuse query must ask for open PRs only: a closed PR for the
+    branch must never be adopted as the worker's association."""
+    seen = {}
+
+    def by_cmd(cmd, env=None, cwd=None):
+        seen["cmd"] = cmd
+        return 0, "42|https://github.com/o/r/pull/42", ""
+
+    with mock.patch.object(wps, "run_as_abc", side_effect=by_cmd):
+        pr_id, url = wps.find_existing_pr_github("o/r", "task/probe-1-x")
+        assert pr_id == "42"
+        assert "pull/42" in url
+    assert "--state" in seen["cmd"]
+    assert seen["cmd"][seen["cmd"].index("--state") + 1] == "open"
+
+
 def test_find_existing_mr_gitlab_reuses_single_match():
-    mrs = [{"iid": 7, "web_url": "https://gitlab.com/o/r/-/merge_requests/7"}]
+    mrs = [{"iid": 7, "state": "opened", "web_url": "https://gitlab.com/o/r/-/merge_requests/7"}]
     with mock.patch.object(wps, "run_as_abc",
                            return_value=(0, '{"merge_requests": %s}' % json.dumps(mrs), "")):
         mr_id, url = wps.find_existing_mr_gitlab("o/r", "task/probe-1-x")
@@ -827,6 +897,22 @@ def test_find_existing_mr_gitlab_ambiguous_returns_none():
 
 def test_find_existing_mr_gitlab_error_returns_none():
     with mock.patch.object(wps, "run_as_abc", return_value=(1, "", "error")):
+        assert wps.find_existing_mr_gitlab("o/r", "task/probe-1-x") == (None, None)
+
+
+def test_find_existing_mr_gitlab_closed_returns_none():
+    """A closed MR for the branch is not an association to adopt."""
+    mrs = [{"iid": 7, "state": "closed", "web_url": "https://gitlab.com/o/r/-/merge_requests/7"}]
+    with mock.patch.object(wps, "run_as_abc",
+                           return_value=(0, '{"merge_requests": %s}' % json.dumps(mrs), "")):
+        assert wps.find_existing_mr_gitlab("o/r", "task/probe-1-x") == (None, None)
+
+
+def test_find_existing_mr_gitlab_merged_returns_none():
+    """A merged MR for the branch is not an association to adopt."""
+    mrs = [{"iid": 7, "state": "merged", "web_url": "https://gitlab.com/o/r/-/merge_requests/7"}]
+    with mock.patch.object(wps, "run_as_abc",
+                           return_value=(0, '{"merge_requests": %s}' % json.dumps(mrs), "")):
         assert wps.find_existing_mr_gitlab("o/r", "task/probe-1-x") == (None, None)
 
 

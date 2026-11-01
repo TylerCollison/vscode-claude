@@ -201,9 +201,14 @@ def build_pr_title_body(branch, bead_id, bead_title, bead_description):
 
 
 def find_existing_pr_github(owner_repo, branch):
-    """(id, url) of an existing open PR for this branch, else (None, None)."""
+    """(id, url) of an existing open PR for this branch, else (None, None).
+
+    --state open on purpose: a closed/merged PR for this branch is not an
+    association to adopt — reusing it would record a dead PR, skip creating
+    a new draft, and let the killer shut the fresh worker down on it.
+    """
     rc, out, err = run_as_abc([
-        "gh", "pr", "list", "--head", branch, "--state", "all",
+        "gh", "pr", "list", "--head", branch, "--state", "open",
         "--repo", owner_repo,
         "--json", "number,url",
         "-q", ".[] | \"\\(.number)|\\(.url)\"",
@@ -249,7 +254,12 @@ def _parse_mr_list(raw):
 
 
 def find_existing_mr_gitlab(owner_repo, branch):
-    """(id, url) of an existing MR for this branch, else (None, None)."""
+    """(id, url) of an existing open MR for this branch, else (None, None).
+
+    glab mr list defaults to open MRs, but filter explicitly: a closed or
+    merged MR is not an association to adopt, for the same reason as the
+    GitHub --state open above.
+    """
     rc, out, err = run_as_abc([
         "glab", "mr", "list", "--source-branch", branch,
         "--repo", owner_repo, "-F", "json",
@@ -261,6 +271,8 @@ def find_existing_mr_gitlab(owner_repo, branch):
         # Not unique (or none): never adopt an ambiguous association.
         return None, None
     mr = mrs[0]
+    if mr.get("state", "").lower() != "opened":
+        return None, None
     return str(mr.get("iid", "")), mr.get("web_url", "")
 
 

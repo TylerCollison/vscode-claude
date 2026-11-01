@@ -202,11 +202,17 @@ def query_mr_state_gitlab(owner_repo, mr_id):
 
 
 def query_pr_state_by_branch_github(owner_repo, branch):
-    """Fallback: find PR for branch. Returns (pr_id, state) or (None, None)."""
+    """Fallback: find an OPEN PR for branch. Returns (pr_id, state) or (None, None).
+
+    --state open on purpose: a closed/merged PR is not an association to
+    adopt — returning it would let the killer latch onto a dead PR and shut
+    a fresh worker down on it. A PR that closes after adoption is handled
+    by the poll in killer_cycle, not here.
+    """
     rc, out, err = run_as_abc([
         "gh", "pr", "list",
         "--head", branch,
-        "--state", "all",
+        "--state", "open",
         "--repo", owner_repo,
         "--json", "number,state,mergedAt",
         "-q", ".[] | \"\\(.number)|\\(.state)|\\(.mergedAt // \"\")\""
@@ -220,13 +226,22 @@ def query_pr_state_by_branch_github(owner_repo, branch):
     if len(lines) != 1:
         return None, None  # ambiguous or none
     pr_id, state, merged_at = lines[0].split("|", 2)
+    # Filter on the returned state as well as --state open above: a closed
+    # or merged PR is never an association, even if it slips through.
     if state == "MERGED" or merged_at:
-        return pr_id, "merged"
+        return None, None
+    if state.lower() != "open":
+        return None, None
     return pr_id, state.lower()
 
 
 def query_mr_state_by_branch_gitlab(owner_repo, branch):
-    """Fallback: find MR for branch. Returns (mr_id, state) or (None, None)."""
+    """Fallback: find an OPEN MR for branch. Returns (mr_id, state) or (None, None).
+
+    glab mr list defaults to open MRs, but filter explicitly: a closed or
+    merged MR is not an association to adopt, for the same reason as the
+    GitHub --state open above.
+    """
     rc, out, err = run_as_abc([
         "glab", "mr", "list",
         "--source-branch", branch,
@@ -245,8 +260,8 @@ def query_mr_state_by_branch_gitlab(owner_repo, branch):
             return None, None
         mr = mrs[0]
         state = mr.get("state", "").lower()
-        if state == "merged":
-            return str(mr.get("iid")), "merged"
+        if state != "opened":
+            return None, None
         return str(mr.get("iid")), state
     except json.JSONDecodeError:
         return None, None
