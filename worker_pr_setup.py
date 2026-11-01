@@ -112,6 +112,20 @@ def run_as_abc(cmd, env=None, cwd=None):
     full_env["HOME"] = ABC_HOME
     if cmd and cmd[0] == "glab":
         full_env.setdefault("GLAB_SEND_TELEMETRY", "false")
+        # Self-hosted GitLab: glab only treats a remote host as known when
+        # it is gitlab.com or configured. Mirror start-mr-pr-sync.sh:
+        # derive the host from GIT_REPO_URL when it is not the default.
+        # An explicitly set GITLAB_HOST always wins.
+        if not full_env.get("GITLAB_HOST"):
+            host, _ = parse_repo_url(full_env.get("GIT_REPO_URL", ""))
+            if host and host != "gitlab.com":
+                full_env["GITLAB_HOST"] = host
+    elif cmd and cmd[0] == "gh":
+        # Same for a self-hosted GitHub Enterprise host.
+        if not full_env.get("GH_HOST"):
+            host, _ = parse_repo_url(full_env.get("GIT_REPO_URL", ""))
+            if host and host != "github.com":
+                full_env["GH_HOST"] = host
     setpriv = ["setpriv", "--reuid=%s" % ABC_USER, "--regid=%s" % ABC_USER,
                "--init-groups", "env"]
     for key, val in full_env.items():

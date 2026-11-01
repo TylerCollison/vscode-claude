@@ -1229,6 +1229,108 @@ def test_query_mr_state_by_branch_gitlab_runs_in_workspace():
     assert seen["cwd"] == wk.WORKSPACE
 
 
+# --------------------------------------------------------------------------- run_as_abc: self-hosted provider host
+
+def _run_as_abc_argv(module, cmd, repo_url=None, extra_env=None):
+    """argv run_as_abc passes to subprocess.run, with a controlled env."""
+    saved = {}
+    for key in ("GIT_REPO_URL", "GITLAB_HOST", "GH_HOST"):
+        saved[key] = os.environ.get(key)
+        os.environ.pop(key, None)
+    if repo_url is not None:
+        os.environ["GIT_REPO_URL"] = repo_url
+    for key, val in (extra_env or {}).items():
+        os.environ[key] = val
+    try:
+        with mock.patch.object(module.subprocess, "run",
+                               return_value=subprocess.CompletedProcess([], 0, stdout="", stderr="")) as mock_run:
+            module.run_as_abc(cmd)
+        return mock_run.call_args[0][0]
+    finally:
+        for key, val in saved.items():
+            if val is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = val
+
+
+def _host_entries(argv):
+    """(GITLAB_HOST, GH_HOST) values carried in a setpriv argv, or None."""
+    gitlab_host = None
+    gh_host = None
+    for entry in argv:
+        if entry.startswith("GITLAB_HOST="):
+            gitlab_host = entry.split("=", 1)[1]
+        if entry.startswith("GH_HOST="):
+            gh_host = entry.split("=", 1)[1]
+    return gitlab_host, gh_host
+
+
+def test_run_as_abc_glab_sets_gitlab_host_from_repo_url():
+    """Self-hosted GitLab: glab only knows gitlab.com or a configured host,
+    so run_as_abc derives GITLAB_HOST from GIT_REPO_URL (userinfo stripped,
+    as in the real worker env)."""
+    argv = _run_as_abc_argv(
+        wps, ["glab", "mr", "list"],
+        repo_url="https://tylerc:glpat-SECRET@gitlab.home.com/tylerc/dispatchtest.git")
+    gitlab_host, _ = _host_entries(argv)
+    assert gitlab_host == "gitlab.home.com"
+
+
+def test_run_as_abc_glab_explicit_gitlab_host_wins():
+    """An explicitly set GITLAB_HOST is never overridden by derivation."""
+    argv = _run_as_abc_argv(
+        wps, ["glab", "mr", "list"],
+        repo_url="https://gitlab.home.com/o/r.git",
+        extra_env={"GITLAB_HOST": "other.example.com"})
+    gitlab_host, _ = _host_entries(argv)
+    assert gitlab_host == "other.example.com"
+
+
+def test_run_as_abc_glab_gitlab_com_sets_no_host():
+    """gitlab.com is the default: no GITLAB_HOST is added."""
+    argv = _run_as_abc_argv(
+        wps, ["glab", "mr", "list"],
+        repo_url="https://gitlab.com/o/r.git")
+    gitlab_host, _ = _host_entries(argv)
+    assert gitlab_host is None
+
+
+def test_run_as_abc_gh_sets_gh_host_from_repo_url():
+    """Same rule for a self-hosted GitHub Enterprise host."""
+    argv = _run_as_abc_argv(
+        wps, ["gh", "pr", "list"],
+        repo_url="https://ghe.example.com/o/r.git")
+    _, gh_host = _host_entries(argv)
+    assert gh_host == "ghe.example.com"
+
+
+def test_run_as_abc_killer_glab_sets_gitlab_host_from_repo_url():
+    """The killer's run_as_abc derives the host the same way."""
+    argv = _run_as_abc_argv(
+        wk, ["glab", "mr", "view", "7"],
+        repo_url="https://gitlab.home.com/o/r.git")
+    gitlab_host, _ = _host_entries(argv)
+    assert gitlab_host == "gitlab.home.com"
+
+
+def test_run_as_abc_killer_glab_explicit_gitlab_host_wins():
+    argv = _run_as_abc_argv(
+        wk, ["glab", "mr", "view", "7"],
+        repo_url="https://gitlab.home.com/o/r.git",
+        extra_env={"GITLAB_HOST": "other.example.com"})
+    gitlab_host, _ = _host_entries(argv)
+    assert gitlab_host == "other.example.com"
+
+
+def test_run_as_abc_killer_gh_sets_gh_host_from_repo_url():
+    argv = _run_as_abc_argv(
+        wk, ["gh", "pr", "view", "42"],
+        repo_url="https://ghe.example.com/o/r.git")
+    _, gh_host = _host_entries(argv)
+    assert gh_host == "ghe.example.com"
+
+
 # --------------------------------------------------------------------------- worker_pr_setup: provider/repo parsing
 
 def test_pr_setup_parse_repo_url_strips_credentials():
