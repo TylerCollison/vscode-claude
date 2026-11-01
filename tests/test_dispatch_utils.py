@@ -156,3 +156,20 @@ def test_dispatch_swarm_sets_hostname_to_service_name():
         du.dispatch_swarm("dispatch-test", "img:1", [], 8000, 8443, "workspace-l0b")
     cmd = run_mock.call_args[0][0]
     assert cmd[cmd.index("--hostname") + 1] == "dispatch-test", cmd
+
+
+def test_dispatch_swarm_stamps_container_labels():
+    # `docker service create --label` stamps the SERVICE object only; the
+    # task containers never see it, so the worker killer's container-label
+    # gate (docker inspect .Config.Labels) always read label='' on swarm
+    # workers and refused to kill. --container-label puts the same labels
+    # on the containers; --label stays for the reaper's service lookup.
+    labels = {"beads.issue": "workspace-kts", "dispatch.worker": "true"}
+    with mock.patch.object(du, "run", return_value=(0, "", "")) as run_mock:
+        du.dispatch_swarm("dispatch-test", "img:1", [], 8000, 8443,
+                          "workspace-kts", labels=labels)
+    cmd = run_mock.call_args[0][0]
+    # Every --label has a matching --container-label, in the same order.
+    service_labels = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--label"]
+    container_labels = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--container-label"]
+    assert service_labels == container_labels == ["beads.issue=workspace-kts", "dispatch.worker=true"], cmd
