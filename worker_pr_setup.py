@@ -389,10 +389,28 @@ def commit_empty(bead_id, bead_title):
                    env=env, cwd=WORKSPACE)
 
 
-def push_branch(branch):
-    """Best-effort push of the branch. Non-fatal: returns the exit code."""
-    return subprocess.run(["git", "push", "-u", "origin", branch],
-                          capture_output=True, text=True, cwd=WORKSPACE)
+def push_branch(branch, provider=None):
+    """Best-effort push of the branch. Non-fatal: returns the exit code.
+
+    Runs as the abc user (whose gh/glab auth lives in /config, or whose
+    GH_TOKEN/GITLAB_TOKEN is inherited via env) with an explicit per-push
+    credential helper, so git can answer non-interactively from the
+    provider CLI's token. A plain `git push` as root has neither: no
+    credential helper is configured for root in a fresh worker, so git
+    tries to prompt for a username and fails with exit 128
+    ("could not read Username ... No such device or address") and the
+    draft PR is never created. GIT_TERMINAL_PROMPT=0 makes a missing
+    helper fail fast instead of prompting on a nonexistent TTY.
+    """
+    cmd = ["git"]
+    if provider == "github":
+        cmd += ["-c", "credential.helper=!gh auth git-credential"]
+    elif provider == "gitlab":
+        cmd += ["-c", "credential.helper=!glab auth git-credential"]
+    cmd += ["push", "-u", "origin", branch]
+    rc, out, err = run_as_abc(cmd, env={"GIT_TERMINAL_PROMPT": "0"},
+                              cwd=WORKSPACE)
+    return subprocess.CompletedProcess(cmd, rc, stdout=out, stderr=err)
 
 
 def record_on_bead(bead_id, url, provider, pr_id):
@@ -485,7 +503,7 @@ def setup():
             log("Created --allow-empty commit for bead %s" % bead_id)
 
         # 5. Push, then create the draft PR/MR.
-        proc = push_branch(branch)
+        proc = push_branch(branch, provider)
         if proc.returncode != 0:
             log("WARNING: git push exited %d — the agent may create the PR/MR "
                 "itself: %s" % (proc.returncode, (proc.stderr or "").strip()))

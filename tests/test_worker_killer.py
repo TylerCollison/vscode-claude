@@ -871,6 +871,61 @@ def test_get_bead_info_bd_show_non_json_returns_none():
         assert wps.get_bead_info("probe-1") == (None, None)
 
 
+# --------------------------------------------------------------------------- worker_pr_setup: push credentials
+
+def test_push_branch_runs_as_abc_with_gh_credential_helper():
+    """GitHub push: as abc, with gh as the credential helper.
+
+    Regression test for the 2026-11-01 worker log: a plain `git push` as
+    root has no credential helper, so git tried to prompt for a username
+    and failed with exit 128 ("could not read Username ... No such device
+    or address"), and no draft PR was ever created.
+    """
+    seen = {}
+
+    def by_cmd(cmd, env=None, cwd=None):
+        seen.update({"cmd": list(cmd), "env": env, "cwd": cwd})
+        return 0, "", ""
+
+    with mock.patch.object(wps, "run_as_abc", side_effect=by_cmd):
+        proc = wps.push_branch("task/probe-1-x", "github")
+    assert proc.returncode == 0
+    assert seen["cmd"] == ["git", "-c",
+                           "credential.helper=!gh auth git-credential",
+                           "push", "-u", "origin", "task/probe-1-x"]
+    assert seen["env"]["GIT_TERMINAL_PROMPT"] == "0"
+
+
+def test_push_branch_runs_as_abc_with_glab_credential_helper():
+    """GitLab push: as abc, with glab as the credential helper."""
+    seen = {}
+
+    def by_cmd(cmd, env=None, cwd=None):
+        seen.update({"cmd": list(cmd)})
+        return 0, "", ""
+
+    with mock.patch.object(wps, "run_as_abc", side_effect=by_cmd):
+        proc = wps.push_branch("task/probe-1-x", "gitlab")
+    assert proc.returncode == 0
+    assert "credential.helper=!glab auth git-credential" in seen["cmd"]
+
+
+def test_push_branch_without_provider_still_runs_as_abc():
+    """Unknown provider: still as abc (never a bare root `git push`), just
+    with no provider helper configured."""
+    seen = {}
+
+    def by_cmd(cmd, env=None, cwd=None):
+        seen.update({"cmd": list(cmd)})
+        return 0, "", ""
+
+    with mock.patch.object(wps, "run_as_abc", side_effect=by_cmd):
+        proc = wps.push_branch("task/probe-1-x")
+    assert proc.returncode == 0
+    assert seen["cmd"] == ["git", "push", "-u", "origin", "task/probe-1-x"]
+    assert not any("credential.helper" in arg for arg in seen["cmd"])
+
+
 # --------------------------------------------------------------------------- worker_pr_setup: creation both providers
 
 def test_create_draft_pr_github_parses_id_and_url():
@@ -1053,7 +1108,7 @@ def test_setup_creates_draft_pr_when_none_exists():
                     mock.patch.object(wps, "get_bead_info",
                                       return_value=("Fix the login probe", "It is broken.")), \
                     mock.patch.object(wps, "commit_empty", side_effect=lambda bid, bt: created.update({"commit": (bid, bt)})), \
-                    mock.patch.object(wps, "push_branch", side_effect=lambda b: created.update({"push": b}) or subprocess.CompletedProcess([], 0)), \
+                    mock.patch.object(wps, "push_branch", side_effect=lambda b, provider=None: created.update({"push": (b, provider)}) or subprocess.CompletedProcess([], 0)), \
                     mock.patch.object(wps, "branch_has_commits", return_value=False), \
                     mock.patch.object(wps, "resolve_default_branch", return_value="main"), \
                     mock.patch.object(wps, "record_on_bead"):
@@ -1062,7 +1117,7 @@ def test_setup_creates_draft_pr_when_none_exists():
             assert result["id"] == "42"
             # The --allow-empty commit carries bead id and title.
             assert created["commit"] == ("probe-1", "Fix the login probe")
-            assert created["push"] == "task/probe-1-x"
+            assert created["push"] == ("task/probe-1-x", "github")
         finally:
             os.environ.clear()
             os.environ.update(old_env)
