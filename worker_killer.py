@@ -168,7 +168,7 @@ def query_pr_state_github(owner_repo, pr_id):
         "--repo", owner_repo,
         "--json", "state,mergedAt",
         "-q", ".state + \"|\" + (.mergedAt // \"\")"
-    ])
+    ], cwd=WORKSPACE)
     if rc != 0:
         return None, f"gh pr view failed (rc={rc}): {err.strip()}"
     out = out.strip()
@@ -186,7 +186,7 @@ def query_mr_state_gitlab(owner_repo, mr_id):
         "glab", "mr", "view", str(mr_id),
         "--repo", owner_repo,
         "-F", "json"
-    ])
+    ], cwd=WORKSPACE)
     if rc != 0:
         return None, f"glab mr view failed (rc={rc}): {err.strip()}"
     out = out.strip()
@@ -217,7 +217,7 @@ def query_pr_state_by_branch_github(owner_repo, branch):
         "--repo", owner_repo,
         "--json", "number,state,mergedAt",
         "-q", ".[] | \"\\(.number)|\\(.state)|\\(.mergedAt // \"\")\""
-    ])
+    ], cwd=WORKSPACE)
     if rc != 0:
         return None, None
     out = out.strip()
@@ -248,7 +248,7 @@ def query_mr_state_by_branch_gitlab(owner_repo, branch):
         "--source-branch", branch,
         "--repo", owner_repo,
         "-F", "json"
-    ])
+    ], cwd=WORKSPACE)
     if rc != 0:
         return None, None
     out = out.strip()

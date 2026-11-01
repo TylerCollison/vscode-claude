@@ -1155,6 +1155,80 @@ def test_create_draft_mr_gitlab_failure_returns_none():
                                          "t", "b") == (None, None)
 
 
+# --------------------------------------------------------------------------- worker_pr_setup / worker_killer: gh/glab run in /workspace
+
+def test_create_draft_mr_gitlab_runs_in_workspace():
+    """glab shells out to git for repo context even with --repo given, so it
+    must run in /workspace — run from the startup script's cwd it fails
+    with 'Fatal: not a git repository'."""
+    seen = {}
+
+    def by_cmd(cmd, env=None, cwd=None):
+        seen["cwd"] = cwd
+        return 0, "https://gitlab.home.com/o/r/-/merge_requests/9\n", ""
+
+    with mock.patch.object(wps, "run_as_abc", side_effect=by_cmd):
+        wps.create_draft_mr_gitlab("o/r", "task/probe-1-x", "main", "t", "b")
+    assert seen["cwd"] == wps.WORKSPACE
+
+
+def test_create_draft_pr_github_runs_in_workspace():
+    """Same working-directory requirement for the GitHub create path."""
+    seen = {}
+
+    def by_cmd(cmd, env=None, cwd=None):
+        seen["cwd"] = cwd
+        return 0, "https://github.com/o/r/pull/42\n", ""
+
+    with mock.patch.object(wps, "run_as_abc", side_effect=by_cmd):
+        wps.create_draft_pr_github("o/r", "task/probe-1-x", "main", "t", "b")
+    assert seen["cwd"] == wps.WORKSPACE
+
+
+def test_find_existing_mr_gitlab_runs_in_workspace():
+    """glab mr list also needs the repo cwd, or it fails and silently
+    returns no match, so an existing MR is never reused."""
+    seen = {}
+    mrs = [{"iid": 7, "state": "opened", "web_url": "https://gitlab.com/o/r/-/merge_requests/7"}]
+
+    def by_cmd(cmd, env=None, cwd=None):
+        seen["cwd"] = cwd
+        return 0, '{"merge_requests": %s}' % json.dumps(mrs), ""
+
+    with mock.patch.object(wps, "run_as_abc", side_effect=by_cmd):
+        assert wps.find_existing_mr_gitlab("o/r", "task/probe-1-x") == (
+            "7", "https://gitlab.com/o/r/-/merge_requests/7")
+    assert seen["cwd"] == wps.WORKSPACE
+
+
+def test_query_mr_state_gitlab_runs_in_workspace():
+    """The killer's glab mr view poll needs the repo cwd too, or the poll
+    always errors and a GitLab worker never sees its MR close."""
+    seen = {}
+
+    def by_cmd(cmd, env=None, cwd=None):
+        seen["cwd"] = cwd
+        return 0, '{"state": "opened"}', ""
+
+    with mock.patch.object(wk, "run_as_abc", side_effect=by_cmd):
+        assert wk.query_mr_state_gitlab("o/r", "7") == ("opened", None)
+    assert seen["cwd"] == wk.WORKSPACE
+
+
+def test_query_mr_state_by_branch_gitlab_runs_in_workspace():
+    """The killer's glab mr list branch lookup needs the repo cwd too."""
+    seen = {}
+    mrs = [{"iid": 7, "state": "opened"}]
+
+    def by_cmd(cmd, env=None, cwd=None):
+        seen["cwd"] = cwd
+        return 0, '{"merge_requests": %s}' % json.dumps(mrs), ""
+
+    with mock.patch.object(wk, "run_as_abc", side_effect=by_cmd):
+        assert wk.query_mr_state_by_branch_gitlab("o/r", "task/probe-1-x") == ("7", "opened")
+    assert seen["cwd"] == wk.WORKSPACE
+
+
 # --------------------------------------------------------------------------- worker_pr_setup: provider/repo parsing
 
 def test_pr_setup_parse_repo_url_strips_credentials():

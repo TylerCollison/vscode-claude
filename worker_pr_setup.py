@@ -213,7 +213,7 @@ def find_existing_pr_github(owner_repo, branch):
         "--repo", owner_repo,
         "--json", "number,url",
         "-q", ".[] | \"\\(.number)|\\(.url)\"",
-    ])
+    ], cwd=WORKSPACE)
     if rc != 0:
         return None, None
     lines = [ln for ln in out.strip().splitlines() if ln.strip()]
@@ -264,7 +264,7 @@ def find_existing_mr_gitlab(owner_repo, branch):
     rc, out, err = run_as_abc([
         "glab", "mr", "list", "--source-branch", branch,
         "--repo", owner_repo, "-F", "json",
-    ])
+    ], cwd=WORKSPACE)
     if rc != 0:
         return None, None
     mrs = _parse_mr_list(out)
@@ -316,7 +316,7 @@ def create_draft_pr_github(owner_repo, branch, base_branch, title, body):
         "gh", "pr", "create", "--draft", "--head", branch,
         "--base", base_branch, "--title", title, "--body", body,
         "--repo", owner_repo,
-    ])
+    ], cwd=WORKSPACE)
     if rc != 0:
         log("gh pr create failed: %s" % (err or out))
         return None, None
@@ -338,7 +338,7 @@ def create_draft_mr_gitlab(owner_repo, branch, base_branch, title, body):
         "glab", "mr", "create", "--draft", "--source-branch", branch,
         "--target-branch", base_branch, "--title", title,
         "--description", body, "--yes", "--repo", owner_repo,
-    ])
+    ], cwd=WORKSPACE)
     if rc != 0:
         log("glab mr create failed: %s" % (err or out))
         return None, None
