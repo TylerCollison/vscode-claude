@@ -85,6 +85,18 @@ def candidates_from_fixture(lib):
     return lib.parse_pollinations_models(pollinations_fixture())
 
 
+def free_plugin_pool(lib):
+    """Small free-only pool for plugin/manager tests (the real fixture's
+    models are all paid, so it now parses to nothing)."""
+    return [
+        metric_candidate(lib, "pollinations/openai/gpt-6-luna", 0.9997, 87885, ctx=1048576),
+        metric_candidate(lib, "pollinations/z-ai/glm-5.3", 0.99, 100, ctx=1048576),
+        metric_candidate(lib, "pollinations/deepseek/deepseek-v4-flash", 0.99, 100, ctx=1048576),
+        metric_candidate(lib, "pollinations/community/vendouple/deepseek-v4-pro", 0.99, 100, ctx=1048576),
+        metric_candidate(lib, "pollinations/openai/gpt-5.4-nano", 0.9997, 87885, ctx=400000),
+    ]
+
+
 def metric_candidate(lib, name, success, requests, ctx=100000):
     return lib.ModelCandidate(
         name=name,
@@ -94,11 +106,12 @@ def metric_candidate(lib, name, success, requests, ctx=100000):
         success_rate=success,
         requests=requests,
         source="pollinations_api",
+        free=True,
     )
 
 
 def favored_candidate(lib, name, provider="nvidia_nim", ctx=0):
-    return lib.ModelCandidate(name=name, provider=provider, context_length=ctx, metricless=True)
+    return lib.ModelCandidate(name=name, provider=provider, context_length=ctx, metricless=True, free=True)
 
 
 # ---------------------------------------------------------------------------
@@ -107,24 +120,25 @@ def favored_candidate(lib, name, provider="nvidia_nim", ctx=0):
 
 
 class TestCatalogParsing:
-    def test_official_and_community_models_kept(self, mp):
+    def test_fixture_paid_models_excluded(self, mp):
         lib, _ = mp
-        candidates = candidates_from_fixture(lib)
-        names = {c.name for c in candidates}
-        # official and community models are both eligible
-        assert "pollinations/openai/gpt-5.4-nano" in names
-        assert "pollinations/openai/gpt-oss-20b" in names
-        assert "pollinations/z-ai/glm-5.3" in names
-        assert "pollinations/community/vendouple/deepseek-v4-pro" in names
-        assert "pollinations/community/vendouple/glm-5.3-flash" in names
-        assert "pollinations/community/sharktide/inferenceport-ai-lightning-text-v2" in names
+        names = {c.name for c in candidates_from_fixture(lib)}
+        # Every non-down model in the fixture carries a nonzero pollen rate,
+        # so the free-only parser admits none of them; the one rate-less
+        # model (ling-3.1-flash) is down and excluded on health instead.
+        assert "pollinations/openai/gpt-5.4-nano" not in names
+        assert "pollinations/openai/gpt-oss-20b" not in names
+        assert "pollinations/z-ai/glm-5.3" not in names
+        assert "pollinations/community/vendouple/deepseek-v4-pro" not in names
+        assert "pollinations/community/vendouple/glm-5.3-flash" not in names
+        assert "pollinations/community/sharktide/inferenceport-ai-lightning-text-v2" not in names
 
     def test_zero_pollen_rate_marked_free(self, mp):
         lib, _ = mp
         by_name = {c.name: c for c in candidates_from_fixture(lib)}
-        # models with nonzero pollen rates are charged
-        assert by_name["pollinations/openai/gpt-5.4-nano"].free is False
-        assert by_name["pollinations/community/vendouple/deepseek-v4-pro"].free is False
+        # models with nonzero pollen rates are charged, and now dropped
+        assert "pollinations/openai/gpt-5.4-nano" not in by_name
+        assert "pollinations/community/vendouple/deepseek-v4-pro" not in by_name
         payload = {
             "data": [
                 {
@@ -156,6 +170,20 @@ class TestCatalogParsing:
         assert parsed["pollinations/openai/free-model"].free is True
         assert parsed["pollinations/openai/zero-model"].free is True
         assert parsed["pollinations/openai/no-pricing-model"].free is True
+        # a nonzero pollen rate drops the model entirely, not just flags it
+        paid_payload = {
+            "data": [
+                {
+                    "id": "openai/paid-model",
+                    "input_modalities": ["text"],
+                    "output_modalities": ["text"],
+                    "supported_endpoints": ["/v1/chat/completions"],
+                    "health": {"status": "healthy", "success_rate": 100, "requests": 10},
+                    "pricing": {"currency": "pollen", "promptTextTokens": "0.00000015"},
+                }
+            ]
+        }
+        assert lib.parse_pollinations_models(paid_payload) == []
 
     def test_paid_only_excluded(self, mp):
         lib, _ = mp
@@ -217,8 +245,23 @@ class TestCatalogParsing:
 
     def test_degraded_and_unknown_kept(self, mp):
         lib, _ = mp
-        by_name = {c.name: c for c in candidates_from_fixture(lib)}
-        assert by_name["pollinations/community/sharktide/inferenceport-ai-lightning-text-v2"].success_rate == pytest.approx(0.9)
+        # degraded health is still a candidate when the model is free; the
+        # fixture's degraded model is paid, so it no longer parses at all
+        payload = {
+            "data": [
+                {
+                    "id": "community/someone/degraded-free",
+                    "community": True,
+                    "input_modalities": ["text"],
+                    "output_modalities": ["text"],
+                    "supported_endpoints": ["/v1/chat/completions"],
+                    "health": {"status": "degraded", "success_rate": 90, "requests": 10},
+                    "pricing": {"currency": "pollen"},
+                }
+            ]
+        }
+        parsed = {c.name: c for c in lib.parse_pollinations_models(payload)}
+        assert parsed["pollinations/community/someone/degraded-free"].success_rate == pytest.approx(0.9)
         # unknown health / zero requests -> zero published score, still a candidate
         payload = {
             "data": [
@@ -367,9 +410,9 @@ class TestSoftFailureDetection:
         for _ in range(cfg.min_obs - 1):
             asyncio.run(logger.async_log_success_event(group_kwargs, _response_with_content(credits), None, None))
         # the now-broken group ranks below a healthy metric-backed candidate
-        gated = lib.ModelCandidate(name=group, provider="pollinations", metricless=True)
+        gated = lib.ModelCandidate(name=group, provider="pollinations", metricless=True, free=True)
         healthy = lib.ModelCandidate(
-            name="pollinations/openai/healthy", provider="pollinations", metricless=False, success_rate=0.9997, requests=87885
+            name="pollinations/openai/healthy", provider="pollinations", metricless=False, success_rate=0.9997, requests=87885, free=True
         )
         now = time.time() + cfg.recency_window_seconds + 1
         ranked = lib.rank_candidates([gated, healthy], lib.TIER_DEFAULT, stats, cfg, now=now)
@@ -444,11 +487,124 @@ class TestModelgrepEnrichment:
         entry, stage, _ = idx.match("z-ai/glm-5.3")
         assert entry is None  # glm-5.3 must never match glm-5.2
 
-    def test_variant_guard_rejects_variant_drift(self, mp):
+    def test_variant_guard_relaxed_by_substring_fallback(self, mp):
+        # Deliberate consequence of bidirectional substring matching: a
+        # -flash relay now matches a -flash-lite entry when that is the
+        # unique substring hit (candidate segment contained in the entry
+        # segment). The version guard still holds: glm-5.3 never matches
+        # glm-5.2, because neither contains the other.
         lib, _ = mp
         idx = lib.ModelGrepIndex([_mg_entry("z-ai/glm-5.3-flash-lite")])
-        entry, _, _ = idx.match("z-ai/glm-5.3-flash")
-        assert entry is None  # -flash is not -flash-lite
+        entry, stage, _ = idx.match("z-ai/glm-5.3-flash")
+        assert entry["id"] == "z-ai/glm-5.3-flash-lite"
+        assert stage == "substring"
+
+    def test_substring_matches_vendor_prefixed_relay(self, mp):
+        # The reported case: the vercel- prefix broke every strict stage
+        # even though the base model entry exists.
+        lib, _ = mp
+        idx = lib.ModelGrepIndex([_mg_entry("nvidia/nemotron-3.5-lightning", coding_pct=34)])
+        entry, stage, _ = idx.match("YoannDev90/vercel-nemotron-3.5-lightning:free")
+        assert entry["id"] == "nvidia/nemotron-3.5-lightning"
+        assert stage == "substring"
+
+    def test_substring_matches_entry_containing_candidate(self, mp):
+        # Vice versa: the candidate's segment contained in the entry's.
+        lib, _ = mp
+        idx = lib.ModelGrepIndex([_mg_entry("z-ai/glm-5.3-flash")])
+        entry, stage, _ = idx.match("community/user/glm-5.3")
+        assert entry["id"] == "z-ai/glm-5.3-flash"
+        assert stage == "substring"
+
+    def test_substring_ambiguous_rejected(self, mp):
+        # A fragment matching several entries still gates out.
+        lib, _ = mp
+        idx = lib.ModelGrepIndex([_mg_entry("meta/muse-spark-1.3"), _mg_entry("meta/muse-glimmer-30b")])
+        entry, _, _ = idx.match("community/user/muse")
+        assert entry is None
+
+    def test_substring_requires_boundary_and_min_length(self, mp):
+        lib, _ = mp
+        idx = lib.ModelGrepIndex([_mg_entry("acme/sunbeam-x"), _mg_entry("acme/x-d3-pro")])
+        assert idx.match("community/user/beam")[0] is None  # mid-token, not a boundary
+        assert idx.match("community/user/d3")[0] is None  # under the 4-char minimum
+
+    def test_substring_invents_no_entry(self, mp):
+        # The CloudCompile ultra relay still gates out: no ultra entry
+        # exists for any stage, strict or substring, to match.
+        lib, _ = mp
+        idx = lib.ModelGrepIndex([_mg_entry("nvidia/nemotron-3.5-lightning")])
+        entry, _, _ = idx.match("CloudCompile/nvidia-nemotron-3-ultra-550b-a55b:free")
+        assert entry is None
+
+    def test_dashless_matches_camelcase_concatenation(self, mp):
+        # Word boundaries differ only in separators/casing: the dashed
+        # forms never align, but the dashless forms are identical.
+        lib, _ = mp
+        idx = lib.ModelGrepIndex([_mg_entry("nvidia/nemotron-3.5-lightning", coding_pct=34)])
+        entry, stage, conf = idx.match("Nemotron3.5Lightning")
+        assert entry["id"] == "nvidia/nemotron-3.5-lightning"
+        assert stage == "dashless" and conf == 0.9
+
+    def test_dashless_matches_concatenated_decorated_relay(self, mp):
+        # Fully concatenated, plus a colon-suffixed :free relay suffix:
+        # the stripped normalized bare segment is what dashless-matches.
+        lib, _ = mp
+        idx = lib.ModelGrepIndex([_mg_entry("nvidia/nemotron-3.5-lightning", coding_pct=34)])
+        entry, stage, _ = idx.match("Nemotron3.5Lightning:free")
+        assert entry["id"] == "nvidia/nemotron-3.5-lightning"
+        assert stage == "dashless"
+        entry, stage, _ = idx.match("nemotron35lightning")
+        assert entry["id"] == "nvidia/nemotron-3.5-lightning"
+        assert stage == "dashless"
+
+    def test_dashless_ambiguous_collision_gates_out(self, mp):
+        # The version-boundary collapse dashless introduces (3-1 vs 31)
+        # must gate out when two entries collide, never pick one.
+        lib, _ = mp
+        idx = lib.ModelGrepIndex([_mg_entry("acme/llama-3-1-8b"), _mg_entry("other/llama-31-8b")])
+        entry, stage, _ = idx.match("llama318b")
+        assert entry is None
+        assert stage == "ambiguous"
+
+    def test_dashless_never_overrides_strict_stages(self, mp):
+        # The alias loop runs first: an exact hit wins even when the
+        # dashless segment index is ambiguous for the same candidate.
+        lib, _ = mp
+        idx = lib.ModelGrepIndex([_mg_entry("acme/foo-bar"), _mg_entry("other/foobar")])
+        entry, stage, _ = idx.match("foo-bar")
+        assert entry["id"] == "acme/foo-bar"
+        assert stage == "exact"
+
+    def test_gate_keeps_dashless_matched_candidate(self, fresh):
+        lib, _, cfg, stats, manager = fresh
+        manager._modelgrep_entries = [
+            _mg_entry("nvidia/nemotron-3.5-lightning", coding_pct=34, agentic_pct=51, context_length=1000000),
+        ]
+        candidates = [
+            lib.ModelCandidate(name="pollinations/Nemotron3.5Lightning",
+                               provider="pollinations", metricless=False, success_rate=1.0, requests=50,
+                               context_length=1000000, free=True),
+        ]
+        kept = manager._enrich_and_gate(candidates)
+        assert [c.name for c in kept] == ["pollinations/Nemotron3.5Lightning"]
+        assert kept[0].modelgrep_id == "nvidia/nemotron-3.5-lightning"
+        assert kept[0].benchmarked is True
+
+    def test_gate_keeps_substring_matched_relay(self, fresh):
+        lib, _, cfg, stats, manager = fresh
+        manager._modelgrep_entries = [
+            _mg_entry("nvidia/nemotron-3.5-lightning", coding_pct=34, agentic_pct=51, context_length=1000000),
+        ]
+        candidates = [
+            lib.ModelCandidate(name="pollinations/community/YoannDev90/vercel-nemotron-3.5-lightning:free",
+                               provider="pollinations", metricless=False, success_rate=1.0, requests=50,
+                               context_length=1000000, free=True),
+        ]
+        kept = manager._enrich_and_gate(candidates)
+        assert [c.name for c in kept] == ["pollinations/community/YoannDev90/vercel-nemotron-3.5-lightning:free"]
+        assert kept[0].modelgrep_id == "nvidia/nemotron-3.5-lightning"
+        assert kept[0].benchmarked is True
 
     def test_size_sibling_resolution(self, mp):
         lib, _ = mp
@@ -524,7 +680,7 @@ class TestModelgrepEnrichment:
         """With real windows, the fit filter protects requests: a 400k-token
         estimate fits the 1M window and is kept; a 16k window is filtered out."""
         lib, _, cfg, stats, _ = fresh
-        big_ctx = lib.ModelCandidate(name="nvidia_nim/z-ai/glm-5.3", provider="nvidia_nim", metricless=True,
+        big_ctx = lib.ModelCandidate(name="nvidia_nim/z-ai/glm-5.3", provider="nvidia_nim", metricless=True, free=True,
                                       context_length=1048576)
         small_ctx = lib.ModelCandidate(name="nvidia_nim/small/model", provider="nvidia_nim", metricless=True,
                                         context_length=16384)
@@ -543,11 +699,11 @@ class TestModelgrepEnrichment:
     def test_benchmarks_break_availability_context_ties(self, fresh):
         lib, _, cfg, stats, _ = fresh
         weak_bench = lib.ModelCandidate(
-            name="pollinations/weak-bench", provider="pollinations", metricless=False,
+            name="pollinations/weak-bench", provider="pollinations", metricless=False, free=True,
             success_rate=0.9997, requests=87885, context_length=1048576, benchmark_score=0.2, benchmarked=True,
         )
         strong_bench = lib.ModelCandidate(
-            name="pollinations/strong-bench", provider="pollinations", metricless=False,
+            name="pollinations/strong-bench", provider="pollinations", metricless=False, free=True,
             success_rate=0.9997, requests=87885, context_length=1048576, benchmark_score=0.8, benchmarked=True,
         )
         ranked = lib.rank_candidates([weak_bench, strong_bench], lib.TIER_DEFAULT, stats, cfg)
@@ -555,6 +711,183 @@ class TestModelgrepEnrichment:
         # think tier too (same health/class/context -> benchmark decides)
         ranked = lib.rank_candidates([weak_bench, strong_bench], lib.TIER_THINK, stats, cfg)
         assert ranked[0].candidate.name == "pollinations/strong-bench"
+
+
+# ---------------------------------------------------------------------------
+# Default tier: health-filtered capability pick
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultHealthFilteredCapabilityPick:
+    """Default (and think) requests filter by health, then pick capability:
+    hard floor (MODEL_PICKER_MIN_HEALTH) -> top N% healthiest
+    (MODEL_PICKER_HEALTH_TOP_PERCENT) -> most capable survivor (context,
+    then benchmark, then health, then name). Demoted models never enter
+    the cohort."""
+
+    def test_capability_wins_within_healthy_cohort(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        cfg.min_health = 0.3
+        cfg.health_top_percent = 50.0
+        healthiest_small = metric_candidate(lib, "pollinations/healthiest", 0.9997, 87885, ctx=100000)
+        healthiest_small.benchmark_score, healthiest_small.benchmarked = 0.2, True
+        capable_mid = metric_candidate(lib, "pollinations/capable", 0.99, 100, ctx=1048576)
+        capable_mid.benchmark_score, capable_mid.benchmarked = 0.8, True
+        weak_small = metric_candidate(lib, "pollinations/weak", 0.9, 100, ctx=100000)
+        weakest = metric_candidate(lib, "pollinations/weakest", 0.6, 100, ctx=100000)
+        ranked = lib.rank_candidates(
+            [healthiest_small, capable_mid, weak_small, weakest], lib.TIER_DEFAULT, stats, cfg
+        )
+        # Top 50% of 4 is 2: the two healthiest compete on capability, so
+        # the larger-context model wins even though it is not healthiest.
+        # The rest follow in the old block order.
+        assert [r.candidate.name for r in ranked] == [
+            "pollinations/capable",
+            "pollinations/healthiest",
+            "pollinations/weak",
+            "pollinations/weakest",
+        ]
+
+    def test_floor_eliminates_unhealthy_capable(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        cfg.min_health = 0.3
+        cfg.health_top_percent = 100.0
+        unhealthy_capable = metric_candidate(lib, "pollinations/unhealthy", 0.3, 100, ctx=1048576)
+        unhealthy_capable.benchmark_score, unhealthy_capable.benchmarked = 0.9, True
+        healthy_small = metric_candidate(lib, "pollinations/healthy", 0.99, 100, ctx=100000)
+        ranked = lib.rank_candidates([unhealthy_capable, healthy_small], lib.TIER_DEFAULT, stats, cfg)
+        assert ranked[0].candidate.name == "pollinations/healthy"
+
+    def test_top_percent_cutoff_excludes_fourth_healthiest(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        cfg.min_health = 0.3
+        cfg.health_top_percent = 30.0
+        models = []
+        for i, rate in enumerate([0.99, 0.98, 0.97, 0.96, 0.95, 0.94, 0.93, 0.92, 0.91, 0.90]):
+            m = metric_candidate(lib, f"pollinations/m{i}", rate, 100, ctx=100000)
+            models.append(m)
+        # The 4th-healthiest is the most capable — but the top 30% of 10
+        # keeps only 3, so it must not win. The 3rd-healthiest has the
+        # largest context among the survivors.
+        models[3].context_length = 1048576
+        models[3].benchmark_score, models[3].benchmarked = 0.9, True
+        models[2].context_length = 300000
+        ranked = lib.rank_candidates(models, lib.TIER_DEFAULT, stats, cfg)
+        assert ranked[0].candidate.name == "pollinations/m2"
+        names = [r.candidate.name for r in ranked]
+        assert names.index("pollinations/m3") >= 3
+
+    def test_floor_empty_falls_back_to_full_cohort(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        cfg.min_health = 0.5  # every model below it: floor must be ignored
+        cfg.health_top_percent = 50.0
+        m1 = metric_candidate(lib, "pollinations/m1", 0.4, 100, ctx=100000)
+        m2 = metric_candidate(lib, "pollinations/m2", 0.35, 100, ctx=1048576)
+        m3 = metric_candidate(lib, "pollinations/m3", 0.3, 100, ctx=100000)
+        m4 = metric_candidate(lib, "pollinations/m4", 0.25, 100, ctx=100000)
+        ranked = lib.rank_candidates([m1, m2, m3, m4], lib.TIER_DEFAULT, stats, cfg)
+        # Floor ignored, top 50% of 4 is 2, capability decides between them.
+        assert ranked[0].candidate.name == "pollinations/m2"
+
+    def test_demoted_model_never_enters_cohort(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        cfg.min_health = 0.3
+        cfg.health_top_percent = 100.0
+        demoted = favored_candidate(lib, "nvidia_nim/demoted/model", ctx=2097152)
+        now = time.time()
+        for _ in range(15):
+            stats.record_failure("nvidia_nim/demoted/model", lib.FAILURE_CLASS_ERROR, now=now)
+        for _ in range(15):
+            stats.record_success("nvidia_nim/demoted/model", None, now=now)
+        # Tracked rate ~0.5 over 30 obs trips the failure proof (hard rate
+        # far below the healthy model's published bound) yet its Wilson
+        # score (~0.33) still clears the 0.3 floor — without the demoted
+        # exclusion it would enter the cohort and win on context.
+        healthy = metric_candidate(lib, "pollinations/healthy", 0.99, 100, ctx=100000)
+        ranked = lib.rank_candidates([demoted, healthy], lib.TIER_DEFAULT, stats, cfg, now=now)
+        assert ranked[0].candidate.name == "pollinations/healthy"
+        assert ranked[-1].candidate.name == "nvidia_nim/demoted/model"
+
+    def test_untried_passes_floor_and_competes_on_capability(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        cfg.min_health = 0.3
+        cfg.health_top_percent = 100.0
+        untried = favored_candidate(lib, "nvidia_nim/z-ai/glm-5.3", ctx=1048576)
+        untried.benchmark_score, untried.benchmarked = 0.9, True
+        healthy = metric_candidate(lib, "pollinations/healthy", 0.99, 100, ctx=100000)
+        ranked = lib.rank_candidates([untried, healthy], lib.TIER_DEFAULT, stats, cfg)
+        # The untried placeholder is now the neutral 0.5 prior: it still
+        # passes the floor, and the capability pick then favors its larger
+        # context (and higher benchmark). Untried is no longer excluded —
+        # it is just no longer first on health.
+        assert ranked[0].candidate.name == "nvidia_nim/z-ai/glm-5.3"
+
+    def test_known_healthier_models_fill_cohort_before_untried(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        cfg.min_health = 0.3
+        cfg.health_top_percent = 50.0
+        strong = metric_candidate(lib, "pollinations/strong", 0.9997, 87885, ctx=100000)
+        mid = metric_candidate(lib, "pollinations/mid", 0.9, 100, ctx=100000)
+        untried = favored_candidate(lib, "nvidia_nim/z-ai/glm-5.3", ctx=1048576)
+        untried.benchmark_score, untried.benchmarked = 0.9, True
+        weak = metric_candidate(lib, "pollinations/weak", 0.6, 100, ctx=100000)
+        ranked = lib.rank_candidates([untried, weak, mid, strong], lib.TIER_DEFAULT, stats, cfg)
+        # The top 50% of 4 keeps 2: the two known-healthier metric models
+        # fill the cohort, and the untried model — despite the largest
+        # context and highest benchmark — is cut, because at the 0.5 prior
+        # it ranks below every model with demonstrated health above 0.5.
+        names = [r.candidate.name for r in ranked]
+        assert names.index("nvidia_nim/z-ai/glm-5.3") >= 2
+        assert ranked[0].candidate.name == "pollinations/strong"
+
+    def test_benchmark_beats_context_in_capability_pick(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        cfg.min_health = 0.3
+        cfg.health_top_percent = 100.0
+        small_high_bench = metric_candidate(lib, "pollinations/small-high-bench", 0.99, 100, ctx=100000)
+        small_high_bench.benchmark_score, small_high_bench.benchmarked = 0.9, True
+        big_low_bench = metric_candidate(lib, "pollinations/big-low-bench", 0.9997, 87885, ctx=1048576)
+        big_low_bench.benchmark_score, big_low_bench.benchmarked = 0.2, True
+        ranked = lib.rank_candidates([big_low_bench, small_high_bench], lib.TIER_DEFAULT, stats, cfg)
+        # Benchmark outranks context: the smaller-context model wins on its
+        # higher benchmark even though the other model is healthier and
+        # larger. (Context-first would pick big-low-bench.)
+        assert ranked[0].candidate.name == "pollinations/small-high-bench"
+
+    def test_cutoff_tiebreak_prefers_benchmark_over_context(self, fresh):
+        lib, _, cfg, stats, _ = fresh
+        cfg.min_health = 0.3
+        cfg.health_top_percent = 50.0
+        untried_high_bench = favored_candidate(lib, "nvidia_nim/high-bench", ctx=100000)
+        untried_high_bench.benchmark_score, untried_high_bench.benchmarked = 0.9, True
+        untried_mid_bench = favored_candidate(lib, "nvidia_nim/mid-bench", ctx=100000)
+        untried_mid_bench.benchmark_score, untried_mid_bench.benchmarked = 0.5, True
+        untried_big_ctx = favored_candidate(lib, "nvidia_nim/big-ctx", ctx=1048576)
+        untried_big_ctx.benchmark_score, untried_big_ctx.benchmarked = 0.1, True
+        healthy = metric_candidate(lib, "pollinations/healthy", 0.9997, 87885, ctx=100000)
+        ranked = lib.rank_candidates(
+            [untried_big_ctx, healthy, untried_mid_bench, untried_high_bench], lib.TIER_DEFAULT, stats, cfg
+        )
+        # The healthy model leads the health sort; the three untried models
+        # tie at the 0.5 prior, and the benchmark tiebreak admits the
+        # higher-benchmark one as the second cohort member — the
+        # larger-context low-benchmark model is cut despite its size.
+        names = [r.candidate.name for r in ranked]
+        assert names.index("nvidia_nim/big-ctx") >= 2
+        assert ranked[0].candidate.name == "nvidia_nim/high-bench"
+
+    def test_env_vars_configure_thresholds(self, mp, monkeypatch):
+        lib, _ = mp
+        monkeypatch.setenv("MODEL_PICKER_MIN_HEALTH", "0.6")
+        monkeypatch.setenv("MODEL_PICKER_HEALTH_TOP_PERCENT", "40")
+        cfg = lib.PickerConfig()
+        assert cfg.min_health == 0.6
+        assert cfg.health_top_percent == 40.0
+        monkeypatch.setenv("MODEL_PICKER_MIN_HEALTH", "not-a-number")
+        monkeypatch.setenv("MODEL_PICKER_HEALTH_TOP_PERCENT", "nan")
+        cfg = lib.PickerConfig()
+        assert cfg.min_health == lib.DEFAULT_MIN_HEALTH
+        assert cfg.health_top_percent == lib.DEFAULT_HEALTH_TOP_PERCENT
 
 
 def lib_modelgrep_index(entries):
@@ -654,6 +987,149 @@ class TestSoftFailureRetry:
         now = time.time() + cfg.recency_window_seconds + 1
         ranked = lib.rank_candidates([gated, healthy], lib.TIER_DEFAULT, logger.stats, cfg, now=now)
         assert ranked[0].candidate.name == "pollinations/openai/healthy"
+
+    def test_tail_synthesis_uses_fallback_only_when_no_response(self, mp):
+        """Regression: the "[model_picker] every available model was tried"
+        notice leaked into SUCCESSFUL retries whose answer was tool-only
+        (no text) — the normal agent-turn shape — because the tail used the
+        fallback whenever the response had no extractable text. The notice
+        must only fill in when there is no response at all."""
+        lib, plugin = mp
+        synth = plugin.ModelPickerStatsLogger._synthesize_tail_events
+        tool_only = {
+            "content": [{"type": "tool_use", "id": "toolu_1", "name": "get_weather", "input": {"city": "Paris"}}]
+        }
+        events = synth(tool_only, None, 0, "FALLBACK NOTICE")
+        flat = "".join(plugin._event_text(e) for e in events)
+        assert "FALLBACK NOTICE" not in flat
+        tool_blocks = [
+            e.get("content_block", {})
+            for e in events
+            if e.get("type") == "content_block_start" and e.get("content_block", {}).get("type") == "tool_use"
+        ]
+        assert [b.get("name") for b in tool_blocks] == ["get_weather"]
+        # ...while a genuinely exhausted walk still gets the notice...
+        events = synth(None, None, 0, "FALLBACK NOTICE")
+        flat = "".join(plugin._event_text(e) for e in events)
+        assert "FALLBACK NOTICE" in flat
+        # ...and a retry WITH text keeps its own text, not the notice.
+        events = synth({"content": [{"type": "text", "text": "Real answer"}]}, None, 0, "FALLBACK NOTICE")
+        flat = "".join(plugin._event_text(e) for e in events)
+        assert "Real answer" in flat
+        assert "FALLBACK NOTICE" not in flat
+
+    def test_streaming_retry_tool_only_response_gets_no_fallback_notice(self, mp, monkeypatch):
+        """End to end: a soft failure whose retry succeeds with a tool-only
+        answer must reach the client as that tool call — no
+        "[model_picker] every available model was tried" text mixed in.
+        The notice's "(2 attempts, last failure: unknown)" signature is the
+        tell: the walk succeeded on its first retry, so the reason was never
+        set, and the text-less answer was backfilled with the notice."""
+        lib, plugin = mp
+        logger = self._make_logger(lib, plugin)
+        credits = "The account behind this API key doesn't have enough credits. Please top up."
+        events = self._anthropic_events("Could not process", credits)
+        tool_resp = litellm.ModelResponse(
+            choices=[
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "get_weather", "arguments": '{"city": "Paris"}'},
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+            usage={"prompt_tokens": 3, "completion_tokens": 2},
+        )
+        calls = self._fake_router_acompletion(monkeypatch, logger, [tool_resp])
+
+        async def stream():
+            for e in events:
+                yield e
+
+        request_data = {
+            "model": "lite-llm/complexity",
+            "messages": [{"role": "user", "content": "hi"}],
+            "litellm_metadata": {"model_group": "pollinations/community/x"},
+        }
+
+        async def run():
+            out = []
+            async for chunk in logger.async_post_call_streaming_iterator_hook(None, stream(), request_data):
+                out.append(chunk)
+            return out
+
+        out = asyncio.run(run())
+        assert calls["n"] == 1
+        flat = "".join(plugin._event_text(c) for c in out)
+        assert "every available model was tried" not in flat
+        assert "enough credits" not in flat
+        tool_blocks = [
+            e.get("content_block", {})
+            for c in out
+            for e in plugin._chunk_events(c)
+            if e.get("type") == "content_block_start" and e.get("content_block", {}).get("type") == "tool_use"
+        ]
+        assert [b.get("name") for b in tool_blocks] == ["get_weather"]
+
+    def test_walk_context_error_learns_window_without_persistent_failure(self, mp, monkeypatch):
+        lib, plugin = mp
+        logger = self._make_logger(lib, plugin)
+        credits = "The account behind this API key doesn't have enough credits. Please top up."
+        events = self._anthropic_events("Could not process", credits)
+        good_resp = litellm.ModelResponse(
+            choices=[{"message": {"role": "assistant", "content": "Hello!"}, "finish_reason": "stop"}],
+            usage={"prompt_tokens": 3, "completion_tokens": 2},
+        )
+        calls = {"n": 0}
+
+        async def flaky_then_good(retry_data):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise litellm.ContextWindowExceededError(
+                    message="ContextWindowExceededError: nim - Invalid request",
+                    model="pollinations/community/y",
+                    llm_provider="nim",
+                )
+            return good_resp
+
+        monkeypatch.setattr(logger, "_router_acompletion", flaky_then_good)
+
+        async def stream():
+            for e in events:
+                yield e
+
+        request_data = {
+            "model": "lite-llm/complexity",
+            "messages": [{"role": "user", "content": "x" * 4000}],
+            "litellm_metadata": {"model_group": "pollinations/community/x"},
+        }
+
+        async def run():
+            out = []
+            async for chunk in logger.async_post_call_streaming_iterator_hook(None, stream(), request_data):
+                out.append(chunk)
+            return out
+
+        out = asyncio.run(run())
+        flat = "".join(plugin._event_text(c) for c in out)
+        assert "Hello!" in flat
+        # The context-overflowing model was excluded for this request and
+        # taught the fit filter (4000 chars -> 1000-token estimate -> 999),
+        # but recorded no persistent failure: an overflow proves the
+        # window, not the model's health.
+        assert "pollinations/community/y" in request_data["litellm_metadata"]["model_picker_exclude"]
+        assert logger.stats.learned_window("pollinations/community/y") == 999
+        assert logger.stats.derived("pollinations/community/y").failures == 0
+        # ...while the soft failure that started the walk still recorded.
+        assert logger.stats.derived("pollinations/community/x").soft_failures == 1
 
     def test_streaming_clean_response_passes_through_untouched(self, mp, monkeypatch):
         lib, plugin = mp
@@ -1003,7 +1479,7 @@ class TestSoftFailureRetry:
         lib, test_plugin, cfg, stats, manager = fresh
 
         async def fake_snapshot(ml=None):
-            return snapshot_with(lib, candidates_from_fixture(lib))
+            return snapshot_with(lib, free_plugin_pool(lib))
 
         monkeypatch.setattr(manager, "get_snapshot", fake_snapshot)
         metadata = {
@@ -1013,6 +1489,275 @@ class TestSoftFailureRetry:
         context = make_context(lib, ["lite-llm/default"], metadata=metadata)
         result = asyncio.run(test_plugin.run(context))
         assert result.candidate_models[0] != "pollinations/community/vendouple/deepseek-v4-pro"
+
+
+# ---------------------------------------------------------------------------
+# Thinking-only retry (a turn that would end on thinking alone is retried)
+# ---------------------------------------------------------------------------
+
+
+class TestThinkingOnlyRetry:
+    """A completed response that is thinking-only on a turn-ending stop
+    reason must retry with the model excluded — but ONLY then: thinking
+    mid-stream, thinking beside text/tool calls, and thinking-only on a
+    turn-continuing stop reason must all pass through untouched."""
+
+    @staticmethod
+    def _thinking_stream(stop_reason="end_turn"):
+        """Realistic anthropic stream: thinking block, then the close."""
+        return [
+            {"type": "message_start", "message": {"type": "message", "role": "assistant", "model": "m"}},
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "First, call functions.Bash"}},
+            {"type": "content_block_stop", "index": 0},
+            {"type": "message_delta", "delta": {"stop_reason": stop_reason, "stop_sequence": None}, "usage": {"output_tokens": 10}},
+            {"type": "message_stop"},
+        ]
+
+    @staticmethod
+    def _anthropic_response(blocks, stop_reason="end_turn"):
+        response = {"id": "msg_test", "type": "message", "role": "assistant", "model": "m", "content": blocks}
+        if stop_reason is not None:
+            response["stop_reason"] = stop_reason
+        return response
+
+    def test_detector_anthropic_shapes(self, mp):
+        lib, plugin = mp
+        thinking = {"type": "thinking", "thinking": "plan"}
+        text = {"type": "text", "text": "answer"}
+        empty_text = {"type": "text", "text": ""}
+        tool_use = {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {}}
+        redacted = {"type": "redacted_thinking", "data": "opaque"}
+        assert plugin._response_is_thinking_only(self._anthropic_response([thinking]))
+        assert plugin._response_is_thinking_only(self._anthropic_response([thinking, empty_text]))
+        assert plugin._response_is_thinking_only(self._anthropic_response([redacted]))
+        assert plugin._response_is_thinking_only(self._anthropic_response([thinking], stop_reason="max_tokens"))
+        assert plugin._response_is_thinking_only(self._anthropic_response([thinking], stop_reason=None))
+        assert not plugin._response_is_thinking_only(self._anthropic_response([thinking, text]))
+        assert not plugin._response_is_thinking_only(self._anthropic_response([thinking, tool_use]))
+        assert not plugin._response_is_thinking_only(self._anthropic_response([text]))
+        assert not plugin._response_is_thinking_only(self._anthropic_response([]))
+        # a turn-continuing stop reason never fires, even with nothing actionable
+        assert not plugin._response_is_thinking_only(self._anthropic_response([thinking], stop_reason="tool_use"))
+        assert not plugin._response_is_thinking_only(self._anthropic_response([thinking], stop_reason="refusal"))
+
+    def test_detector_openai_shapes(self, mp):
+        lib, plugin = mp
+
+        def msg(reasoning=None, content=None, tool_calls=None):
+            return types.SimpleNamespace(reasoning_content=reasoning, content=content, tool_calls=tool_calls)
+
+        def resp(message, finish):
+            return types.SimpleNamespace(
+                model="pollinations/community/x",
+                choices=[types.SimpleNamespace(message=message, finish_reason=finish)],
+            )
+
+        assert plugin._response_is_thinking_only(resp(msg(reasoning="plan"), "stop"))
+        assert plugin._response_is_thinking_only(resp(msg(reasoning="plan"), "length"))
+        assert not plugin._response_is_thinking_only(resp(msg(reasoning="plan", content="hi"), "stop"))
+        assert not plugin._response_is_thinking_only(
+            resp(msg(reasoning="plan", tool_calls=[{"id": "1", "function": {"name": "Bash"}}]), "tool_calls")
+        )
+        assert not plugin._response_is_thinking_only(resp(msg(), "stop"))
+        # dict-shaped OpenAI responses behave the same
+        assert plugin._response_is_thinking_only(
+            {"choices": [{"message": {"role": "assistant", "content": None, "reasoning_content": "plan"}, "finish_reason": "stop"}]}
+        )
+        assert not plugin._response_is_thinking_only(
+            {"choices": [{"message": {"role": "assistant", "content": None, "reasoning_content": "plan"}, "finish_reason": "tool_calls"}]}
+        )
+        assert not plugin._response_is_thinking_only({"choices": [{"message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}]})
+
+    def test_streaming_thinking_only_retries_with_exclusion(self, mp, monkeypatch):
+        lib, plugin = mp
+        logger = TestSoftFailureRetry._make_logger(lib, plugin)
+        good = litellm.ModelResponse(
+            choices=[{"message": {"role": "assistant", "content": "Here is the listing:"}, "finish_reason": "stop"}],
+            usage={"prompt_tokens": 3, "completion_tokens": 4},
+        )
+        calls = TestSoftFailureRetry._fake_router_acompletion(monkeypatch, logger, [good])
+        events = self._thinking_stream()
+        request_data = {
+            "model": "lite-llm/complexity",
+            "messages": [{"role": "user", "content": "hi"}],
+            "litellm_metadata": {"model_group": "pollinations/community/x"},
+        }
+
+        async def stream():
+            for e in events:
+                yield e
+
+        async def run():
+            out = []
+            async for chunk in logger.async_post_call_streaming_iterator_hook(None, stream(), request_data):
+                out.append(chunk)
+            return out
+
+        out = asyncio.run(run())
+        assert calls["n"] == 1
+        assert "pollinations/community/x" in request_data["litellm_metadata"]["model_picker_exclude"]
+        flat = "".join(plugin._event_text(c) for c in out)
+        assert "Here is the listing:" in flat  # the retry's answer reaches the client
+        assert "First, call functions.Bash" in flat  # already-delivered thinking stays
+        types_seen = [e.get("type") for c in out for e in plugin._chunk_events(c)]
+        assert types_seen.count("message_delta") == 1  # the original end_turn close was dropped
+        assert types_seen.count("message_stop") == 1
+        assert types_seen[-2:] == ["message_delta", "message_stop"]
+        # ERROR, not SOFT: one thinking-only turn must not instantly demote
+        derived = logger.stats.derived("pollinations/community/x")
+        assert derived.n_obs >= 1
+        assert derived.soft_failures == 0
+
+    def test_streaming_thinking_with_text_passes_through(self, mp, monkeypatch):
+        lib, plugin = mp
+        logger = TestSoftFailureRetry._make_logger(lib, plugin)
+        calls = TestSoftFailureRetry._fake_router_acompletion(monkeypatch, logger, [])
+        events = [
+            {"type": "message_start", "message": {"type": "message", "role": "assistant", "model": "m"}},
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "plan"}},
+            {"type": "content_block_stop", "index": 0},
+            {"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}},
+            {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "answer"}},
+            {"type": "content_block_stop", "index": 1},
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None}, "usage": {"output_tokens": 5}},
+            {"type": "message_stop"},
+        ]
+
+        async def stream():
+            for e in events:
+                yield e
+
+        async def run():
+            out = []
+            async for chunk in logger.async_post_call_streaming_iterator_hook(None, stream(), {"model": "m", "messages": []}):
+                out.append(chunk)
+            return out
+
+        assert asyncio.run(run()) == events
+        assert calls["n"] == 0
+
+    def test_streaming_thinking_only_on_tool_use_reason_passes_through(self, mp, monkeypatch):
+        lib, plugin = mp
+        logger = TestSoftFailureRetry._make_logger(lib, plugin)
+        calls = TestSoftFailureRetry._fake_router_acompletion(monkeypatch, logger, [])
+        events = self._thinking_stream(stop_reason="tool_use")
+
+        async def stream():
+            for e in events:
+                yield e
+
+        async def run():
+            out = []
+            async for chunk in logger.async_post_call_streaming_iterator_hook(None, stream(), {"model": "m", "messages": []}):
+                out.append(chunk)
+            return out
+
+        assert asyncio.run(run()) == events
+        assert calls["n"] == 0
+
+    def test_streaming_thinking_with_tool_use_passes_through(self, mp, monkeypatch):
+        lib, plugin = mp
+        logger = TestSoftFailureRetry._make_logger(lib, plugin)
+        calls = TestSoftFailureRetry._fake_router_acompletion(monkeypatch, logger, [])
+        events = [
+            {"type": "message_start", "message": {"type": "message", "role": "assistant", "model": "m"}},
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "plan"}},
+            {"type": "content_block_stop", "index": 0},
+            {"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {}}},
+            {"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": "{}"}},
+            {"type": "content_block_stop", "index": 1},
+            {"type": "message_delta", "delta": {"stop_reason": "tool_use", "stop_sequence": None}, "usage": {"output_tokens": 5}},
+            {"type": "message_stop"},
+        ]
+
+        async def stream():
+            for e in events:
+                yield e
+
+        async def run():
+            out = []
+            async for chunk in logger.async_post_call_streaming_iterator_hook(None, stream(), {"model": "m", "messages": []}):
+                out.append(chunk)
+            return out
+
+        assert asyncio.run(run()) == events
+        assert calls["n"] == 0
+
+    def test_non_streaming_thinking_only_swapped_for_retry(self, mp, monkeypatch):
+        lib, plugin = mp
+        logger = TestSoftFailureRetry._make_logger(lib, plugin)
+        good = litellm.ModelResponse(choices=[{"message": {"role": "assistant", "content": "OK"}, "finish_reason": "stop"}])
+        calls = TestSoftFailureRetry._fake_router_acompletion(monkeypatch, logger, [good])
+        data = {
+            "model": "lite-llm/complexity",
+            "messages": [{"role": "user", "content": "hi"}],
+            "litellm_metadata": {"model_group": "pollinations/community/x"},
+        }
+        result = asyncio.run(
+            logger.async_post_call_success_hook(
+                None, data, self._anthropic_response([{"type": "thinking", "thinking": "plan"}])
+            )
+        )
+        assert calls["n"] == 1
+        assert "pollinations/community/x" in data["litellm_metadata"]["model_picker_exclude"]
+        assert result["content"] == [{"type": "text", "text": "OK"}]
+        # and a normal text response is untouched
+        text_resp = self._anthropic_response([{"type": "text", "text": "fine"}])
+        assert asyncio.run(logger.async_post_call_success_hook(None, data, text_resp)) is text_resp
+
+    def test_success_logger_records_thinking_only_as_error_not_success(self, mp):
+        lib, plugin = mp
+        logger = TestSoftFailureRetry._make_logger(lib, plugin)
+        kwargs = {"litellm_metadata": {"model_group": "pollinations/community/x"}}
+        now = datetime.now()
+        asyncio.run(
+            logger.async_log_success_event(
+                kwargs, self._anthropic_response([{"type": "thinking", "thinking": "plan"}]), now, now
+            )
+        )
+        derived = logger.stats.derived("pollinations/community/x")
+        assert derived.n_obs == 1
+        assert derived.soft_failures == 0
+        assert derived.last_obs_was_failure is True
+        assert derived.failures == pytest.approx(1.0)
+
+    def test_walk_continues_past_thinking_only_retry(self, mp, monkeypatch):
+        lib, plugin = mp
+        logger = TestSoftFailureRetry._make_logger(lib, plugin)
+        thinking_y = types.SimpleNamespace(
+            model="pollinations/community/y",
+            choices=[
+                types.SimpleNamespace(
+                    message=types.SimpleNamespace(reasoning_content="plan", content=None, tool_calls=None),
+                    finish_reason="stop",
+                )
+            ],
+        )
+        good = litellm.ModelResponse(choices=[{"message": {"role": "assistant", "content": "Recovered"}, "finish_reason": "stop"}])
+        calls = TestSoftFailureRetry._fake_router_acompletion(monkeypatch, logger, [thinking_y, good])
+        request_data = {
+            "model": "lite-llm/complexity",
+            "messages": [{"role": "user", "content": "hi"}],
+            "litellm_metadata": {"model_group": "pollinations/community/x"},
+        }
+        result, summary = asyncio.run(
+            logger._retry_until_clean(
+                request_data,
+                "pollinations/community/x",
+                first_failure_class=lib.FAILURE_CLASS_ERROR,
+                first_failure_label="thinking-only response",
+            )
+        )
+        assert result is good
+        assert calls["n"] == 2
+        excluded = request_data["litellm_metadata"]["model_picker_exclude"]
+        assert "pollinations/community/x" in excluded
+        assert "pollinations/community/y" in excluded
+        assert logger.stats.derived("pollinations/community/x").soft_failures == 0
+        assert logger.stats.derived("pollinations/community/y").soft_failures == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1264,8 +2009,9 @@ class TestAnthropicRetryEntry:
 
 
 class TestRubricRanking:
-    def test_default_tier_favored_first_then_health_then_context(self, fresh):
+    def test_default_tier_health_filtered_capability_pick(self, fresh):
         lib, _, cfg, stats, _ = fresh
+        cfg.health_top_percent = 100.0
         favored_big = favored_candidate(lib, "z-ai/glm-5.3", ctx=1048576)
         favored_small = favored_candidate(lib, "nvidia/nemotron-3-super", provider="nvidia_nim", ctx=262144)
         strong_metric = metric_candidate(lib, "pollinations/openai/gpt-5.4-nano", 0.9997, 87885)
@@ -1274,7 +2020,12 @@ class TestRubricRanking:
             [weak_metric, favored_small, strong_metric, favored_big], lib.TIER_DEFAULT, stats, cfg
         )
         order = [r.candidate.name for r in ranked]
-        # chance first (favored, big context tiebreak), then metric by health
+        # Default tier no longer ranks known-strong health first: with the
+        # whole pool in the cohort (top 100%), capability decides — the
+        # untried models win on context, then the metric models by health.
+        # (This replaces the old strong-first-then-untried-then-health order;
+        # see TestDefaultHealthFilteredCapabilityPick for the floor/top-%
+        # steps.)
         assert order == [
             "z-ai/glm-5.3",
             "nvidia/nemotron-3-super",
@@ -1300,19 +2051,31 @@ class TestRubricRanking:
         nim = favored_candidate(lib, "z-ai/glm-5.3", provider="nvidia_nim")
         llm7_fast = favored_candidate(lib, "fast", provider="llm7")
         ranked = lib.rank_candidates([llm7_fast, nim], lib.TIER_DEFAULT, stats, cfg)
-        # only llm7 loses the untried benefit-of-the-doubt; NIM keeps it
+        # Both untried groups now start at the same 0.5 prior, but only
+        # llm7 loses the favored class — the class tiebreak keeps NIM ahead
+        # on equal health.
         assert [r.candidate.name for r in ranked] == ["z-ai/glm-5.3", "fast"]
 
-    def test_think_tier_context_first_with_class_ties(self, fresh):
+    def test_ultra_think_tier_context_first_with_class_ties(self, fresh):
         lib, _, cfg, stats, _ = fresh
         favored_1m = favored_candidate(lib, "z-ai/glm-5.3", ctx=1048576)
         metric_1m = metric_candidate(lib, "pollinations/openai/gpt-6-luna", 0.9997, 87885, ctx=1048576)
         metric_small = metric_candidate(lib, "pollinations/openai/gpt-5.4-nano", 0.9997, 87885, ctx=400000)
         ranked = lib.rank_candidates([metric_small, metric_1m, favored_1m], lib.TIER_THINK, stats, cfg)
         order = [r.candidate.name for r in ranked]
-        # 1M models first; the favored one wins the context tie
-        assert order.index("z-ai/glm-5.3") < order.index("pollinations/openai/gpt-6-luna")
-        assert order[-1] == "pollinations/openai/gpt-5.4-nano"
+        # 1M models first; on equal context and equal benchmark (both 0.0
+        # here), demonstrated strong health beats being unmeasured.
+        assert order == [
+            "pollinations/openai/gpt-6-luna",
+            "z-ai/glm-5.3",
+            "pollinations/openai/gpt-5.4-nano",
+        ]
+        # But a higher benchmark still beats the health block: capability
+        # is prioritized immediately after context.
+        favored_1m.benchmark_score = 0.9
+        metric_1m.benchmark_score = 0.5
+        ranked = lib.rank_candidates([metric_1m, favored_1m], lib.TIER_THINK, stats, cfg)
+        assert ranked[0].candidate.name == "z-ai/glm-5.3"
 
     def test_failure_demotion_after_min_obs(self, fresh):
         lib, _, cfg, stats, _ = fresh
@@ -1332,12 +2095,15 @@ class TestRubricRanking:
         ranked2 = lib.rank_candidates([favored, strong_metric], lib.TIER_DEFAULT, stats, cfg, now=after_guard)
         assert ranked2[0].candidate.name == "pollinations/openai/gpt-5.4-nano"
         # once the failure window ages out entirely, the group is promoted back
+        # to untried (no longer KNOWN) — and at the 0.5 neutral prior it
+        # sits below the known-strong model, so promotion restores
+        # eligibility, not the top spot.
         ranked3 = lib.rank_candidates(
             [favored, strong_metric], lib.TIER_DEFAULT, stats, cfg, now=now + 5 * cfg.half_life_seconds
         )
         assert [r.candidate.name for r in ranked3] == [
-            "z-ai/glm-5.3",
             "pollinations/openai/gpt-5.4-nano",
+            "z-ai/glm-5.3",
         ]
 
     def test_perfect_small_sample_ranks_on_tracked_evidence(self, fresh):
@@ -1385,8 +2151,10 @@ class TestRubricRanking:
         lib, _, cfg, stats, _ = fresh
         # A latency-demoted model with a PERFECT success record vs a
         # mediocre metric-backed model: the floor holds it below while active,
-        # and once the stale TTFT events age out of the window it competes on
-        # evidence and wins.
+        # and once the stale TTFT events age out of the window the floor is
+        # lifted — but the model returns to untried at the neutral 0.5 prior
+        # (its perfect record aged out with the events), so it no longer
+        # retakes the top spot over demonstrated health.
         favored_slow = favored_candidate(lib, "z-ai/glm-5.3", ctx=1048576)
         mediocre_metric = metric_candidate(lib, "pollinations/degraded/model", 0.75, 20, ctx=1048576)
         base = time.time()
@@ -1400,14 +2168,15 @@ class TestRubricRanking:
             "z-ai/glm-5.3",
         ]
         # long after the slow window: events pruned, ttft_n=0, floor lifted —
-        # demotion stays sticky but the model ranks by its evidence (perfect
-        # record) and overtakes the mediocre metric-backed model.
+        # the model is eligible again at the 0.5 prior, but the mediocre
+        # metric-backed model (Wilson ~0.53) still outranks it. Fresh
+        # successes would be needed to climb back above demonstrated health.
         ranked_after = lib.rank_candidates(
             [favored_slow, mediocre_metric], lib.TIER_DEFAULT, stats, cfg, now=base + 5 * cfg.half_life_seconds
         )
         assert [r.candidate.name for r in ranked_after] == [
-            "z-ai/glm-5.3",
             "pollinations/degraded/model",
+            "z-ai/glm-5.3",
         ]
 
     def test_recency_guard_skip_and_restore(self, fresh):
@@ -1720,7 +2489,7 @@ class TestPlugin:
     @staticmethod
     def _fake_snapshot(monkeypatch, lib, manager):
         async def fake_snapshot(ml=None):
-            return snapshot_with(lib, candidates_from_fixture(lib))
+            return snapshot_with(lib, free_plugin_pool(lib))
 
         monkeypatch.setattr(manager, "get_snapshot", fake_snapshot)
 
@@ -1734,18 +2503,48 @@ class TestPlugin:
         # pick recorded in the shared metadata bucket for retry exclusion
         assert result.metadata["model_picker_picks"] == [result.candidate_models[0]]
 
-    def test_plugin_rewrites_think_tier_by_context(self, fresh, env_enabled, monkeypatch):
+    def test_plugin_rewrites_ultra_think_tier_by_context(self, fresh, env_enabled, monkeypatch):
         lib, test_plugin, cfg, stats, manager = fresh
         self._fake_snapshot(monkeypatch, lib, manager)
         context = make_context(lib, ["lite-llm/ultra-think"])
         result = asyncio.run(test_plugin.run(context))
-        # the 1M-context catalog models outrank 400k gpt-5.4-nano in think tiers
+        # the 1M-context catalog models outrank 400k gpt-5.4-nano in the ultra-think rubric
         assert result.candidate_models[0] in (
             "pollinations/openai/gpt-6-luna",
             "pollinations/z-ai/glm-5.3",
             "pollinations/deepseek/deepseek-v4-flash",
             "pollinations/community/vendouple/deepseek-v4-pro",
         )
+
+    def test_tier_detection(self, mp):
+        lib, plugin = mp
+        assert plugin.detect_tier(["lite-llm/default"]) == lib.TIER_DEFAULT
+        # COMPLEX (think) uses the default rubric; only REASONING
+        # (ultra-think) keeps the capability-first rubric.
+        assert plugin.detect_tier(["lite-llm/think"]) == lib.TIER_DEFAULT
+        assert plugin.detect_tier(["lite-llm/ultra-think"]) == lib.TIER_THINK
+        assert plugin.detect_tier(["lite-llm/webSearch"]) is None
+
+    def test_plugin_think_pool_picks_default_rubric_winner(self, fresh, env_enabled, monkeypatch):
+        lib, test_plugin, cfg, stats, manager = fresh
+        cfg.min_health = 0.3
+        cfg.health_top_percent = 100.0
+        healthy = metric_candidate(lib, "pollinations/openai/healthy", 0.9997, 87885, ctx=400000)
+        unhealthy_capable = metric_candidate(lib, "pollinations/openai/unhealthy", 0.3, 100, ctx=1048576)
+        unhealthy_capable.benchmark_score, unhealthy_capable.benchmarked = 0.9, True
+
+        async def fake_snapshot(ml=None):
+            return snapshot_with(lib, [healthy, unhealthy_capable])
+
+        monkeypatch.setattr(manager, "get_snapshot", fake_snapshot)
+        context = make_context(lib, ["lite-llm/think"])
+        result = asyncio.run(test_plugin.run(context))
+        # Think uses the default rubric, not ultra-think's capability-first
+        # one: the below-floor capable model is filtered out even though
+        # it has the larger context and higher benchmark, so the healthy
+        # model wins. (Under the old default rubric this same setup proved
+        # think used health blocks; the new rubric proves it via the floor.)
+        assert result.candidate_models == ["pollinations/openai/healthy"]
 
     def test_plugin_excludes_prior_picks_on_retry(self, fresh, env_enabled, monkeypatch):
         lib, test_plugin, cfg, stats, manager = fresh
@@ -1934,7 +2733,18 @@ class TestCatalogManager:
             raise RuntimeError("pollinations down")
 
         async def good_raw(url, api_key):
-            return json.loads((FIXTURES / "pollinations_models.json").read_text())
+            return {
+                "data": [
+                    {
+                        "id": "openai/gpt-6-luna",
+                        "input_modalities": ["text"],
+                        "output_modalities": ["text"],
+                        "supported_endpoints": ["/v1/chat/completions"],
+                        "health": {"status": "healthy", "success_rate": 99.97, "requests": 87885},
+                        "pricing": {"currency": "pollen"},
+                    }
+                ]
+            }
 
         monkeypatch.setattr("model_picker._fetch_json", good_raw)
         self._mock_other_providers(monkeypatch)
@@ -2006,32 +2816,45 @@ class TestConfigDeltas:
         )
         assert crc["plugins"] == ["model_picker_plugin.picker"]
 
-    def test_picker_config_drops_complexity_path_fallbacks(self):
+    def test_picker_config_fallback_net_for_nonretryable_errors(self):
+        """Picker tiers carry a last-resort fallback net — not the primary
+        path (retries + the picker walk are), but the only path for
+        non-retryable errors: a context_length 400 is not retried by
+        LiteLLM, never maps to ContextWindowExceededError when the
+        provider message is a bare "Invalid request", and with no fallback
+        entry surfaced to the client, which treats 400 as terminal (unlike
+        408s, which it retries). The 2026-10-25 session died exactly this
+        way. Lookup groups for a complexity-routed request start with the
+        tier, so the net is keyed by tier (plus complexity itself); targets
+        are concrete models because fallback attempts bypass the picker
+        plugin and the tier groups' own deployments are placeholders."""
         default, picker = self._configs()
-        removed_groups = {
-            "lite-llm/router",
-            "lite-llm/default",
-            "lite-llm/think",
-            "lite-llm/ultra-think",
-            "lite-llm/longContext",
-            "lite-llm/complexity",
-        }
+        picker_fb = {list(f)[0]: list(f.values())[0] for f in picker["router_settings"]["fallbacks"]}
+        assert {"lite-llm/webSearch", "lite-llm/image"} <= set(picker_fb)
+        net_groups = {"lite-llm/think", "lite-llm/ultra-think", "lite-llm/default", "lite-llm/complexity"}
+        assert net_groups <= set(picker_fb)
+        expected_chain = ["nvidia_nim/z-ai/glm-5.3", "nvidia_nim/stepfun-ai/step-5-preview"]
+        for group in net_groups:
+            assert picker_fb[group] == expected_chain
+        # the default config still carries complexity-path fallbacks (the
+        # beads side of this merge kept them); the picker net above is the
+        # last-resort replacement for the picker tiers, not a copy of them.
         default_fb = {list(f)[0] for f in default["router_settings"]["fallbacks"]}
-        picker_fb = {list(f)[0] for f in picker["router_settings"]["fallbacks"]}
-        assert removed_groups <= default_fb
-        assert not (removed_groups & picker_fb)
-        assert {"lite-llm/webSearch", "lite-llm/image"} <= picker_fb
-        # the removed static groups must not appear as fallback targets
-        removed_statics = {"nvidia/nemotron-3.5-lightning-30b-a3b", "minimaxai/minimax-m3.1-flash",
-                           "nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3",
-                           "z-ai/glm-5.3-flash"}
-        for entry in picker["router_settings"]["fallbacks"]:
-            assert not (set(entry[key]) & removed_statics) if (key := list(entry)[0]) else True
+        assert net_groups <= default_fb
         # every picker fallback target resolves through a wildcard or a kept group
         wildcard_prefixes = ("nvidia_nim/", "llm7/", "pollinations/", "gemini-")
         for entry in picker["router_settings"]["fallbacks"]:
             for target in entry[list(entry)[0]]:
                 assert target.startswith(wildcard_prefixes), target
+        # the old static tier-group targets must not reappear as fallbacks:
+        # the union of the pre-merge list and the current default config's
+        # static targets (brought in by the beads side of this merge).
+        removed_statics = {"minimax-m2.7", "z-ai/glm-5.3-flash", "nemotron-3-super:cloud",
+                           "nemotron-3-ultra:cloud", "nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3",
+                           "default", "fast", "nvidia/nemotron-3.5-lightning-30b-a3b",
+                           "minimaxai/minimax-m3.1-flash"}
+        for entry in picker["router_settings"]["fallbacks"]:
+            assert not (set(entry[list(entry)[0]]) & removed_statics)
 
     def test_picker_config_retry_settings(self):
         default, picker = self._configs()
@@ -2088,3 +2911,518 @@ class TestConfigDeltas:
             assert p[name] == expected, f"static entry drifted: {name}"
         # router settings beyond the documented deltas
         assert default["router_settings"]["allowed_fails"] == picker["router_settings"]["allowed_fails"]
+
+
+# ---------------------------------------------------------------------------
+# Persistent attribution + default-tier known-strong ranking
+# (model-picker-persistent-attribution-default-health)
+# ---------------------------------------------------------------------------
+
+
+class TestPersistentAttributionAndDefaultHealth:
+    def test_default_health_floor_then_capability(self, mp):
+        """Default tier: floor, then capability among the survivors.
+
+        The old order (demonstrated health > untried > known-weak) is
+        superseded: the weak model is floored out, and among the
+        floor-passing models the untried one wins on benchmark at equal
+        context. The old GLM-5.3 loop concern (untried beating healthy on
+        every request) is now bounded by the floor and the top-percent
+        cohort — and once the untried model has observations it competes
+        on tracked evidence, not on being new.
+        """
+        lib, _plugin = mp
+        cfg = lib.PickerConfig()
+        cfg.health_top_percent = 100.0
+        stats = lib.StatsRegistry()
+        untried = favored_candidate(lib, "nvidia_nim/z-ai/glm-5.3", ctx=100000)
+        untried.benchmark_score = 0.66
+        strong = metric_candidate(lib, "pollinations/openai/healthy", 0.9997, 87885, ctx=100000)
+        weak = metric_candidate(lib, "pollinations/openai/weak", 0.20, 1000, ctx=100000)
+        ranked = lib.rank_candidates(
+            [untried, strong, weak], lib.TIER_DEFAULT, stats, cfg, now=time.time()
+        )
+        assert [r.candidate.name for r in ranked] == [
+            "nvidia_nim/z-ai/glm-5.3",
+            "pollinations/openai/healthy",
+            "pollinations/openai/weak",
+        ]
+
+    def test_ultra_think_benchmark_then_known_health(self, mp):
+        """Ultra-think: context, then benchmark, then health blocks.
+
+        On equal context and equal benchmark, a model known to have good
+        health beats an unmeasured one (equally capable, so evidence
+        decides); a higher-benchmark unmeasured model still wins over a
+        lower-benchmark known-strong one; and an unmeasured model still
+        beats a known-weak one. Once the untried model has observations
+        it competes on tracked health, not on being new.
+        """
+        lib, _plugin = mp
+        cfg = lib.PickerConfig()
+        stats = lib.StatsRegistry()
+        untried = favored_candidate(lib, "nvidia_nim/z-ai/glm-5.3", ctx=100000)
+        strong = metric_candidate(lib, "pollinations/openai/healthy", 0.9997, 87885, ctx=100000)
+        weak = metric_candidate(lib, "pollinations/openai/weak", 0.20, 1000, ctx=100000)
+        # Higher benchmark wins even though the other model is known-strong.
+        untried.benchmark_score = 0.9
+        strong.benchmark_score = 0.5
+        ranked = lib.rank_candidates(
+            [untried, strong], lib.TIER_THINK, stats, cfg, now=time.time()
+        )
+        assert ranked[0].candidate.name == "nvidia_nim/z-ai/glm-5.3"
+        # Equal benchmark: known-strong health beats unmeasured.
+        untried.benchmark_score = 0.5
+        ranked = lib.rank_candidates(
+            [untried, strong], lib.TIER_THINK, stats, cfg, now=time.time()
+        )
+        assert ranked[0].candidate.name == "pollinations/openai/healthy"
+        # Equal benchmark: unmeasured still beats known-weak.
+        ranked = lib.rank_candidates(
+            [untried, weak], lib.TIER_THINK, stats, cfg, now=time.time()
+        )
+        assert ranked[0].candidate.name == "nvidia_nim/z-ai/glm-5.3"
+        # Three successes: tracked health is high (0.8, strong block), but
+        # the model now competes on evidence — the 0.999-healthy model
+        # wins on equal benchmark.
+        now = time.time()
+        for _ in range(3):
+            stats.record_success("nvidia_nim/z-ai/glm-5.3", 1.0, now=now)
+        ranked = lib.rank_candidates(
+            [untried, strong], lib.TIER_THINK, stats, cfg, now=now
+        )
+        assert ranked[0].candidate.name == "pollinations/openai/healthy"
+
+    def test_failed_nim_model_no_longer_repicked_first_on_next_turn(self, mp):
+        """The log scenario: GLM-5.3 times out three times, the next turn
+        (fresh attempt_excluded) must not put it first in default."""
+        lib, _plugin = mp
+        cfg = lib.PickerConfig()
+        stats = lib.StatsRegistry()
+        now = time.time()
+        for _ in range(3):
+            stats.record_failure("nvidia_nim/z-ai/glm-5.3", lib.FAILURE_CLASS_TIMEOUT, now=now)
+        untried = favored_candidate(lib, "nvidia_nim/z-ai/glm-5.3", ctx=100000)
+        strong = metric_candidate(lib, "pollinations/openai/healthy", 0.9997, 87885, ctx=100000)
+        # Past the 60s recency window, so this is the demotion, not the guard.
+        ranked = lib.rank_candidates(
+            [untried, strong], lib.TIER_DEFAULT, stats, cfg, now=now + 120
+        )
+        assert ranked[0].candidate.name == "pollinations/openai/healthy"
+        assert ranked[-1].candidate.name == "nvidia_nim/z-ai/glm-5.3"
+
+    def test_stats_survive_registry_restart(self, mp, tmp_path):
+        """StatsRegistry with a path reloads its events in a new instance —
+        a LiteLLM restart must not reset a model to untried."""
+        lib, _plugin = mp
+        path = str(tmp_path / "stats.json")
+        first = lib.StatsRegistry(path=path)
+        now = time.time()
+        first.record_failure("nvidia_nim/z-ai/glm-5.3", lib.FAILURE_CLASS_TIMEOUT, now=now)
+        first.record_success("pollinations/openai/healthy", 1.2, now=now)
+        second = lib.StatsRegistry(path=path)
+        assert second.derived("nvidia_nim/z-ai/glm-5.3", now=now).n_obs == 1
+        assert second.derived("nvidia_nim/z-ai/glm-5.3", now=now).last_obs_was_failure
+        assert second.derived("pollinations/openai/healthy", now=now).n_obs == 1
+        # Corrupt file: fail-soft to empty stats, never raise.
+        (tmp_path / "stats.json").write_text("{not json")
+        third = lib.StatsRegistry(path=path)
+        assert third.derived("nvidia_nim/z-ai/glm-5.3", now=now).n_obs == 0
+
+    def test_event_group_ambiguous_bare_id_is_not_guessed(self, mp, fresh):
+        """A bare id present under two providers must not be credited to
+        pollinations, and a wildcard name must not be recorded at all."""
+        lib, plugin = mp
+        _lib, _test_plugin, _cfg, stats, manager = fresh
+        manager._snapshot = lib.CatalogSnapshot(
+            candidates=[
+                metric_candidate(lib, "pollinations/z-ai/glm-5.3", 0.99, 100),
+                favored_candidate(lib, "nvidia_nim/z-ai/glm-5.3", ctx=100000),
+            ]
+        )
+        logger = plugin.ModelPickerStatsLogger(stats=stats, manager=manager)
+        assert logger._event_group({"litellm_metadata": {"deployment_model_name": "z-ai/glm-5.3"}}) == ""
+        assert logger._event_group({"litellm_metadata": {"deployment_model_name": "nvidia_nim/*"}}) == ""
+        assert (
+            logger._event_group({"litellm_metadata": {"deployment_model_name": "nvidia_nim/z-ai/glm-5.3"}})
+            == "nvidia_nim/z-ai/glm-5.3"
+        )
+
+    def test_failed_group_uses_resolved_model_not_wildcard(self, mp, fresh):
+        """Streaming-hook attribution: the resolved model from the stream's
+        call details wins over the wildcard deployment name."""
+        lib, plugin = mp
+        _lib, _test_plugin, _cfg, stats, manager = fresh
+        manager._snapshot = lib.CatalogSnapshot(
+            candidates=[favored_candidate(lib, "nvidia_nim/z-ai/glm-5.3", ctx=100000)]
+        )
+        logger = plugin.ModelPickerStatsLogger(stats=stats, manager=manager)
+        response = types.SimpleNamespace(
+            logging_obj=types.SimpleNamespace(
+                model_call_details={"model": "nvidia_nim/z-ai/glm-5.3"}
+            )
+        )
+        request_data = {
+            "model": "lite-llm/complexity",
+            "messages": [{"role": "user", "content": "hi"}],
+            "litellm_metadata": {"model_group": "nvidia_nim/*"},
+        }
+        assert logger._failed_group(request_data, response) == "nvidia_nim/z-ai/glm-5.3"
+
+
+# ---------------------------------------------------------------------------
+# Free-only selection
+# ---------------------------------------------------------------------------
+
+
+class TestFreeOnlySelection:
+    def test_nim_models_are_free(self, mp):
+        lib, _ = mp
+        payload = {"data": [{"id": "z-ai/glm-5.3"}, {"id": "nvidia/embed-qa-4"}]}
+        parsed = {c.name: c for c in lib.parse_nim_models(payload)}
+        # chat model admitted and free; embedding family still filtered out
+        assert parsed["nvidia_nim/z-ai/glm-5.3"].free is True
+        assert "nvidia_nim/nvidia/embed-qa-4" not in parsed
+
+    def test_rank_candidates_never_picks_a_paid_model(self, mp):
+        lib, _ = mp
+        cfg = lib.PickerConfig()
+        stats = lib.StatsRegistry()
+        paid = lib.ModelCandidate(
+            name="pollinations/openai/paid",
+            provider="pollinations",
+            context_length=1000000,
+            metricless=False,
+            success_rate=1.0,
+            requests=100000,
+            free=False,
+        )
+        free = favored_candidate(lib, "nvidia_nim/z-ai/glm-5.3", ctx=100000)
+        ranked = lib.rank_candidates([paid, free], lib.TIER_THINK, stats, cfg, now=time.time())
+        assert [r.candidate.name for r in ranked] == ["nvidia_nim/z-ai/glm-5.3"]
+        # a pool of only paid models ranks to nothing, never to the paid model
+        assert lib.rank_candidates([paid], lib.TIER_DEFAULT, stats, cfg, now=time.time()) == []
+
+
+class TestContextOverflow:
+    """The 2026-10-25 session that died on a 400: minimax-m3.1-flash
+    served ~70 turns, then the request's real size (265,267 tokens)
+    exceeded its real window (262,144) while the picker believed the
+    estimate was 7,329 and the window was 1,048,576. Both measurements
+    were wrong in the direction that hides an overflow."""
+
+    def test_estimate_counts_nested_tool_result_text(self, mp):
+        lib, _ = mp
+        # Anthropic-shaped messages: the bulk of a coding session lives
+        # inside tool_result content blocks, nested one level deeper than
+        # top-level text parts.
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": "x" * 1000}]},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t1",
+                        "content": [{"type": "text", "text": "y" * 4000}],
+                    }
+                ],
+            },
+            # Image payloads are not prompt text and must not inflate it.
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "data": "z" * 10000},
+                    }
+                ],
+            },
+        ]
+        assert lib.estimate_tokens(messages) == (1000 + 4000) // 4
+
+    def test_estimate_counts_openai_string_content(self, mp):
+        lib, _ = mp
+        messages = [
+            {"role": "system", "content": "s" * 400},
+            {"role": "tool", "content": "t" * 1200},
+        ]
+        assert lib.estimate_tokens(messages) == (400 + 1200) // 4
+
+    def test_extract_context_limit_from_provider_body(self, mp):
+        lib, _ = mp
+
+        class FakeBadRequest(Exception):
+            def __init__(self):
+                super().__init__("Invalid request")
+                self.body = {
+                    "message": "Invalid request",
+                    "type": "Bad Request",
+                    "code": 400,
+                    "details": {"type": "context_length", "limit": 262144, "actual": 265267},
+                }
+
+        assert lib.extract_context_limit(FakeBadRequest()) == 262144
+        # Unrelated errors carry no limit, even with a body.
+        assert lib.extract_context_limit(ValueError("boom")) is None
+
+        class Chained(Exception):
+            pass
+
+        chained = Chained("outer")
+        chained.__cause__ = RuntimeError("context_length limit: 131072 exceeded")
+        assert lib.extract_context_limit(chained) == 131072
+
+    def test_learned_window_overrides_catalog_in_fit(self, mp):
+        lib, _ = mp
+        cfg = lib.PickerConfig()
+        stats = lib.StatsRegistry()
+        minimax = favored_candidate(lib, "nvidia_nim/minimaxai/minimax-m3.1-flash", ctx=1048576)
+        other = favored_candidate(lib, "nvidia_nim/z-ai/glm-5.3", ctx=1048576)
+        # Before learning, a 300k-token request fits both (catalog 1M).
+        ranked = lib.rank_candidates(
+            [minimax, other], lib.TIER_THINK, stats, cfg, estimate=300000, now=time.time()
+        )
+        assert len(ranked) == 2
+        # After one context_length 400 proves minimax's real window, the
+        # same request must not pick it — even though the catalog still
+        # claims 1,048,576.
+        stats.record_context_limit("nvidia_nim/minimaxai/minimax-m3.1-flash", 262144)
+        ranked = lib.rank_candidates(
+            [minimax, other], lib.TIER_THINK, stats, cfg, estimate=300000, now=time.time()
+        )
+        assert [r.candidate.name for r in ranked] == ["nvidia_nim/z-ai/glm-5.3"]
+        # A smaller request still fits the learned window: the model is
+        # not bricked, it is just excluded for oversized requests.
+        ranked = lib.rank_candidates(
+            [minimax, other], lib.TIER_THINK, stats, cfg, estimate=200000, now=time.time()
+        )
+        assert len(ranked) == 2
+
+    def test_fit_empty_keeps_all_instead_of_passing_through(self, mp):
+        lib, _ = mp
+        cfg = lib.PickerConfig()
+        stats = lib.StatsRegistry()
+        minimax = favored_candidate(lib, "nvidia_nim/minimaxai/minimax-m3.1-flash", ctx=1048576)
+        stats.record_context_limit("nvidia_nim/minimaxai/minimax-m3.1-flash", 262144)
+        # Nothing fits a 2M-token request; ranking must still return the
+        # candidate (best effort) rather than [] (which makes the plugin
+        # pass the tier pool through to the router's arbitrary selection).
+        ranked = lib.rank_candidates(
+            [minimax], lib.TIER_THINK, stats, cfg, estimate=2000000, now=time.time()
+        )
+        assert [r.candidate.name for r in ranked] == ["nvidia_nim/minimaxai/minimax-m3.1-flash"]
+
+    def test_learned_window_survives_registry_restart(self, mp, tmp_path):
+        lib, _ = mp
+        path = str(tmp_path / "stats.json")
+        first = lib.StatsRegistry(path=path)
+        first.record_context_limit("nvidia_nim/minimaxai/minimax-m3.1-flash", 262144)
+        second = lib.StatsRegistry(path=path)
+        assert second.learned_window("nvidia_nim/minimaxai/minimax-m3.1-flash") == 262144
+        # A later, smaller proven limit wins; a larger one never widens it.
+        second.record_context_limit("nvidia_nim/minimaxai/minimax-m3.1-flash", 300000)
+        assert second.learned_window("nvidia_nim/minimaxai/minimax-m3.1-flash") == 262144
+
+    def test_failure_event_learns_context_window(self, mp, fresh):
+        """The plugin's failure hook records the proven limit from the
+        mapped BadRequestError's provider body."""
+        lib, plugin = mp
+        _lib, _test_plugin, _cfg, stats, manager = fresh
+        logger = plugin.ModelPickerStatsLogger(stats=stats, manager=manager)
+        manager._snapshot = lib.CatalogSnapshot(
+            candidates=[favored_candidate(lib, "nvidia_nim/minimaxai/minimax-m3.1-flash", ctx=1048576)]
+        )
+
+        class FakeBadRequest(Exception):
+            def __init__(self):
+                super().__init__("Invalid request")
+                self.body = {
+                    "details": {"type": "context_length", "limit": 262144, "actual": 265267}
+                }
+
+        import asyncio
+
+        asyncio.run(
+            logger.async_log_failure_event(
+                {"litellm_metadata": {"model_group": "nvidia_nim/minimaxai/minimax-m3.1-flash"},
+                 "exception": FakeBadRequest()},
+                None,
+                None,
+                None,
+            )
+        )
+        assert stats.learned_window("nvidia_nim/minimaxai/minimax-m3.1-flash") == 262144
+
+    def test_extract_context_limit_openai_and_cerebras_messages(self, mp):
+        lib, _ = mp
+        # OpenAI's wording carries the limit in plain text, no details body.
+        assert (
+            lib.extract_context_limit(ValueError("This model's maximum context length is 262144 tokens")) == 262144
+        )
+        # Cerebras reports "Current length is X while limit is Y".
+        assert lib.extract_context_limit(ValueError("Current length is 300000 while limit is 262144")) == 262144
+        # A limit carried as a string in the details body still parses.
+        class StringLimit(Exception):
+            def __init__(self):
+                super().__init__("Invalid request")
+                self.body = {"details": {"type": "context_length_exceeded", "limit": "131072"}}
+
+        assert lib.extract_context_limit(StringLimit()) == 131072
+        # ...but a bare "Invalid request" with no context marker carries none.
+        assert lib.extract_context_limit(ValueError("Invalid request")) is None
+
+    def test_is_context_window_error(self, mp):
+        lib, _ = mp
+
+        class ContextWindowExceededError(Exception):
+            pass
+
+        assert lib.is_context_window_error(ContextWindowExceededError("boom"))
+        assert lib.is_context_window_error(ValueError("This model's maximum context length is 131072 tokens"))
+        assert lib.is_context_window_error(ValueError("exceed context limit")) is True
+        assert lib.is_context_window_error(ValueError("boom")) is False
+        assert lib.is_context_window_error(None) is False
+
+        class DetailsNoLimit(Exception):
+            def __init__(self):
+                super().__init__("Invalid request")
+                self.body = {"details": {"type": "context_length_exceeded"}}
+
+        # A context_length details body identifies the error even when the
+        # limit itself is missing (the estimate fallback then applies).
+        assert lib.is_context_window_error(DetailsNoLimit()) is True
+
+    def test_failure_event_learns_from_litellm_mapped_cwe(self, mp, fresh):
+        """A LiteLLM-mapped ContextWindowExceededError with no details body
+        still teaches the window, via the limit in its message text."""
+        lib, plugin = mp
+        _lib, _test_plugin, _cfg, stats, manager = fresh
+        logger = plugin.ModelPickerStatsLogger(stats=stats, manager=manager)
+        manager._snapshot = lib.CatalogSnapshot(
+            candidates=[favored_candidate(lib, "nvidia_nim/minimaxai/minimax-m3.1-flash", ctx=1048576)]
+        )
+        exc = litellm.ContextWindowExceededError(
+            message="ContextWindowExceededError: openai - This model's maximum context length is 131072 tokens",
+            model="nvidia_nim/minimaxai/minimax-m3.1-flash",
+            llm_provider="openai",
+        )
+        import asyncio
+
+        asyncio.run(
+            logger.async_log_failure_event(
+                {"litellm_metadata": {"model_group": "nvidia_nim/minimaxai/minimax-m3.1-flash"}, "exception": exc},
+                None,
+                None,
+                None,
+            )
+        )
+        assert stats.learned_window("nvidia_nim/minimaxai/minimax-m3.1-flash") == 131072
+
+    def test_failure_event_estimate_fallback_for_unparseable_cwe(self, mp, fresh):
+        """A context error carrying no limit anywhere falls back to the
+        request's own estimate: the model proved it cannot serve a request
+        of that size, so the learned window is one token below it — and a
+        context overflow records no persistent failure (it proves the
+        window, not the model's health)."""
+        lib, plugin = mp
+        _lib, _test_plugin, _cfg, stats, manager = fresh
+        logger = plugin.ModelPickerStatsLogger(stats=stats, manager=manager)
+        manager._snapshot = lib.CatalogSnapshot(
+            candidates=[favored_candidate(lib, "nvidia_nim/minimaxai/minimax-m3.1-flash", ctx=1048576)]
+        )
+        exc = litellm.ContextWindowExceededError(
+            message="ContextWindowExceededError: nim - Invalid request",
+            model="nvidia_nim/minimaxai/minimax-m3.1-flash",
+            llm_provider="nim",
+        )
+        import asyncio
+
+        asyncio.run(
+            logger.async_log_failure_event(
+                {
+                    "litellm_metadata": {"model_group": "nvidia_nim/minimaxai/minimax-m3.1-flash"},
+                    "exception": exc,
+                    "messages": [{"role": "user", "content": "x" * 4000}],
+                },
+                None,
+                None,
+                None,
+            )
+        )
+        # 4000 chars -> 1000-token estimate -> learned window 999: the
+        # same-size request is filtered next time, smaller ones still fit.
+        assert stats.learned_window("nvidia_nim/minimaxai/minimax-m3.1-flash") == 999
+        assert stats.derived("nvidia_nim/minimaxai/minimax-m3.1-flash").failures == 0
+
+    def test_learn_context_limit_ignores_untracked_group(self, mp, fresh):
+        lib, plugin = mp
+        _lib, _test_plugin, _cfg, stats, manager = fresh
+        logger = plugin.ModelPickerStatsLogger(stats=stats, manager=manager)
+        manager._snapshot = lib.CatalogSnapshot(
+            candidates=[favored_candidate(lib, "nvidia_nim/minimaxai/minimax-m3.1-flash", ctx=1048576)]
+        )
+        exc = litellm.ContextWindowExceededError(
+            message="ContextWindowExceededError: nim - Invalid request",
+            model="pollinations/unknown/model",
+            llm_provider="nim",
+        )
+        assert (
+            logger.learn_context_limit(
+                {
+                    "litellm_metadata": {"model_group": "pollinations/unknown/model"},
+                    "exception": exc,
+                    "messages": [{"role": "user", "content": "x" * 4000}],
+                },
+                exc,
+            )
+            is False
+        )
+        assert stats.learned_window("pollinations/unknown/model") is None
+        # ...and a non-context error never teaches a window, tracked or not.
+        assert (
+            logger.learn_context_limit(
+                {
+                    "litellm_metadata": {"model_group": "nvidia_nim/minimaxai/minimax-m3.1-flash"},
+                    "exception": ValueError("boom"),
+                    "messages": [{"role": "user", "content": "x" * 4000}],
+                },
+                ValueError("boom"),
+            )
+            is False
+        )
+        assert stats.learned_window("nvidia_nim/minimaxai/minimax-m3.1-flash") is None
+
+    def test_log_retry_patch_installed_and_learns_per_attempt(self, mp, fresh, monkeypatch):
+        """Router.log_retry is wrapped (per failed attempt, with the request
+        kwargs and the error) and the wrapper learns the window — the
+        observation point the failure callback cannot provide, since it
+        fires only once the whole call fails."""
+        lib, plugin = mp
+        _lib, _test_plugin, _cfg, stats, manager = fresh
+        from litellm.router import Router
+
+        assert getattr(Router.log_retry, "_model_picker_patch", None) is not None
+        logger = plugin.ModelPickerStatsLogger(stats=stats, manager=manager)
+        manager._snapshot = lib.CatalogSnapshot(
+            candidates=[favored_candidate(lib, "nvidia_nim/minimaxai/minimax-m3.1-flash", ctx=1048576)]
+        )
+        monkeypatch.setattr(plugin, "stats_logger", logger)
+
+        class FakeRouter:
+            def _deployment_params_base_model(self, deployment_id):
+                return None
+
+        exc = litellm.ContextWindowExceededError(
+            message="ContextWindowExceededError: nim - Invalid request",
+            model="nvidia_nim/minimaxai/minimax-m3.1-flash",
+            llm_provider="nim",
+        )
+        kwargs = {
+            "model": "nvidia_nim/minimaxai/minimax-m3.1-flash",
+            "messages": [{"role": "user", "content": "x" * 4000}],
+            "litellm_metadata": {"model_group": "nvidia_nim/minimaxai/minimax-m3.1-flash", "model_info": {}},
+        }
+        returned = Router.log_retry(FakeRouter(), kwargs=kwargs, e=exc)
+        assert returned is kwargs
+        assert stats.learned_window("nvidia_nim/minimaxai/minimax-m3.1-flash") == 999

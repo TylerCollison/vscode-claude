@@ -801,6 +801,20 @@ Each model group has a fallback chain defined in the YAML config, so if the prim
 
 **Model picker mode** (`MODEL_PICKER_ENABLED=true`): the proxy loads `/lite-llm/lite-llm-picker.yaml` instead of the default config. A routing plugin discovers free chat-capable models live from the Pollinations, NVIDIA NIM, and LLM7 catalogs, ranks them by published and self-tracked health (latency, failure and rate-limit history), and serves each request from the best-ranked candidate for its tier — retrying in-request through the next-ranked model when a provider fails or truncates mid-stream, so a partial answer is never returned as if complete.
 
+**Model picker ranking:** in picker mode the table's primary models above are just tier placeholders — the actual pick is ranked live per request. Before ranking, a candidate must be free (NVIDIA NIM models are treated as free, since their catalog carries no pricing), available, matched by the modelgrep gate, and fit the request's estimated size against its effective context window (the smaller of the catalog claim and any limit learned from a past context error — a provider-stated limit when the error carries one, otherwise one token below the failing request's estimate, learned on every retry attempt, not just when the whole call fails). Models that failed within the last 60 seconds, and models this request already tried, are skipped while alternatives remain. Learned health persists across proxy restarts, so a model that failed yesterday is still demoted today.
+
+| Tier (complexity) | Ranking order |
+|-------|---------------|
+| `lite-llm/default` (SIMPLE/MEDIUM) and `lite-llm/think` (COMPLEX) | Health-filtered capability pick: first drop models below a hard health floor (`MODEL_PICKER_MIN_HEALTH`, default 0.3), then keep only the top healthiest share (`MODEL_PICKER_HEALTH_TOP_PERCENT`, default 25), then pick the most capable survivor — highest modelgrep benchmark, then largest context window, then health, then name. Demoted models never enter the cohort; if the floor empties the pool it is ignored for that request. Capability among the healthy: a larger or higher-benchmark model wins once it clears the health bar. |
+| `lite-llm/ultra-think` (REASONING) | Largest context window first, then modelgrep benchmark, then the same health groups (known-strong, untried, known-weak, demoted), then health, then name. Capability first: the most capable model gets tried first — but on equal context and equal benchmark, demonstrated good health beats an unmeasured model. |
+
+Notes on the ranking:
+
+- An untried model logs `score=0.500` — that is the "unmeasured" placeholder, not measured health (the neutral prior, `MODEL_PICKER_UNTRIED_PRIOR_SCORE`, default 0.5). Its first observation moves it to tracked health, where it then competes on evidence. Because the placeholder sits below any demonstrated health above 0.5, known-healthier models outrank untried ones in the health sort and fill the top-percent cohort first; untried models still pass the default floor and can win on capability when the cohort reaches them.
+- Demotion is re-derived from a rolling window, so recovery is automatic: a single soft failure (a provider error inside a 200 response, e.g. an out-of-credits account) demotes immediately, while hard-failure rate and slow time-to-first-token demote after enough observations.
+- If a pick fails mid-request, the picker retries the next-ranked candidate in-request. Non-retryable errors (notably a 400 context overflow, which LiteLLM does not retry) fall through to the tier's last-resort fallback net instead of ending the session.
+- `lite-llm/webSearch` and `lite-llm/image` are not complexity tiers and keep their static Gemini fallbacks; the picker does not rank them.
+
 **Health checks:** run `litellm-health-check` inside the container to probe every configured model through the router and produce console, Markdown, and JSON health reports.
 
 #### Overriding the LiteLLM Config

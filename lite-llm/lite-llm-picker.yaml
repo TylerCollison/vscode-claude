@@ -14,10 +14,27 @@
 #      pollinations routing off one failure. The picker's recency guard and
 #      per-request retry exclusion take over cooldown's role.
 #   2. Adds the model_picker routing plugin to complexity_router_config.plugins.
-#   3. Removes the static fallbacks for the complexity-path groups (router,
-#      default, think, ultra-think, longContext, complexity) — failures retry
-#      through the picker's next-ranked candidates instead. webSearch/image
-#      fallbacks are kept (gemini path, untouched by the picker).
+#   3. Removes the default config's static fallbacks for the
+#      complexity-path groups as the primary failure path — failures
+#      retry through the picker's next-ranked candidates instead.
+#      webSearch/image fallbacks are kept (gemini path, untouched by the
+#      picker). But the picker tiers (think, ultra-think, default, plus
+#      complexity itself) DO carry a last-resort fallback net, added after
+#      a session died on a 400: non-retryable errors — notably a
+#      context_length BadRequestError, which LiteLLM does not retry and
+#      which NVIDIA reports as a bare "Invalid request", so it never maps
+#      to ContextWindowExceededError either — bypass the retry path
+#      entirely and go straight to fallbacks. With no fallback entry the
+#      error surfaced to the client, which treats a 400 as terminal
+#      (unlike 408s, which it retries). The net is keyed by the tier
+#      LiteLLM's fallback lookup consults first for complexity-routed
+#      requests. Targets are concrete models, not tier groups: fallback
+#      attempts bypass the picker plugin (it is attached to the
+#      complexity router only), and the tier groups' own deployments are
+#      placeholders, so a tier target would serve an arbitrary model. The
+#      targets are models that answered in the session that produced the
+#      400. This net is for errors the retry walk cannot reach; it does
+#      not replace ranking.
 #   4. Retry changes: the default config's all-zero retry_policy is dropped
 #      (it zeroes retries per exception type) and num_retries is set so failed
 #      picks retry in-request against the picker's next-ranked model. Fallbacks
@@ -202,13 +219,16 @@ search_tools:
       api_key: os.environ/EXA_API_KEY
 
 router_settings:
-  # Picker mode retries failed picks in-request; the plugin excludes its prior
-  # picks per request, so each retry lands on the next-ranked candidate. The
-  # budget spans the catalog-driven pool (the walk continues until a model
-  # works or none are left; most failures — 404s, credit gates — fail fast).
+  # Picker mode retries failed picks in-request for retryable errors; the
+  # plugin excludes its prior picks per request, so each retry lands on the
+  # next-ranked candidate. The budget spans the catalog-driven pool (the
+  # walk continues until a model works or none are left; most failures —
+  # 404s, credit gates — fail fast). Non-retryable errors (400s) skip
+  # retries entirely and go to the fallbacks below instead — that is why
+  # the tier entries exist even though the retry walk is the primary path.
   # The default config's all-zero retry_policy is deliberately NOT carried
   # over (it would zero retries per exception type).
   num_retries: 64
 
   allowed_fails: 1
-  fallbacks: [{"lite-llm/webSearch": ["gemini-3.1-flash-lite", "nvidia_nim/z-ai/glm-5.3-flash", "nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b", "llm7/GLM-5.3-Flash"]}, {"lite-llm/image": ["gemini-3.1-flash-lite", "nvidia_nim/z-ai/glm-5.3-flash"]}]
+  fallbacks: [{"lite-llm/webSearch": ["gemini-3.1-flash-lite", "nvidia_nim/z-ai/glm-5.3-flash", "nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b", "llm7/GLM-5.3-Flash"]}, {"lite-llm/image": ["gemini-3.1-flash-lite", "nvidia_nim/z-ai/glm-5.3-flash"]}, {"lite-llm/think": ["nvidia_nim/z-ai/glm-5.3", "nvidia_nim/stepfun-ai/step-5-preview"]}, {"lite-llm/ultra-think": ["nvidia_nim/z-ai/glm-5.3", "nvidia_nim/stepfun-ai/step-5-preview"]}, {"lite-llm/default": ["nvidia_nim/z-ai/glm-5.3", "nvidia_nim/stepfun-ai/step-5-preview"]}, {"lite-llm/complexity": ["nvidia_nim/z-ai/glm-5.3", "nvidia_nim/stepfun-ai/step-5-preview"]}]
