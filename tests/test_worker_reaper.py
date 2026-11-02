@@ -528,14 +528,21 @@ def test_worker_env_disables_nested_reaper():
         assert reaper_vals == ["WORKER_REAPER=false"], reaper_vals
 
 
-def test_worker_env_forces_killer():
-    # The inverse of the reaper flag: the worker killer must be forced ON by
-    # both dispatchers, so the worker self-shuts down when its MR/PR closes.
+def test_worker_env_killer_is_opt_in():
+    # The inverse of the reaper flag: the worker killer must be ON inside a
+    # worker so it self-shuts down when its MR/PR closes. The killer is
+    # opt-in at the dispatcher - only a parent that sets
+    # WORKER_KILLER_ENABLED=true gets WORKER_KILLER=true in the worker env.
     # An overridden (or inherited) parent WORKER_KILLER must not be able to
-    # turn it off.
-    for env in (bdd.compose_worker_env(["WORKER_KILLER=false"], "task/probe-1-x",
+    # turn it off, and without the opt-in no WORKER_KILLER leaks into the
+    # worker at all.
+    for env in (bdd.compose_worker_env(["WORKER_KILLER_ENABLED=true",
+                                        "WORKER_KILLER=false"],
+                                       "task/probe-1-x",
                                        "https://github.com/o/r.git"),
-                md.compose_worker_env(["WORKER_KILLER=false"], "feature/x",
+                md.compose_worker_env(["WORKER_KILLER_ENABLED=true",
+                                       "WORKER_KILLER=false"],
+                                      "feature/x",
                                       "https://github.com/o/r.git", "42")):
         killer_vals = [e for e in env if e.startswith("WORKER_KILLER=")]
         assert killer_vals == ["WORKER_KILLER=true"], killer_vals
