@@ -68,6 +68,7 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import sys
 from datetime import datetime
 
@@ -935,6 +936,292 @@ def _classify_stream_event(event: dict) -> tuple[bool, bool]:
     return False, False
 
 
+def _extract_request_tools(request_data: object) -> dict[str, object] | None:
+    """Declared tools from a request, as {name: input_schema-or-None}.
+
+    Anthropic shape: tools are dicts with name/input_schema. OpenAI shape:
+    tools are {"type": "function", "function": {"name", "parameters"}}.
+    Returns None when the request carries no tool list at all — callers
+    then validate wire shape only and never fail closed on a name they
+    cannot check. A present-but-empty list maps to {} (the request
+    declares zero tools, so any tool_use is unknown).
+    """
+    if not isinstance(request_data, dict):
+        return None
+    tools = request_data.get("tools")
+    if not isinstance(tools, list):
+        return None
+    out: dict[str, object] = {}
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        if "name" in tool or "input_schema" in tool:
+            name = tool.get("name")
+            if isinstance(name, str) and name:
+                out[name] = tool.get("input_schema")
+            continue
+        function = tool.get("function")
+        if isinstance(function, dict):
+            name = function.get("name")
+            if isinstance(name, str) and name:
+                out[name] = function.get("parameters")
+    return out
+
+
+def _validate_input_against_schema(value: object, schema: object) -> str | None:
+    """None when value satisfies schema; a violation reason otherwise.
+
+    Fail-open by design: an unparseable schema, a missing jsonschema
+    install, or any validator error means "cannot prove a violation",
+    never "invalid" — the validator must never break a request it cannot
+    judge. Only a definite ValidationError is a violation.
+    """
+    if schema is None or not isinstance(schema, (dict, bool)):
+        return None
+    try:
+        import jsonschema
+    except Exception:  # noqa: BLE001 — no validator available: fail open
+        return None
+    try:
+        jsonschema.validate(value, schema)
+    except jsonschema.ValidationError as e:
+        return f"input fails tool schema ({e.message[:120]})"
+    except Exception:  # noqa: BLE001 — bad schema etc.: fail open
+        return None
+    return None
+
+
+def _validate_tool_use(tool_id: object, name: object, input_value: object, tools: dict | None) -> str | None:
+    """Wire + declared-tool validation for one tool_use block.
+
+    Returns a violation reason, or None when the block is valid (or
+    cannot be proven invalid). Fail-closed only on definite violations:
+    missing/empty id, missing/empty name, non-dict input, unknown tool
+    name (when tools are known), input failing the tool's input_schema.
+    """
+    if not isinstance(tool_id, str) or not tool_id.strip():
+        return "tool_use block missing id"
+    if not isinstance(name, str) or not name.strip():
+        return "tool_use block missing name"
+    if not isinstance(input_value, dict):
+        return "tool_use input is not an object"
+    if tools is not None:
+        if name not in tools:
+            return f"unknown tool {name!r}"
+        reason = _validate_input_against_schema(input_value, tools[name])
+        if reason is not None:
+            return reason
+    return None
+
+
+
+
+
+
+_THINK_PREAMBLE_RE = re.compile(r"^\s*<think>.*?</think>\s*", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_think_preamble(text: str) -> str:
+    """Remove one leading literal <think>...</think> block from text.
+
+    The model sometimes prefaces a text-form tool call with its reasoning
+    wrapped in literal <think> tags (not a thinking content block, which is
+    excluded from text before this point). Only a leading block is stripped;
+    anything else in the text disqualifies it as a bare payload.
+    """
+    if not isinstance(text, str):
+        return ""
+    return _THINK_PREAMBLE_RE.sub("", text, count=1)
+
+
+def _parse_tool_call_arguments(arguments: object, tool_name: str) -> dict | None:
+    """Parsed arguments dict for one recovered call, or None.
+
+    Arguments arrive as a JSON string (OpenAI shape) or an object
+    (Anthropic/single-call shapes). String arguments go through LiteLLM's
+    own parser, which repairs truncated JSON the way the adapter does for
+    structured calls; anything still unparseable, or parsing to a non-dict,
+    is unrecoverable.
+    """
+    if isinstance(arguments, dict):
+        return arguments
+    if not isinstance(arguments, str):
+        return None
+    try:
+        from litellm.litellm_core_utils.prompt_templates.common_utils import parse_tool_call_arguments
+
+        parsed = parse_tool_call_arguments(arguments, tool_name=tool_name, context="model_picker text-payload recovery")
+    except ImportError:
+        try:
+            parsed = json.loads(arguments)
+        except Exception:  # noqa: BLE001 — unparseable arguments are unrecoverable
+            return None
+    except Exception:  # noqa: BLE001 — unparseable arguments are unrecoverable
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _parse_text_payload(text: object) -> list[dict] | None:
+    """Normalized tool calls when text is nothing but a tool-call payload.
+
+    Returns [{"id", "name", "input"}] or None. Shapes, after stripping an
+    optional leading <think> block:
+    - OpenAI message dict: {"tool_calls": [{id, type, function: {name, arguments}}]}
+    - OpenAI single call: {"name": str, "arguments": dict|str}
+    - Anthropic message dict: {"content": [{type: tool_use, id, name, input}]}
+    - Anthropic content list: [{type: tool_use, ...}]
+    Strict JSON only: a payload that does not parse (the first attempt's
+    mangled escaping) is not recoverable — it passes through as text.
+    Every call must be well-formed; one bad call disqualifies the whole
+    payload rather than executing a partial set.
+    """
+    if not isinstance(text, str):
+        return None
+    body = _strip_think_preamble(text).strip()
+    if not body or body[0] not in "{[":
+        return None
+    try:
+        obj = json.loads(body)
+    except Exception:  # noqa: BLE001 — unparseable text is not a payload
+        return None
+    calls: list[dict] = []
+    if isinstance(obj, dict) and isinstance(obj.get("tool_calls"), list) and obj["tool_calls"]:
+        for item in obj["tool_calls"]:
+            if not isinstance(item, dict):
+                return None
+            function = item.get("function")
+            if not isinstance(function, dict):
+                return None
+            name = function.get("name")
+            if not isinstance(name, str) or not name.strip():
+                return None
+            if "arguments" not in function:
+                return None
+            parsed = _parse_tool_call_arguments(function["arguments"], name)
+            if parsed is None:
+                return None
+            calls.append({"id": str(item.get("id") or ""), "name": name, "input": parsed})
+        return calls
+    if isinstance(obj, dict) and isinstance(obj.get("name"), str) and obj["name"].strip() and "arguments" in obj:
+        parsed = _parse_tool_call_arguments(obj["arguments"], obj["name"])
+        if parsed is None:
+            return None
+        return [{"id": "", "name": obj["name"], "input": parsed}]
+    content = obj.get("content") if isinstance(obj, dict) else obj
+    if isinstance(content, list) and content:
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                return None
+            name = block.get("name")
+            if not isinstance(name, str) or not name.strip():
+                return None
+            if not isinstance(block.get("input"), dict):
+                return None
+            calls.append({"id": str(block.get("id") or ""), "name": name, "input": block["input"]})
+        return calls
+    return None
+
+
+def _response_text_payload(response_obj: object) -> list[dict] | None:
+    """Normalized calls when a response's only content is a text payload.
+
+    Returns None when the response already carries real tool calls (nothing
+    to recover), or when its text is not solely a parseable payload.
+    """
+    if _response_tool_uses(response_obj):
+        return None
+    text: object = None
+    if isinstance(response_obj, dict):
+        content = response_obj.get("content")
+        if isinstance(content, list):
+            if any(isinstance(b, dict) and b.get("type") == "server_tool_use" for b in content):
+                return None
+            texts = [
+                b.get("text")
+                for b in content
+                if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str)
+            ]
+            text = "\n".join(texts)
+        else:
+            choices = response_obj.get("choices") or []
+            if choices and isinstance(choices[0], dict):
+                message = choices[0].get("message") or choices[0].get("delta") or {}
+                if isinstance(message, dict):
+                    if message.get("tool_calls"):
+                        return None
+                    text = message.get("content")
+    else:
+        for choice in getattr(response_obj, "choices", None) or []:
+            message = getattr(choice, "message", None) or getattr(choice, "delta", None)
+            if message is None:
+                continue
+            if getattr(message, "tool_calls", None):
+                return None
+            text = getattr(message, "content", None)
+            break
+    if not isinstance(text, str) or not text.strip():
+        return None
+    return _parse_text_payload(text)
+
+
+def _validated_recovered_calls(calls: list[dict] | None, tools: dict | None) -> list[dict] | None:
+    """Calls that pass the recovery gate, or None.
+
+    Recovery executes a call, so its bar is higher than detection: the
+    request must declare tools, every call must name a declared one and
+    satisfy its input_schema, and ids are synthesized where missing. Any
+    failure disqualifies the whole payload; what cannot be proven safe to
+    execute is left as text, not recovered.
+    """
+    if not tools or calls is None:
+        return None
+    for i, call in enumerate(calls):
+        if not call["id"]:
+            call["id"] = f"toolu_model_picker_{i}"
+        if _validate_tool_use(call["id"], call["name"], call["input"], tools) is not None:
+            return None
+    return calls
+
+
+def _openai_calls_to_anthropic_blocks(calls: list[dict]) -> list[dict]:
+    """Anthropic tool_use blocks for recovered calls.
+
+    Fed through LiteLLM's own translation — the exact path a structured
+    provider response takes — so a recovered call is indistinguishable from
+    one the provider returned structured. Falls back to hand-built blocks
+    when the adapter is unavailable.
+    """
+    try:
+        from litellm.llms.anthropic.pass_through.adapters.transformation import LiteLLMAnthropicMessagesAdapter
+        from litellm.types.utils import ChatCompletionMessageToolCall, Choices, Function, Message
+
+        choices = [
+            Choices(
+                index=0,
+                message=Message(
+                    role="assistant",
+                    content=None,
+                    tool_calls=[
+                        ChatCompletionMessageToolCall(
+                            id=c["id"],
+                            type="function",
+                            function=Function(name=c["name"], arguments=json.dumps(c["input"])),
+                        )
+                        for c in calls
+                    ],
+                ),
+                finish_reason="tool_calls",
+            )
+        ]
+        return LiteLLMAnthropicMessagesAdapter()._translate_openai_content_to_anthropic(choices)
+    except Exception:  # noqa: BLE001 — adapter unavailable: hand-build the same blocks
+        return [{"type": "tool_use", "id": c["id"], "name": c["name"], "input": c["input"]} for c in calls]
+
+
+
+
+
+
 class ModelPickerStatsLogger(CustomLogger):
     """Records per-group success/failure/TTFT observations for the picker."""
 
@@ -1255,6 +1542,102 @@ class ModelPickerStatsLogger(CustomLogger):
         except Exception:  # noqa: BLE001 — the walk must stay bounded regardless
             return _RETRY_WALK_SAFETY_CAP
 
+    def _try_recover_response(self, response_obj: object, request_data: object) -> object | None:
+        """Rewritten response when the model emitted a tool call as text.
+
+        A response whose only content is a valid JSON tool-call payload is
+        fed back through LiteLLM's own translation as if the provider had
+        returned it structured, so the intended call executes instead of the
+        turn stalling. Recovery is strict: every call must name a declared
+        tool and satisfy its input_schema, and the payload must parse —
+        anything else is left as text (no recovery, no retry). A recovered
+        response records no failure: the call executes and the turn
+        succeeds, so the exchange counts as a success through the normal
+        success path, not a failure.
+        """
+        calls = _validated_recovered_calls(_response_text_payload(response_obj), _extract_request_tools(request_data))
+        if calls is None:
+            return None
+        group = self._failed_group(request_data if isinstance(request_data, dict) else {}, response_obj)
+        logger.info(
+            "model_picker: recovered text-form tool call for %s (%s); executing instead of retrying",
+            group,
+            ", ".join(c["name"] for c in calls),
+        )
+        return self._rewrite_response_with_calls(response_obj, calls)
+
+    def _recoverable_text_calls(self, text: object, request_data: object, group: str) -> list[dict] | None:
+        """Validated recovered calls for stream-delivered text, or None.
+
+        Same strict gate as _try_recover_response, for the streaming hook,
+        where the text is already with the client and only the tool blocks
+        can still be appended as the tail.
+        """
+        calls = _validated_recovered_calls(_parse_text_payload(text), _extract_request_tools(request_data))
+        if calls is None:
+            return None
+        logger.info(
+            "model_picker: recovered text-form tool call for %s (%s); appending tool blocks to the stream",
+            group,
+            ", ".join(c["name"] for c in calls),
+        )
+        return calls
+
+    @staticmethod
+    def _rewrite_response_with_calls(response_obj: object, calls: list[dict]) -> object | None:
+        """Rewritten response carrying the recovered calls, preserving wire shape."""
+        if isinstance(response_obj, dict) and isinstance(response_obj.get("content"), list):
+            blocks = _openai_calls_to_anthropic_blocks(calls)
+            synth = {"content": blocks}
+            return ModelPickerStatsLogger._as_anthropic_dict(response_obj, synth, "")
+        if isinstance(response_obj, dict):
+            choices = response_obj.get("choices")
+            if choices and isinstance(choices[0], dict):
+                out = dict(response_obj)
+                new_choices = [dict(choices[0])]
+                new_choices[0]["message"] = {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": c["id"],
+                            "type": "function",
+                            "function": {"name": c["name"], "arguments": json.dumps(c["input"])},
+                        }
+                        for c in calls
+                    ],
+                }
+                new_choices[0]["finish_reason"] = "tool_calls"
+                out["choices"] = new_choices
+                return out
+            return None
+        choices = getattr(response_obj, "choices", None)
+        if choices:
+            try:
+                return litellm.ModelResponse(
+                    choices=[
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": c["id"],
+                                        "type": "function",
+                                        "function": {"name": c["name"], "arguments": json.dumps(c["input"])},
+                                    }
+                                    for c in calls
+                                ],
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
+                    model=getattr(response_obj, "model", "") or "",
+                )
+            except Exception:  # noqa: BLE001 — fall back to the unrewritten response
+                return None
+        return None
+
     async def _retry_until_clean(
         self,
         request_data: dict,
@@ -1268,10 +1651,12 @@ class ModelPickerStatsLogger(CustomLogger):
         available candidate failed. Each failed attempt is recorded and
         excluded from the next pick; soft failures (200-with-error-content),
         thinking-only responses, and hard exceptions all continue the walk.
-        A context-window exception records no persistent failure (None):
-        the retry hook already recorded the learned window, which is the
-        scoped response — a failure entry would wrongly demote a model
-        that is merely too small for this request. The model is still
+        A retry response that is itself a valid text-form tool-call payload
+        is recovered instead — the intended call executes as the walk's
+        answer. A context-window exception records no persistent failure
+        (None): the retry hook already recorded the learned window, which
+        is the scoped response — a failure entry would wrongly demote a
+        model that is merely too small for this request. The model is still
         excluded for this request. Termination: the walk is bounded by the
         candidate-pool size, and a re-offered already-failed model means
         the picker has nothing fresh left.
@@ -1344,6 +1729,11 @@ class ModelPickerStatsLogger(CustomLogger):
                 pending_class = model_picker.FAILURE_CLASS_ERROR
                 pending_label = "thinking-only response"
                 continue
+            recovered = self._try_recover_response(retry_resp, request_data)
+            if recovered is not None:
+                # the retry's intended call, salvaged instead of discarded:
+                # it executes as the turn's answer, no further model needed
+                return recovered, {"tried": attempts, "reason": last_reason, "groups": failed_groups}
             return retry_resp, {"tried": attempts, "reason": last_reason, "groups": failed_groups}
         return None, {"tried": attempts, "reason": last_reason, "groups": failed_groups}
 
@@ -1462,6 +1852,11 @@ class ModelPickerStatsLogger(CustomLogger):
         events are held back until the stream ends so a thinking-only close
         can be replaced by the retry's tail instead of ending the turn
         empty; clean streams yield them unchanged, in order, at the end.
+
+        A response whose only text is a valid JSON tool-call payload is
+        recovered instead of retried: its tool blocks are appended as the
+        tail (the raw JSON already delivered cannot be retracted, but the
+        call executes and the turn continues).
         """
         open_block: tuple[int, str] | None = None
         next_index = 0
@@ -1472,6 +1867,8 @@ class ModelPickerStatsLogger(CustomLogger):
         saw_any_chunk = False  # anything at all delivered
         saw_thinking = False  # a thinking/redacted_thinking block appeared
         saw_actionable = False  # non-blank text or a tool block appeared
+        saw_tool_use = False  # a tool_use/server_tool_use block appeared
+        delivered_text = ""  # text_delta text only (thinking excluded), for the recovery check
         stream_stop_reason: str | None = None  # from message_delta, when seen
         pending_terminal: list = []  # terminal-only chunks held for the end decision
         terminal_yielded = False  # a terminal event already went out (mixed chunk)
@@ -1517,6 +1914,12 @@ class ModelPickerStatsLogger(CustomLogger):
                             block = event.get("content_block") or {}
                             open_block = (int(event.get("index", 0) or 0), str(block.get("type") or "text"))
                             next_index = max(next_index, open_block[0] + 1)
+                            if _block_type(block) in ("tool_use", "server_tool_use"):
+                                saw_tool_use = True
+                        elif etype == "content_block_delta":
+                            delta = event.get("delta") or {}
+                            if isinstance(delta, dict) and delta.get("type") == "text_delta":
+                                delivered_text += str(delta.get("text") or "")
                         elif etype == "content_block_stop":
                             next_index = max(next_index, int(event.get("index", 0) or 0) + 1)
                             open_block = None
@@ -1561,6 +1964,19 @@ class ModelPickerStatsLogger(CustomLogger):
             soft_text = soft_text or "in-band error event"
 
         if soft_text is None:
+            # A response whose only text is a valid tool-call payload is
+            # recovered first: the intended call is appended as tool blocks
+            # (the raw JSON text already delivered cannot be retracted, but
+            # the turn continues with the call executing).
+            if not saw_tool_use and not terminal_yielded:
+                group = self._failed_group(request_data, response)
+                calls = self._recoverable_text_calls(delivered_text, request_data, group)
+                if calls is not None:
+                    blocks = _openai_calls_to_anthropic_blocks(calls)
+                    synth = {"content": blocks}
+                    for event in self._synthesize_tail_events(synth, open_block, next_index, ""):
+                        yield _sse_frame(event)
+                    return
             # Normal completion — the only place the thinking-only rule may
             # fire. The stream already delivered the thinking block (it
             # cannot be un-yielded), but the held terminal events have not
@@ -1627,7 +2043,15 @@ class ModelPickerStatsLogger(CustomLogger):
                 yield _sse_frame(event)
 
     async def async_post_call_success_hook(self, user_api_key_dict, data, response):
-        """Non-streaming twin: swap a soft-failed response for a retried one."""
+        """Non-streaming twin: swap a failed response for a retried one.
+
+        A response whose only content is a valid tool-call payload is
+        recovered first (rewritten through LiteLLM's translation, so the
+        intended call executes); soft failures and thinking-only responses
+        take the retry path: the original response never reaches the
+        client, the model is excluded for the request, and the walk
+        retries.
+        """
         import os as _os
 
         if _os.environ.get("MODEL_PICKER_DEBUG_HOOKS"):
@@ -1636,18 +2060,28 @@ class ModelPickerStatsLogger(CustomLogger):
                 type(response).__name__,
                 model_picker.extract_response_text(response)[:60],
             )
+        recovered = self._try_recover_response(response, data)
+        if recovered is not None:
+            return recovered
         text = model_picker.extract_response_text(response)
         thinking_only = _response_is_thinking_only(response)
-        if not thinking_only and (not text or not model_picker.is_soft_failure_response(text, response)):
+        if (
+            not thinking_only
+            and (not text or not model_picker.is_soft_failure_response(text, response))
+        ):
             return response
         anthropic_shape = isinstance(response, dict) and isinstance(response.get("content"), list)
+        if thinking_only:
+            first_failure_class, first_failure_label = model_picker.FAILURE_CLASS_ERROR, "thinking-only response"
+        else:
+            first_failure_class, first_failure_label = model_picker.FAILURE_CLASS_SOFT, "soft failure"
         try:
             group = self._failed_group(data if isinstance(data, dict) else {}, response)
             retry_resp, summary = await self._retry_until_clean(
                 data,
                 group,
-                first_failure_class=model_picker.FAILURE_CLASS_ERROR if thinking_only else model_picker.FAILURE_CLASS_SOFT,
-                first_failure_label="thinking-only response" if thinking_only else "soft failure",
+                first_failure_class=first_failure_class,
+                first_failure_label=first_failure_label,
             )
             if retry_resp is not None:
                 if anthropic_shape:
