@@ -158,6 +158,32 @@ def test_dispatch_swarm_sets_hostname_to_service_name():
     assert cmd[cmd.index("--hostname") + 1] == "dispatch-test", cmd
 
 
+def test_dispatch_swarm_passes_registry_auth():
+    # Workers inherit the parent's image via inspect_self() -> Config.Image.
+    # That image is published to a private registry (registry.home.com), so a
+    # swarm node that has not logged in cannot pull it and the worker fails
+    # to start with an image-pull error. --with-registry-auth forwards the
+    # caller's Docker credential config to the pulling node. It is a no-op
+    # when no credentials exist, and `docker run` (local dispatch) does not
+    # accept the flag - it already authenticates on pull.
+    with mock.patch.object(du, "run", return_value=(0, "", "")) as run_mock:
+        du.dispatch_swarm("dispatch-test", "img:1", [], 8000, 8443, "workspace-c4u")
+    cmd = run_mock.call_args[0][0]
+    assert cmd[:3] == ["docker", "service", "create"], cmd
+    assert "--with-registry-auth" in cmd, cmd
+
+
+def test_dispatch_local_does_not_pass_registry_auth():
+    # `docker run` has no --with-registry-auth flag and fails with "unknown
+    # flag" if it is passed. Local pulls use the local credential config
+    # automatically, so the flag must never reach the local path.
+    with mock.patch.object(du, "run", return_value=(0, "", "")) as run_mock:
+        du.dispatch_local("dispatch-test", "img:1", [], 8000, 8443, "workspace-c4u")
+    cmd = run_mock.call_args[0][0]
+    assert cmd[:3] == ["docker", "run", "-d"], cmd
+    assert "--with-registry-auth" not in cmd, cmd
+
+
 def test_dispatch_swarm_stamps_container_labels():
     # `docker service create --label` stamps the SERVICE object only; the
     # task containers never see it, so the worker killer's container-label
