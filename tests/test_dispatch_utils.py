@@ -160,12 +160,12 @@ def test_dispatch_swarm_sets_hostname_to_service_name():
 
 def test_dispatch_swarm_passes_registry_auth():
     # Workers inherit the parent's image via inspect_self() -> Config.Image.
-    # That image is published to a private registry (registry.home.com), so a
-    # swarm node that has not logged in cannot pull it and the worker fails
-    # to start with an image-pull error. --with-registry-auth forwards the
-    # caller's Docker credential config to the pulling node. It is a no-op
-    # when no credentials exist, and `docker run` (local dispatch) does not
-    # accept the flag - it already authenticates on pull.
+    # That image may be published to a private registry, so a swarm node
+    # that has not logged in cannot pull it and the worker fails to start
+    # with an image-pull error. --with-registry-auth forwards the caller's
+    # Docker credential config to the pulling node. It is a no-op when no
+    # credentials exist, and `docker run` (local dispatch) does not accept
+    # the flag - it already authenticates on pull.
     with mock.patch.object(du, "run", return_value=(0, "", "")) as run_mock:
         du.dispatch_swarm("dispatch-test", "img:1", [], 8000, 8443, "workspace-c4u")
     cmd = run_mock.call_args[0][0]
