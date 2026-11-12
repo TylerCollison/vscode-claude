@@ -510,6 +510,16 @@ def dispatch_swarm(worker, image, env, port, worker_port, issue_id, net=None, la
         "--hostname", worker,
         "--detach",
         "--restart-condition", "none",
+        # Forward the caller's Docker credential config to the node that
+        # pulls the image. Workers inherit the parent's image via
+        # inspect_self() -> Config.Image, which may live on a private
+        # registry. A swarm node that has not logged in cannot pull it
+        # and the worker fails to start with an image-pull error. A no-op
+        # when the registry has no credential entry (docker returns an
+        # empty auth config, not an error). `docker run` does not accept
+        # this flag - local dispatch already sends the local credential
+        # config on pull.
+        "--with-registry-auth",
     ]
     if labels:
         for k, v in labels.items():

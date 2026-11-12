@@ -24,6 +24,10 @@ clones the repo and creates/checks out the branch on boot).
 5. The worker (via `git-repo-setup.sh`) clones the repository and **automatically creates
    the branch off the default branch** (typically `main`) if it doesn't exist, or checks it out if it does.
 
+On a swarm manager the service is created with `docker service create --with-registry-auth`, so the
+caller's Docker credential config is forwarded to the node that pulls the worker image — see
+[Private registries](#private-registries) below.
+
 ## Environment variables
 
 | Variable | Default | Description |
@@ -67,6 +71,26 @@ This requires the same git credentials as the branch push (configured automatica
   `configure-beads.sh` bootstraps the Dolt task DB on startup regardless of `BEADS_ENABLED`
   (workers get `BEADS_ENABLED=false`; `bd init` itself still requires `BEADS_ENABLED=true`).
   The script tolerates a missing `bd` binary.
+
+## Private registries
+
+Workers are created from the parent container's own image (`inspect_self()` → `Config.Image`), so
+a worker can be asked to pull an image from a **private registry**.
+
+On a **swarm manager** the worker is a `docker service create` call, and the swarm node that pulls
+the image does not necessarily have the caller's credentials. The dispatcher therefore passes
+`--with-registry-auth`, which forwards the local Docker credential config to the pulling node.
+Without it, a node that has not logged in cannot pull the image and the worker fails to start with
+an image-pull error. The flag is a **no-op when the registry has no credential entry**, so
+unauthenticated environments are unaffected.
+
+`docker run` (local dispatch) has no such flag and needs none: the local daemon already uses the
+local credential config when it pulls.
+
+> **Prerequisite:** registry credentials must exist **inside the container** for the flag to have
+> any effect — run `docker login <your-registry>` in the container, or mount a populated
+> `~/.docker/config.json` (e.g. `- /path/to/docker-config:/root/.docker:ro`). The dispatcher does
+> not perform a registry login itself.
 
 ## Worker behavior
 

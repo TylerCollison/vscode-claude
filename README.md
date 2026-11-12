@@ -459,6 +459,10 @@ The worker inherits the full environment (API keys, providers) but sets `BEADS_D
 
 > **Prerequisite:** the parent container must be able to sync the Dolt DB to its origin (a credential helper / token), or to `BEADS_REMOTE` when set — otherwise the dispatcher logs a clear error and skips the task.
 
+**Private registries:** workers inherit the parent's image (`inspect_self()` → `Config.Image`), so a worker can be asked to pull an image from a private registry. On a swarm manager the worker is created with `docker service create --with-registry-auth`, which forwards the caller's Docker credential config to the node that pulls the image — without it a swarm node that has not logged in cannot pull the image and the worker fails to start with an image-pull error. The flag is a no-op when the registry has no credential entry, so unauthenticated environments are unaffected.
+
+> **Prerequisite:** registry credentials must exist **inside the container** for the flag to have any effect — run `docker login <your-registry>` in the container, or mount a populated `~/.docker/config.json` (e.g. `- /path/to/docker-config:/root/.docker:ro`). The dispatcher does not perform a registry login itself.
+
 ### Beads Sync (sync tasks from external providers)
 
 Periodically syncs tasks from external issue trackers into the local Beads database. Supports **Jira, GitHub, GitLab, Linear, and Dolt** (DoltHub/DoltLab). Runs `bd <provider> sync` for external providers or `bd dolt pull` for Dolt at a configurable interval. The sync runs as the `abc` user to access git credentials (gh/glab credential helpers).
@@ -598,6 +602,8 @@ environment:
 ```
 
 > **Prerequisites:** Docker socket mounted, `gh`/`glab` authenticated for the `abc` user, `GIT_REPO_URL` set, and the container must be able to push to the repo origin (for the dispatcher to sync branch state if needed).
+
+MR/PR workers are created through the same dispatch path as Beads Dispatch workers, so on a swarm manager they are also started with `docker service create --with-registry-auth` — see "Private registries" in the Beads Dispatch section for what that requires.
 
 ### Worker Reaper (remove dispatched workers once they have completed)
 
@@ -1172,6 +1178,7 @@ docker exec claude-dev curl -I http://localhost:3000
 - List dispatched workers: `docker service ls --filter label=beads.issue` (swarm) or `docker ps --filter label=beads.issue` (local)
 - If you committed but no worker appeared: check the log for "Commit trigger received" and any "could not push branch" error (the parent needs git push credentials for its origin)
 - Ensure `BEADS_DISPATCH=true`, the docker socket is mounted, and `GIT_REPO_URL` (or a workspace git origin) is set
+- If a swarm worker fails to start with an image-pull error, the swarm node cannot pull the worker image: registry credentials must exist inside the container (`docker login <your-registry>`, or a mounted `~/.docker/config.json`) — see "Private registries" above
 - **Manual trigger**: Run `docker exec claude-dev dispatch-beads` to manually trigger the dispatcher (requires daemon running)
 
 **Beads Sync Issues:**
