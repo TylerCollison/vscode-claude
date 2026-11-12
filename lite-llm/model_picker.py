@@ -105,6 +105,23 @@ MODELGREP_PAGE_LIMIT = 200
 MODEL_PICKER_MODELGREP_USER_AGENT = "vscode-claude-model-picker/1.0 (catalog enrichment)"
 DEFAULT_BENCHMARK_TTL_SECONDS = 3600.0
 
+# Keyless fallback enrichment, used only when modelgrep has no data at all
+# (cold or never fetched): OpenRouter gates the pool and supplies context
+# windows; HF OpenEvals and LMArena supply benchmark scores. modelgrep is
+# always preferred — the fallback never runs while its entries exist.
+OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+LMARENA_LEADERBOARD_URL = (
+    "https://raw.githubusercontent.com/lmarena/arena-catalog/main/data/leaderboard-text.json"
+)
+OPENEVALS_ROWS_URL = "https://datasets-server.huggingface.co/rows"
+OPENEVALS_ROWS_LIMIT = 100  # the datasets-server caps length at 100 per request
+# LMArena Elo -> 0..1: fixed anchors, so the score does not drift as the
+# board grows. 1000 Elo (a below-median model) maps to 0, 1500 Elo
+# (frontier) to 1; clamped. Human-preference Elo, not a coding benchmark —
+# the fallback only uses it when OpenEvals has no task-based score.
+LMARENA_ELO_FLOOR = 1000.0
+LMARENA_ELO_CEILING = 1500.0
+
 DEFAULT_TTL_SECONDS = 300.0
 DEFAULT_MIN_OBS = 3
 DEFAULT_DEMOTE_TTFT_SECONDS = 15.0
@@ -205,6 +222,10 @@ class PickerConfig:
         self.modelgrep_url = os.environ.get("MODEL_PICKER_MODELGREP_URL", MODELGREP_MODELS_URL)
         self.benchmark_ttl_seconds = _env_float("MODEL_PICKER_BENCHMARK_TTL_SECONDS", DEFAULT_BENCHMARK_TTL_SECONDS)
         self.benchmarks_enabled = os.environ.get("MODEL_PICKER_BENCHMARKS_OFF", "").strip().lower() not in ("1", "true", "yes", "on")
+        self.openrouter_url = os.environ.get("MODEL_PICKER_OPENROUTER_URL", OPENROUTER_MODELS_URL)
+        self.lmarena_url = os.environ.get("MODEL_PICKER_LMARENA_URL", LMARENA_LEADERBOARD_URL)
+        self.openevals_url = os.environ.get("MODEL_PICKER_OPENEVALS_URL", OPENEVALS_ROWS_URL)
+        self.fallback_enabled = os.environ.get("MODEL_PICKER_FALLBACK_OFF", "").strip().lower() not in ("1", "true", "yes", "on")
 
 
 def picker_enabled() -> bool:
@@ -235,6 +256,7 @@ class ModelCandidate:
     # priced models default to not-free and are never picked.
     benchmark_score: float = 0.0  # 0..1 modelgrep composite (coding, tool calling, SWE)
     benchmarked: bool = False  # False when modelgrep has no scores for the match
+    benchmark_source: str = ""  # modelgrep | openevals | lmarena ("" = no benchmark score)
     modelgrep_id: str = ""  # matched modelgrep entry ("" when unmatched -> gated out)
 
     @property
@@ -484,6 +506,87 @@ async def fetch_modelgrep_catalog(url: str) -> list[dict]:
     return entries
 
 
+async def fetch_openrouter_catalog(url: str) -> list[dict]:
+    """Fetch OpenRouter's model list (keyless).
+
+    Returns [{id, context_length}]. Entries are used raw; the degenerate
+    router pseudo-model (openrouter/free) is filtered at index build time,
+    not here, so the stored list stays a faithful copy of the listing.
+    """
+    import httpx
+
+    async with httpx.AsyncClient(
+        timeout=CATALOG_FETCH_TIMEOUT_SECONDS,
+        follow_redirects=True,
+    ) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        data = resp.json().get("data") or []
+    out: list[dict] = []
+    for m in data:
+        if not isinstance(m, dict) or not m.get("id"):
+            continue
+        ctx = m.get("context_length")
+        out.append(
+            {
+                "id": str(m["id"]),
+                "context_length": ctx if isinstance(ctx, int) and not isinstance(ctx, bool) else 0,
+            }
+        )
+    return out
+
+
+async def fetch_lmarena_leaderboard(url: str) -> dict:
+    """Fetch LMArena's published leaderboard JSON (keyless, GitHub raw).
+
+    Returns the raw category -> slug -> entry mapping; callers read the
+    coding board first, then the overall board.
+    """
+    import httpx
+
+    async with httpx.AsyncClient(
+        timeout=CATALOG_FETCH_TIMEOUT_SECONDS,
+        follow_redirects=True,
+    ) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        data = resp.json()
+    return data if isinstance(data, dict) else {}
+
+
+async def fetch_openevals_rows(url: str) -> list[dict]:
+    """Fetch every OpenEvals leaderboard row via the HF datasets-server.
+
+    Paginated (length is capped at 100 per request); returns the raw row
+    dicts (model_id, sweVerified_score, terminalBench_score, ...).
+    """
+    import httpx
+
+    rows: list[dict] = []
+    offset = 0
+    params = {"dataset": "OpenEvals/leaderboard-data", "config": "default", "split": "train"}
+    async with httpx.AsyncClient(
+        timeout=CATALOG_FETCH_TIMEOUT_SECONDS,
+        follow_redirects=True,
+    ) as client:
+        for _ in range(4):  # ~105 rows today; hard cap so a runaway total cannot loop
+            resp = await client.get(
+                url, params={**params, "offset": offset, "length": OPENEVALS_ROWS_LIMIT}
+            )
+            resp.raise_for_status()
+            page = resp.json()
+            data = [
+                r.get("row")
+                for r in (page.get("rows") or [])
+                if isinstance(r, dict) and isinstance(r.get("row"), dict)
+            ]
+            rows += data
+            if len(data) < OPENEVALS_ROWS_LIMIT:
+                break
+            offset += len(data)
+    return rows
+
+
 def modelgrep_benchmark_score(entry: dict) -> tuple[float, bool]:
     """0..1 composite of coding, tool-calling, and software-engineering scores.
 
@@ -516,6 +619,60 @@ def modelgrep_benchmark_score(entry: dict) -> tuple[float, bool]:
     if not parts:
         return 0.0, False
     return sum(parts) / len(parts), True
+
+
+def openevals_benchmark_score(row: dict) -> tuple[float, bool]:
+    """0..1 task-based score from an OpenEvals leaderboard row.
+
+    Mean of the available software-engineering figures (SWE-Verified,
+    Terminal-Bench), each 0..100; (0.0, False) when the row has neither.
+    The broad aggregate_score is deliberately not used: it mixes general
+    benchmarks (MMLU, HLE) that dilute the coding signal and compress the
+    scale, so scores would not be comparable across rows that have SWE
+    data and rows that do not.
+    """
+
+    def pct(v):
+        return v / 100.0 if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+    parts = [p for p in (pct(row.get("sweVerified_score")), pct(row.get("terminalBench_score"))) if p is not None]
+    if not parts:
+        return 0.0, False
+    return sum(parts) / len(parts), True
+
+
+def lmarena_benchmark_score(rating: object) -> tuple[float, bool]:
+    """0..1 score from an LMArena Elo rating, fixed linear anchors.
+
+    1000 Elo -> 0.0, 1500 Elo -> 1.0, clamped; non-numeric -> (0.0, False).
+    Human-preference Elo is a weaker signal than a task benchmark, so the
+    fallback only uses it when OpenEvals has no score for the model.
+    """
+    if not isinstance(rating, (int, float)) or isinstance(rating, bool):
+        return 0.0, False
+    return min(1.0, max(0.0, (float(rating) - LMARENA_ELO_FLOOR) / (LMARENA_ELO_CEILING - LMARENA_ELO_FLOOR))), True
+
+
+def openrouter_index(entries: list[dict]) -> "ModelGrepIndex":
+    """ModelGrepIndex over OpenRouter entries, minus degenerate ones.
+
+    OpenRouter lists the router pseudo-model openrouter/free, whose bare
+    segment is the decoration word "free": the substring stage would
+    otherwise claim ANY :free relay for it (its segment is boundary-
+    contained in every normalized "-free" relay name) and attach the
+    router's 200k context window. Entries whose bare segment is a bare
+    decoration are dropped; real models with a :free variant (segment
+    "<model>-free") are unaffected.
+    """
+    kept = []
+    for entry in entries:
+        mg_id = str(entry.get("id") or "")
+        if not mg_id:
+            continue
+        if _norm_name(mg_id).split("/")[-1] in _DECORATION_SUFFIXES:
+            continue
+        kept.append(entry)
+    return ModelGrepIndex(kept)
 
 
 # Name matching. Strict by design: a wrong mapping silently mis-ranks a
@@ -1948,6 +2105,13 @@ class CatalogManager:
         self._last_good: dict[str, list[ModelCandidate]] = {}
         self._modelgrep_entries: list[dict] | None = None
         self._modelgrep_fetched_at: float = 0.0
+        # Keyless fallback sources (used only while modelgrep has no data).
+        # Each refreshes independently and keeps its last-known data on
+        # failure; None means cold (never fetched successfully).
+        self._openrouter_entries: list[dict] | None = None
+        self._lmarena_entries: dict | None = None
+        self._openevals_rows: list[dict] | None = None
+        self._fallback_fetched_at: float = 0.0
 
     async def _refresh_modelgrep(self) -> None:
         """Refresh the modelgrep benchmark catalog (own, slower TTL; fail-soft).
@@ -1970,16 +2134,68 @@ class CatalogManager:
         except Exception as e:  # noqa: BLE001 — benchmark data must never break routing
             logger.warning("model_picker: modelgrep refresh failed (%s); using last known", e)
 
-    def _enrich_and_gate(self, candidates: list[ModelCandidate]) -> list[ModelCandidate]:
-        """Join benchmarks from modelgrep and drop unmatched candidates.
+    async def _refresh_fallback(self) -> None:
+        """Refresh the keyless fallback sources (own, slower TTL; fail-soft).
 
-        The gate applies only when modelgrep data exists (fresh or last
-        known); a cold, never-fetched state keeps the pool ungated so a
-        modelgrep outage cannot empty the pool outright.
+        Each source refreshes independently: one failing fetch keeps that
+        source's last-known data without poisoning the others. The
+        fetched-at stamp advances when any source refreshes, so a
+        partially-failed refresh does not retry every snapshot. Only
+        called when modelgrep has no data — modelgrep is always preferred.
         """
-        if self._modelgrep_entries is None:
-            logger.warning("model_picker: no modelgrep data; benchmark gating skipped")
-            return candidates
+        if not self.cfg.benchmarks_enabled or not self.cfg.fallback_enabled:
+            return
+        if (time.time() - self._fallback_fetched_at) < self.cfg.benchmark_ttl_seconds:
+            return
+        refreshed = False
+        try:
+            entries = await fetch_openrouter_catalog(self.cfg.openrouter_url)
+            if entries:
+                self._openrouter_entries = entries
+                refreshed = True
+            else:
+                logger.warning("model_picker: openrouter returned no entries; keeping last known")
+        except Exception as e:  # noqa: BLE001 — benchmark data must never break routing
+            logger.warning("model_picker: openrouter refresh failed (%s); using last known", e)
+        try:
+            data = await fetch_lmarena_leaderboard(self.cfg.lmarena_url)
+            if data:
+                self._lmarena_entries = data
+                refreshed = True
+            else:
+                logger.warning("model_picker: lmarena returned no data; keeping last known")
+        except Exception as e:  # noqa: BLE001 — benchmark data must never break routing
+            logger.warning("model_picker: lmarena refresh failed (%s); using last known", e)
+        try:
+            rows = await fetch_openevals_rows(self.cfg.openevals_url)
+            if rows:
+                self._openevals_rows = rows
+                refreshed = True
+            else:
+                logger.warning("model_picker: openevals returned no rows; keeping last known")
+        except Exception as e:  # noqa: BLE001 — benchmark data must never break routing
+            logger.warning("model_picker: openevals refresh failed (%s); using last known", e)
+        if refreshed:
+            self._fallback_fetched_at = time.time()
+
+    def _enrich_and_gate(self, candidates: list[ModelCandidate]) -> list[ModelCandidate]:
+        """Join benchmarks and drop unmatched candidates.
+
+        modelgrep first: the gate applies when its data exists (fresh or
+        last known). Only when modelgrep has no data at all does the
+        keyless fallback run (OpenRouter gate + OpenEvals/LMArena
+        benchmarks); when neither exists the pool stays ungated so an
+        enrichment outage cannot empty the pool outright.
+        """
+        if self._modelgrep_entries is not None:
+            return self._enrich_and_gate_modelgrep(candidates)
+        if self.cfg.fallback_enabled and self._openrouter_entries is not None:
+            return self._enrich_and_gate_fallback(candidates)
+        logger.warning("model_picker: no modelgrep data; benchmark gating skipped")
+        return candidates
+
+    def _enrich_and_gate_modelgrep(self, candidates: list[ModelCandidate]) -> list[ModelCandidate]:
+        """Join benchmarks from modelgrep and drop unmatched candidates."""
         index = ModelGrepIndex(self._modelgrep_entries)
         kept: list[ModelCandidate] = []
         dropped: list[str] = []
@@ -1993,6 +2209,7 @@ class CatalogManager:
                 continue
             c.modelgrep_id = str(entry.get("id") or "")
             c.benchmark_score, c.benchmarked = modelgrep_benchmark_score(entry)
+            c.benchmark_source = "modelgrep" if c.benchmarked else ""
             # fill unknown context windows from modelgrep: the router's
             # context compaction needs a real window, and the fit filter can
             # only protect requests when the window is known
@@ -2007,6 +2224,80 @@ class CatalogManager:
             len(kept),
             len(candidates),
             summary,
+            dropped[:12],
+        )
+        return kept
+
+    def _enrich_and_gate_fallback(self, candidates: list[ModelCandidate]) -> list[ModelCandidate]:
+        """Fallback enrichment: OpenRouter gates, HF OpenEvals / LMArena score.
+
+        Same gate contract as modelgrep: an unmatched candidate is dropped,
+        so the pool only holds models OpenRouter lists — relays with no
+        identifiable base model (vercel-beam, glyph-cluster) gate out, and
+        so do real models OpenRouter does not carry. Context windows fill
+        from OpenRouter when unknown. Benchmarks prefer OpenEvals'
+        task-based scores (SWE-Verified / Terminal-Bench), then LMArena
+        coding Elo, then the overall board; a model in neither source stays
+        unbenchmarked (benchmark 0) — newest models are typically the
+        ones missing, so the fallback restores the gate and the windows
+        for them but not their scores.
+        """
+        or_index = openrouter_index(self._openrouter_entries or [])
+        oe_index = ModelGrepIndex(
+            [{**row, "id": str(row.get("model_id") or "")} for row in (self._openevals_rows or [])]
+        )
+        arena = self._lmarena_entries or {}
+        arena_indexes = [
+            ModelGrepIndex(
+                [
+                    {"id": slug, "rating": (board_entry or {}).get("rating")}
+                    for slug, board_entry in (arena.get(board) or {}).items()
+                ]
+            )
+            for board in ("coding", "full")
+        ]
+        kept: list[ModelCandidate] = []
+        dropped: list[str] = []
+        stage_counts: dict[str, int] = {}
+        source_counts: dict[str, int] = {}
+        for c in candidates:
+            upstream_id = c.name.split("/", 1)[1] if "/" in c.name else c.name
+            entry, stage, confidence = or_index.match(upstream_id)
+            stage_counts[stage] = stage_counts.get(stage, 0) + 1
+            if entry is None:
+                dropped.append(c.name)
+                continue
+            if not c.context_length:
+                or_ctx = entry.get("context_length")
+                if isinstance(or_ctx, int) and not isinstance(or_ctx, bool) and or_ctx > 0:
+                    c.context_length = or_ctx
+            c.benchmark_score, c.benchmarked = 0.0, False
+            c.benchmark_source = ""
+            oe_entry, _, _ = oe_index.match(upstream_id)
+            if oe_entry is not None:
+                score, ok = openevals_benchmark_score(oe_entry)
+                if ok:
+                    c.benchmark_score, c.benchmarked = score, True
+                    c.benchmark_source = "openevals"
+            if not c.benchmarked:
+                for arena_index in arena_indexes:
+                    ar_entry, _, _ = arena_index.match(upstream_id)
+                    if ar_entry is not None:
+                        score, ok = lmarena_benchmark_score(ar_entry.get("rating"))
+                        if ok:
+                            c.benchmark_score, c.benchmarked = score, True
+                            c.benchmark_source = "lmarena"
+                        break
+            source_counts[c.benchmark_source or "none"] = source_counts.get(c.benchmark_source or "none", 0) + 1
+            kept.append(c)
+        summary = " ".join(f"{stage}={n}" for stage, n in sorted(stage_counts.items()))
+        sources = " ".join(f"{src}={n}" for src, n in sorted(source_counts.items()))
+        logger.info(
+            "model_picker: fallback gate kept %d/%d candidates (%s); benchmarks %s; dropped: %s",
+            len(kept),
+            len(candidates),
+            summary,
+            sources,
             dropped[:12],
         )
         return kept
@@ -2074,6 +2365,8 @@ class CatalogManager:
                     parse_llm7_models,
                 )
                 await self._refresh_modelgrep()
+                if self._modelgrep_entries is None:
+                    await self._refresh_fallback()
                 candidates = pollinations + nim + llm7
                 candidates = self._enrich_and_gate(candidates)
                 if not candidates:

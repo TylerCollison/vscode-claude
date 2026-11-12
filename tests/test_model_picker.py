@@ -457,6 +457,21 @@ def _mg_entry(mg_id, maker=None, context_length=None, **aa_scores):
     }
 
 
+def _or_entry(or_id, context_length=None):
+    """One OpenRouter entry (id + context window)."""
+    return {"id": or_id, "context_length": context_length}
+
+
+def _oe_row(model_id, swe=None, tb=None):
+    """One OpenEvals leaderboard row (only the fields the picker reads)."""
+    return {
+        "model_id": model_id,
+        "sweVerified_score": swe,
+        "terminalBench_score": tb,
+        "aggregate_score": None,
+    }
+
+
 class TestModelgrepEnrichment:
     @staticmethod
     def _index(entries):
@@ -711,6 +726,318 @@ class TestModelgrepEnrichment:
         # think tier too (same health/class/context -> benchmark decides)
         ranked = lib.rank_candidates([weak_bench, strong_bench], lib.TIER_THINK, stats, cfg)
         assert ranked[0].candidate.name == "pollinations/strong-bench"
+
+
+# ---------------------------------------------------------------------------
+# Modelgrep fallback: OpenRouter gate + HF/LMArena benchmarks
+# ---------------------------------------------------------------------------
+
+
+class TestModelgrepFallback:
+    """Keyless fallback enrichment, used only when modelgrep has no data.
+
+    modelgrep stays preferred: the fallback only runs when its entries are
+    None, and a cold fallback fails open like a cold modelgrep.
+    """
+
+    @staticmethod
+    def _set_fallback(manager, or_entries=None, oe_rows=None, lmarena=None):
+        manager._modelgrep_entries = None
+        manager._openrouter_entries = or_entries
+        manager._openevals_rows = oe_rows
+        manager._lmarena_entries = lmarena
+
+    def test_fallback_gate_keeps_matched_drops_unmatched_and_fills_context(self, fresh):
+        lib, _, cfg, stats, manager = fresh
+        self._set_fallback(
+            manager,
+            or_entries=[
+                _or_entry("nvidia/nemotron-3-ultra-550b-a55b", 262144),
+                _or_entry("z-ai/glm-5.3-flash", 1048576),
+            ],
+        )
+        candidates = [
+            lib.ModelCandidate(name="nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b", provider="nvidia_nim",
+                               metricless=True, context_length=0),
+            lib.ModelCandidate(name="pollinations/z-ai/glm-5.3-flash", provider="pollinations",
+                               metricless=False, success_rate=0.99, requests=100,
+                               context_length=1048576, free=True),
+            lib.ModelCandidate(name="pollinations/community/user/mystery-model", provider="pollinations",
+                               metricless=False, success_rate=0.99, requests=50, free=True),
+        ]
+        kept = manager._enrich_and_gate(candidates)
+        assert [c.name for c in kept] == [
+            "nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b",
+            "pollinations/z-ai/glm-5.3-flash",
+        ]
+        assert kept[0].context_length == 262144  # filled from OpenRouter
+        assert kept[0].benchmarked is False  # neither HF nor LMArena has it
+        assert kept[0].benchmark_source == ""
+
+    def test_fallback_openrouter_free_never_claims_relay(self, fresh):
+        # openrouter/free is a router pseudo-model, not a model: its bare
+        # segment is the decoration word "free", so the substring stage
+        # would otherwise claim any :free relay for it (and attach the
+        # router's 200k context window).
+        lib, _, cfg, stats, manager = fresh
+        self._set_fallback(
+            manager,
+            or_entries=[
+                _or_entry("openrouter/free", 200000),
+                _or_entry("nvidia/nemotron-3.5-lightning", 262144),
+            ],
+        )
+        candidates = [
+            lib.ModelCandidate(name="pollinations/community/YoannDev90/vercel-beam:free", provider="pollinations",
+                               metricless=False, success_rate=0.99, requests=50, free=True),
+            lib.ModelCandidate(name="pollinations/community/YoannDev90/vercel-nemotron-3.5-lightning:free",
+                               provider="pollinations", metricless=False, success_rate=0.99, requests=50, free=True),
+        ]
+        kept = manager._enrich_and_gate(candidates)
+        assert [c.name for c in kept] == ["pollinations/community/YoannDev90/vercel-nemotron-3.5-lightning:free"]
+        assert kept[0].context_length == 262144
+
+    def test_fallback_score_functions(self, mp):
+        lib, _ = mp
+        score, ok = lib.openevals_benchmark_score({"sweVerified_score": 47.9, "terminalBench_score": 52.4})
+        assert ok and score == pytest.approx((0.479 + 0.524) / 2)
+        partial, ok2 = lib.openevals_benchmark_score({"sweVerified_score": 47.9, "terminalBench_score": None})
+        assert ok2 and partial == pytest.approx(0.479)
+        none_score, none_ok = lib.openevals_benchmark_score({"sweVerified_score": None, "terminalBench_score": None})
+        assert none_ok is False and none_score == 0.0
+        assert lib.lmarena_benchmark_score(1000.0) == (0.0, True)
+        assert lib.lmarena_benchmark_score(1500.0) == (1.0, True)
+        assert lib.lmarena_benchmark_score(1380.0)[0] == pytest.approx(0.76)
+        assert lib.lmarena_benchmark_score(2000.0) == (1.0, True)
+        assert lib.lmarena_benchmark_score(500.0) == (0.0, True)
+        assert lib.lmarena_benchmark_score("1380") == (0.0, False)
+        assert lib.lmarena_benchmark_score(None) == (0.0, False)
+
+    def test_fallback_benchmark_prefers_openevals_over_lmarena(self, fresh):
+        lib, _, cfg, stats, manager = fresh
+        self._set_fallback(
+            manager,
+            or_entries=[_or_entry("openai/gpt-oss-120b", 131072)],
+            oe_rows=[_oe_row("openai-gpt-oss-120b", swe=47.9)],
+            lmarena={"coding": {"gpt-oss-120b": {"rating": 1380.0}}, "full": {}},
+        )
+        candidates = [
+            lib.ModelCandidate(name="pollinations/openai/gpt-oss-120b", provider="pollinations",
+                               metricless=False, success_rate=0.99, requests=100,
+                               context_length=131072, free=True),
+        ]
+        kept = manager._enrich_and_gate(candidates)
+        assert kept[0].benchmarked is True
+        assert kept[0].benchmark_score == pytest.approx(0.479)
+        assert kept[0].benchmark_source == "openevals"
+
+    def test_fallback_benchmark_lmarena_coding_board_first(self, fresh):
+        lib, _, cfg, stats, manager = fresh
+        self._set_fallback(
+            manager,
+            or_entries=[_or_entry("google/gemma-3-4b-it", 131072)],
+            oe_rows=[],
+            lmarena={
+                "coding": {"gemma-3-4b-it": {"rating": 1231.0}},
+                "full": {"gemma-3-4b-it": {"rating": 1400.0}},
+            },
+        )
+        candidates = [
+            lib.ModelCandidate(name="pollinations/google/gemma-3-4b-it", provider="pollinations",
+                               metricless=False, success_rate=0.99, requests=100,
+                               context_length=131072, free=True),
+        ]
+        kept = manager._enrich_and_gate(candidates)
+        assert kept[0].benchmarked is True
+        assert kept[0].benchmark_score == pytest.approx((1231.0 - 1000.0) / 500.0)  # coding, not full
+        assert kept[0].benchmark_source == "lmarena"
+
+    def test_fallback_benchmark_full_board_when_coding_misses(self, fresh):
+        lib, _, cfg, stats, manager = fresh
+        self._set_fallback(
+            manager,
+            or_entries=[_or_entry("databricks/dbrx-instruct", 32768)],
+            oe_rows=[],
+            lmarena={"coding": {}, "full": {"dbrx-instruct-preview": {"rating": 1131.0}}},
+        )
+        candidates = [
+            lib.ModelCandidate(name="pollinations/databricks/dbrx-instruct", provider="pollinations",
+                               metricless=False, success_rate=0.99, requests=100,
+                               context_length=32768, free=True),
+        ]
+        kept = manager._enrich_and_gate(candidates)
+        assert kept[0].benchmarked is True
+        assert kept[0].benchmark_score == pytest.approx((1131.0 - 1000.0) / 500.0)
+        assert kept[0].benchmark_source == "lmarena"
+
+    def test_fallback_version_guard_keeps_glm_5_3_unscored(self, fresh):
+        lib, _, cfg, stats, manager = fresh
+        self._set_fallback(
+            manager,
+            or_entries=[_or_entry("z-ai/glm-5.3", 1048576), _or_entry("z-ai/glm-5", 1048576)],
+            oe_rows=[_oe_row("zai-org-glm-5", swe=72.8, tb=52.4)],
+            lmarena={"coding": {}, "full": {}},
+        )
+        candidates = [
+            lib.ModelCandidate(name="pollinations/z-ai/glm-5.3", provider="pollinations",
+                               metricless=False, success_rate=0.99, requests=100,
+                               context_length=1048576, free=True),
+            lib.ModelCandidate(name="pollinations/z-ai/glm-5", provider="pollinations",
+                               metricless=False, success_rate=0.99, requests=100,
+                               context_length=1048576, free=True),
+        ]
+        kept = manager._enrich_and_gate(candidates)
+        by_name = {c.name: c for c in kept}
+        assert by_name["pollinations/z-ai/glm-5.3"].benchmarked is False  # glm-5.3 never matches glm-5
+        assert by_name["pollinations/z-ai/glm-5"].benchmarked is True
+        assert by_name["pollinations/z-ai/glm-5"].benchmark_score == pytest.approx((0.728 + 0.524) / 2)
+        assert by_name["pollinations/z-ai/glm-5"].benchmark_source == "openevals"
+
+    def test_modelgrep_preferred_over_fallback(self, fresh):
+        lib, _, cfg, stats, manager = fresh
+        manager._modelgrep_entries = [
+            _mg_entry("openai/gpt-oss-120b", coding_pct=80, agentic_pct=70, terminalbench_pct=60),
+        ]
+        manager._openrouter_entries = [_or_entry("openai/gpt-oss-120b", 131072)]
+        manager._openevals_rows = [_oe_row("openai-gpt-oss-120b", swe=47.9)]
+        manager._lmarena_entries = {"coding": {"gpt-oss-120b": {"rating": 1380.0}}, "full": {}}
+        candidates = [
+            lib.ModelCandidate(name="pollinations/openai/gpt-oss-120b", provider="pollinations",
+                               metricless=False, success_rate=0.99, requests=100,
+                               context_length=131072, free=True),
+            lib.ModelCandidate(name="pollinations/z-ai/glm-5.3", provider="pollinations",
+                               metricless=False, success_rate=0.99, requests=100,
+                               context_length=1048576, free=True),
+        ]
+        kept = manager._enrich_and_gate(candidates)
+        # the modelgrep gate runs, not the fallback: glm-5.3 (OR-only) is dropped
+        assert [c.name for c in kept] == ["pollinations/openai/gpt-oss-120b"]
+        assert kept[0].benchmark_score == pytest.approx((0.80 + 0.70 + 0.60) / 3)
+        assert kept[0].benchmark_source == "modelgrep"
+        assert kept[0].modelgrep_id == "openai/gpt-oss-120b"
+
+    def test_fallback_fail_open_when_both_cold(self, fresh):
+        lib, _, cfg, stats, manager = fresh
+        assert manager._modelgrep_entries is None
+        assert manager._openrouter_entries is None
+        candidates = [lib.ModelCandidate(name="pollinations/anything", provider="pollinations", metricless=True)]
+        assert manager._enrich_and_gate(candidates) == candidates  # cold fallback never gates
+
+    def test_refresh_fallback_keeps_last_known_on_failure(self, fresh, monkeypatch):
+        lib, _, cfg, stats, manager = fresh
+        manager._openrouter_entries = [_or_entry("z-ai/glm-5.3", 1048576)]
+        manager._lmarena_entries = {"coding": {}, "full": {}}
+        manager._openevals_rows = [_oe_row("openai-gpt-oss-120b", swe=47.9)]
+        calls = {"n": 0}
+
+        async def boom(url):
+            calls["n"] += 1
+            raise RuntimeError("down")
+
+        monkeypatch.setattr("model_picker.fetch_openrouter_catalog", boom)
+        monkeypatch.setattr("model_picker.fetch_lmarena_leaderboard", boom)
+        monkeypatch.setattr("model_picker.fetch_openevals_rows", boom)
+        asyncio.run(manager._refresh_fallback())
+        assert calls["n"] == 3  # each source attempted independently
+        assert manager._openrouter_entries == [_or_entry("z-ai/glm-5.3", 1048576)]
+        assert manager._lmarena_entries == {"coding": {}, "full": {}}
+        assert manager._openevals_rows == [_oe_row("openai-gpt-oss-120b", swe=47.9)]
+
+    def test_refresh_fallback_stores_data_and_honors_ttl(self, fresh, monkeypatch):
+        lib, _, cfg, stats, manager = fresh
+        calls = {"n": 0}
+
+        async def or_fetch(url):
+            calls["n"] += 1
+            return [_or_entry("z-ai/glm-5.3", 1048576)]
+
+        async def arena_fetch(url):
+            calls["n"] += 1
+            return {"coding": {"gpt-oss-120b": {"rating": 1380.0}}, "full": {}}
+
+        async def oe_fetch(url):
+            calls["n"] += 1
+            return [_oe_row("openai-gpt-oss-120b", swe=47.9)]
+
+        monkeypatch.setattr("model_picker.fetch_openrouter_catalog", or_fetch)
+        monkeypatch.setattr("model_picker.fetch_lmarena_leaderboard", arena_fetch)
+        monkeypatch.setattr("model_picker.fetch_openevals_rows", oe_fetch)
+        asyncio.run(manager._refresh_fallback())
+        assert calls["n"] == 3
+        assert manager._openrouter_entries == [_or_entry("z-ai/glm-5.3", 1048576)]
+        assert manager._lmarena_entries["coding"]["gpt-oss-120b"]["rating"] == 1380.0
+        assert manager._openevals_rows[0]["model_id"] == "openai-gpt-oss-120b"
+        # within TTL: no refetch
+        asyncio.run(manager._refresh_fallback())
+        assert calls["n"] == 3
+
+    def test_snapshot_uses_fallback_when_modelgrep_down(self, fresh, monkeypatch):
+        lib, _, cfg, stats, manager = fresh
+
+        async def empty_modelgrep(url):
+            return []
+
+        async def or_fetch(url):
+            return [_or_entry("z-ai/glm-5.3-flash", 1048576)]
+
+        async def arena_fetch(url):
+            return {"coding": {}, "full": {}}
+
+        async def oe_fetch(url):
+            return []
+
+        async def empty_provider(url, key_env):
+            return {"data": []}
+
+        async def pollinations_payload(url, api_key):
+            def model(model_id):
+                return {
+                    "id": model_id,
+                    "context_length": 1048576,
+                    "pricing": {},
+                    "output_modalities": ["text"],
+                    "input_modalities": ["text"],
+                    "supported_endpoints": ["/v1/chat/completions"],
+                    "health": {"status": "ok", "success_rate": 99.0, "requests": 100},
+                }
+
+            return {"data": [model("z-ai/glm-5.3-flash"), model("community/user/mystery-model")]}
+
+        monkeypatch.setattr("model_picker.fetch_modelgrep_catalog", empty_modelgrep)
+        monkeypatch.setattr("model_picker.fetch_openrouter_catalog", or_fetch)
+        monkeypatch.setattr("model_picker.fetch_lmarena_leaderboard", arena_fetch)
+        monkeypatch.setattr("model_picker.fetch_openevals_rows", oe_fetch)
+        monkeypatch.setattr("model_picker.fetch_provider_models", empty_provider)
+        monkeypatch.setattr("model_picker._fetch_json", pollinations_payload)
+        snap = asyncio.run(manager.get_snapshot())
+        assert [c.name for c in snap.candidates] == ["pollinations/z-ai/glm-5.3-flash"]
+        assert snap.candidates[0].benchmarked is False  # glm-5.3-flash has no HF/LMArena score
+
+    def test_snapshot_skips_fallback_when_modelgrep_healthy(self, fresh, monkeypatch):
+        lib, _, cfg, stats, manager = fresh
+
+        async def healthy_modelgrep(url):
+            return [_mg_entry("z-ai/glm-5.3-flash", coding_pct=50)]
+
+        async def boom(url):
+            raise AssertionError("fallback fetch must not run while modelgrep is healthy")
+
+        async def empty_provider(url, key_env):
+            return {"data": []}
+
+        async def empty_pollinations(url, api_key):
+            return {"data": []}
+
+        monkeypatch.setattr("model_picker.fetch_modelgrep_catalog", healthy_modelgrep)
+        monkeypatch.setattr("model_picker.fetch_openrouter_catalog", boom)
+        monkeypatch.setattr("model_picker.fetch_lmarena_leaderboard", boom)
+        monkeypatch.setattr("model_picker.fetch_openevals_rows", boom)
+        monkeypatch.setattr("model_picker.fetch_provider_models", empty_provider)
+        monkeypatch.setattr("model_picker._fetch_json", empty_pollinations)
+        snap = asyncio.run(manager.get_snapshot())
+        # no eligible models at all: the catastrophic fallback snapshot
+        assert [c.name for c in snap.candidates] == [f"pollinations/{cfg.fallback_model}"]
+        assert manager._openrouter_entries is None  # fallback never refreshed
 
 
 # ---------------------------------------------------------------------------
@@ -2442,6 +2769,18 @@ class TestProviderCatalogs:
             return []
 
         monkeypatch.setattr("model_picker.fetch_modelgrep_catalog", empty_modelgrep)
+
+        # a cold modelgrep triggers _refresh_fallback: keep it mocked too
+        async def empty_fallback(url):
+            return []
+
+        async def empty_arena(url):
+            return {}
+
+        monkeypatch.setattr("model_picker.fetch_openrouter_catalog", empty_fallback)
+        monkeypatch.setattr("model_picker.fetch_lmarena_leaderboard", empty_arena)
+        monkeypatch.setattr("model_picker.fetch_openevals_rows", empty_fallback)
+
         async def bad_raw(url, api_key):
             raise RuntimeError("pollinations down")
 
@@ -2702,6 +3041,28 @@ class TestCatalogManager:
             return []
 
         monkeypatch.setattr("model_picker.fetch_modelgrep_catalog", empty_modelgrep)
+
+        # the fallback sources too: a cold modelgrep triggers _refresh_fallback
+        async def empty_openrouter(url):
+            if fail:
+                raise RuntimeError("openrouter down")
+            return []
+
+        monkeypatch.setattr("model_picker.fetch_openrouter_catalog", empty_openrouter)
+
+        async def empty_lmarena(url):
+            if fail:
+                raise RuntimeError("lmarena down")
+            return {}
+
+        monkeypatch.setattr("model_picker.fetch_lmarena_leaderboard", empty_lmarena)
+
+        async def empty_openevals(url):
+            if fail:
+                raise RuntimeError("openevals down")
+            return []
+
+        monkeypatch.setattr("model_picker.fetch_openevals_rows", empty_openevals)
 
     def test_fresh_snapshot_reused_within_ttl(self, fresh, monkeypatch):
         lib, _, cfg, stats, manager = fresh
