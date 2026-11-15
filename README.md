@@ -183,7 +183,7 @@ For the complete plugins marketplace reference — directory layout, the bundled
 | `MODEL_PICKER_ENABLED` | Set to `true` to enable model picker mode (dynamic catalog discovery and health-ranked model selection; see "LiteLLM Router") |
 | `LITELLM_CONFIG_PATH` | Path to a custom LiteLLM config file (mounted file or a file inside a mounted folder) to use instead of the built-in config — see "Overriding the LiteLLM Config" |
 | `POLLINATION_API_KEY` | Pollinations API key — **model picker mode only**. When set, Pollinations models enter the picker's candidate pool; when unset or empty, Pollinations is skipped entirely (no catalog fetch, no stale-serve) |
-| `NIM_API_KEY` | Nvidia NIM API key — **model picker mode only**. When set, NVIDIA NIM models enter the candidate pool; when unset or empty, NIM is skipped entirely. Note: `start-lite-llm.sh` formerly defaulted `NIM_API_KEY` to `dummy-key` when unset, which wrongly marked NIM as keyed — that default was removed so NIM behaves like the other providers (key presence only) |
+| `NIM_API_KEY` | Nvidia NIM API key — **model picker mode only**. When set, NVIDIA NIM models enter the candidate pool; when unset or empty, NIM is skipped entirely (no catalog fetch, no stale-serve) |
 | `LLM7_API_KEY` | LLM7 API key — **model picker mode only**. When set, LLM7 models enter the candidate pool; when unset or empty, LLM7 is skipped entirely (no catalog fetch, no stale-serve) |
 
 Claude Code is pre-configured to route all requests through the LiteLLM proxy at `http://127.0.0.1:5090`. The router automatically selects models based on request content:
