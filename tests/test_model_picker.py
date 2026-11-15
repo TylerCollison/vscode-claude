@@ -1761,7 +1761,7 @@ class TestThinkingOnlyRetry:
 
 
 # ---------------------------------------------------------------------------
-# Anthropically-shaped retries (the /v1/messages walk fix, litellm5.log)
+# Anthropic retry entry
 # ---------------------------------------------------------------------------
 
 
@@ -3426,3 +3426,620 @@ class TestContextOverflow:
         returned = Router.log_retry(FakeRouter(), kwargs=kwargs, e=exc)
         assert returned is kwargs
         assert stats.learned_window("nvidia_nim/minimaxai/minimax-m3.1-flash") == 999
+
+class TestTextPayloadRecovery:
+    """A response whose only content is a valid Anthropic/OpenAI JSON
+    tool-call payload is recovered: fed back through LiteLLM's translation
+    as if the provider had returned it structured, so the intended call
+    executes instead of the turn stalling."""
+
+    # Tyler's 2026-11-02 cases, verbatim shapes.
+    ATTEMPT1 = r'''{"tool_calls":[{"id":"call-8fb31e37-bd5a-4407-b4c2-b0a223c5ae5a","type":"function","function":{"name":"Bash","arguments":"{\"command\": \"grep -E \\\"EXIT=|writing image|naming\\\" /tmp/claude-0/-workspace/a60f5906-b20f-48d6-96ee-30414afd1572/tasks/bwygszqme.output | tail -5\", "description": "Confirm container build result"}}],"role":"assistant","content":"The container build finished. Let me confirm it succeeded and then run it."}'''
+    ATTEMPT2 = r'''<think>
+The build completed with exit code 0. Let me confirm the build output and run the container per CLAUDE.md.
+</think>
+{"tool_calls":[{"id":"call-check1","type":"function","function":{"name":"Bash","arguments":"{\"command\": \"tail -6 /tmp/claude-0/-workspace/a60f5906-b20f-48d6-96ee-30414afd1572/tasks/bwygszqme.output | cut -c1-160\", \"description\": \"Confirm build result\"}"}}]}'''
+    ATTEMPT3 = r'''{"tool_calls":[{"id":"call-check2","type":"function","function":{"name":"Bash","arguments":"{\"command\": \"docker images test-container --format '{{.Repository}}:{{.Tag}} {{.Size}}' ; docker image inspect test-container --format '{{.Id}}' 2>&1 | head -2\", \"description\": \"Verify test-container image exists\"}"}}]}'''
+    ATTEMPT4 = r'''<think>
+Let me redo this properly with valid JSON.
+</think>
+{"tool_calls":[{"id":"call-check2b","type":"function","function":{"name":"Bash","arguments":"{\"command\": \"docker images test-container --format '{{.Repository}}:{{.Tag}} {{.Size}}' && docker image inspect test-container --format '{{.Id}}'\", \"description\": \"Verify test-container image exists\"}"}}],"role":"assistant","content":null}'''
+    SINGLE_CALL = r'''{"name":"Bash","arguments":{"command":"docker images test-container","description":"List test container image"}}'''
+
+    BASH_TOOLS = [
+        {
+            "name": "Bash",
+            "input_schema": {
+                "type": "object",
+                "properties": {"command": {"type": "string"}, "description": {"type": "string"}},
+                "required": ["command"],
+            },
+        }
+    ]
+
+    @staticmethod
+    def _logger(lib, plugin):
+        manager = lib.CatalogManager()
+        manager._snapshot = lib.CatalogSnapshot(
+            candidates=[
+                lib.ModelCandidate(name=n, provider="pollinations", metricless=False, success_rate=0.99, requests=100)
+                for n in ("pollinations/community/x", "pollinations/community/y")
+            ]
+        )
+        return plugin.ModelPickerStatsLogger(stats=lib.StatsRegistry(), manager=manager)
+
+    @staticmethod
+    def _request_data(group="pollinations/community/x", tools="default"):
+        return {
+            "model": "lite-llm/complexity",
+            "messages": [{"role": "user", "content": "hi"}],
+            "litellm_metadata": {"model_group": group},
+            "tools": TestTextPayloadRecovery.BASH_TOOLS if tools == "default" else tools,
+        }
+
+    @staticmethod
+    def _events(*texts):
+        events = [
+            {"type": "message_start", "message": {"type": "message_start", "role": "assistant", "model": "m"}},
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+        ]
+        for t in texts:
+            events.append({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": t}})
+        events.append({"type": "content_block_stop", "index": 0})
+        return events
+
+    def test_parse_text_payload_openai_message_dicts(self, mp):
+        _lib, plugin = mp
+        for text, call_id, command in [
+            (self.ATTEMPT2, "call-check1", "tail -6 /tmp/claude-0/-workspace/a60f5906-b20f-48d6-96ee-30414afd1572/tasks/bwygszqme.output | cut -c1-160"),
+            (self.ATTEMPT3, "call-check2", "docker images test-container --format '{{.Repository}}:{{.Tag}} {{.Size}}' ; docker image inspect test-container --format '{{.Id}}' 2>&1 | head -2"),
+            (self.ATTEMPT4, "call-check2b", "docker images test-container --format '{{.Repository}}:{{.Tag}} {{.Size}}' && docker image inspect test-container --format '{{.Id}}'"),
+        ]:
+            calls = plugin._parse_text_payload(text)
+            assert calls is not None, text[:60]
+            assert len(calls) == 1
+            assert calls[0]["id"] == call_id
+            assert calls[0]["name"] == "Bash"
+            assert calls[0]["input"]["command"] == command
+            assert calls[0]["input"]["description"]
+
+    def test_parse_text_payload_single_call_and_anthropic_shapes(self, mp):
+        _lib, plugin = mp
+        calls = plugin._parse_text_payload(self.SINGLE_CALL)
+        assert calls == [{"id": "", "name": "Bash", "input": {"command": "docker images test-container", "description": "List test container image"}}]
+        anthropic_msg = {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "toolu_9", "name": "Bash", "input": {"command": "ls"}}],
+            "stop_reason": "tool_use",
+        }
+        calls = plugin._parse_text_payload(json.dumps(anthropic_msg))
+        assert calls == [{"id": "toolu_9", "name": "Bash", "input": {"command": "ls"}}]
+        calls = plugin._parse_text_payload(json.dumps([{"type": "tool_use", "id": "toolu_9", "name": "Bash", "input": {"command": "ls"}}]))
+        assert calls == [{"id": "toolu_9", "name": "Bash", "input": {"command": "ls"}}]
+
+    def test_parse_text_payload_rejects(self, mp):
+        _lib, plugin = mp
+        # The first attempt's mangled escaping: not recoverable, guard fallback.
+        assert plugin._parse_text_payload(self.ATTEMPT1) is None
+        # Prose around the payload, or JSON that is not a call at all.
+        assert plugin._parse_text_payload("Here is the call:\n" + self.SINGLE_CALL) is None
+        assert plugin._parse_text_payload('{"result": 42}') is None
+        assert plugin._parse_text_payload('{"tool_calls": []}') is None
+        assert plugin._parse_text_payload('{"name": "Bash"}') is None
+        assert plugin._parse_text_payload('{"name": "Bash", "arguments": "not json"}') is None
+        assert plugin._parse_text_payload('{"name": "Bash", "arguments": ["a", "list"]}') is None
+        # A content list mixing prose with a tool call is an answer, not a bare payload.
+        assert (
+            plugin._parse_text_payload(
+                json.dumps({"content": [{"type": "text", "text": "Sure!"}, {"type": "tool_use", "id": "t", "name": "Bash", "input": {"command": "ls"}}]})
+            )
+            is None
+        )
+        assert plugin._parse_text_payload("") is None
+        assert plugin._parse_text_payload(None) is None
+
+
+    def test_try_recover_response_anthropic(self, mp):
+        lib, plugin = mp
+        logger = self._logger(lib, plugin)
+        response = {"content": [{"type": "text", "text": self.ATTEMPT2}], "id": "msg_1", "model": "m"}
+        recovered = logger._try_recover_response(response, self._request_data())
+        assert isinstance(recovered, dict)
+        assert recovered["stop_reason"] == "tool_use"
+        tool_blocks = [b for b in recovered["content"] if b.get("type") == "tool_use"]
+        assert len(tool_blocks) == 1
+        assert tool_blocks[0]["id"] == "call-check1"
+        assert tool_blocks[0]["name"] == "Bash"
+        assert tool_blocks[0]["input"]["command"].startswith("tail -6")
+        assert not any(b.get("type") == "text" and "tool_calls" in b.get("text", "") for b in recovered["content"])
+        # A successful recovery records no failure: the call executes and
+        # the turn succeeds, so the exchange is not penalized.
+        derived = logger.stats.derived("pollinations/community/x")
+        assert derived.n_obs == 0
+
+    def test_try_recover_response_converts_undeclared_tools(self, mp):
+        lib, plugin = mp
+        logger = self._logger(lib, plugin)
+        # No declared-tool gate: any well-formed call converts, whether or
+        # not the request declared the tool — the agent's calls are assumed
+        # valid (Tyler, 2026-11-14).
+        shell = '{"name": "Shell", "arguments": {"command": "ls"}}'
+        response = {"content": [{"type": "text", "text": shell}], "id": "msg_1", "model": "m"}
+        recovered = logger._try_recover_response(response, self._request_data())
+        assert isinstance(recovered, dict)
+        tool_blocks = [b for b in recovered["content"] if b.get("type") == "tool_use"]
+        assert [b["name"] for b in tool_blocks] == ["Shell"]
+        # Input that would fail the declared schema converts too.
+        no_command = '{"name": "Bash", "arguments": {"description": "no command here"}}'
+        response = {"content": [{"type": "text", "text": no_command}], "id": "msg_1", "model": "m"}
+        recovered = logger._try_recover_response(response, self._request_data())
+        assert isinstance(recovered, dict)
+        tool_blocks = [b for b in recovered["content"] if b.get("type") == "tool_use"]
+        assert [b["name"] for b in tool_blocks] == ["Bash"]
+        # No tool list at all: still converts.
+        response = {"content": [{"type": "text", "text": self.SINGLE_CALL}], "id": "msg_1", "model": "m"}
+        recovered = logger._try_recover_response(response, self._request_data(tools=None))
+        assert isinstance(recovered, dict)
+        tool_blocks = [b for b in recovered["content"] if b.get("type") == "tool_use"]
+        assert [b["name"] for b in tool_blocks] == ["Bash"]
+        # ...but a response that already carries real tool calls needs nothing.
+        real = {"content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}]}
+        assert logger._try_recover_response(real, self._request_data()) is None
+        derived = logger.stats.derived("pollinations/community/x")
+        assert derived.n_obs == 0
+        assert derived.failures == 0
+
+    def test_try_recover_response_openai_shapes(self, mp):
+        lib, plugin = mp
+        logger = self._logger(lib, plugin)
+        openai_dict = {
+            "choices": [{"message": {"role": "assistant", "content": self.ATTEMPT3, "tool_calls": None}, "finish_reason": "stop"}],
+            "model": "m",
+        }
+        recovered = logger._try_recover_response(openai_dict, self._request_data())
+        assert isinstance(recovered, dict)
+        assert recovered["choices"][0]["finish_reason"] == "tool_calls"
+        tool_calls = recovered["choices"][0]["message"]["tool_calls"]
+        assert len(tool_calls) == 1
+        assert tool_calls[0]["function"]["name"] == "Bash"
+        assert json.loads(tool_calls[0]["function"]["arguments"])["command"].startswith("docker images")
+        assert recovered["choices"][0]["message"]["content"] is None
+        model_resp = litellm.ModelResponse(
+            choices=[{"message": {"role": "assistant", "content": self.ATTEMPT3}, "finish_reason": "stop"}],
+            model="m",
+        )
+        recovered = logger._try_recover_response(model_resp, self._request_data())
+        assert isinstance(recovered, litellm.ModelResponse)
+        assert recovered.choices[0].message.tool_calls[0].function.name == "Bash"
+        assert recovered.choices[0].finish_reason == "tool_calls"
+
+    def test_nonstreaming_hook_recovers_without_walk(self, mp, monkeypatch):
+        lib, plugin = mp
+        logger = self._logger(lib, plugin)
+        good_resp = litellm.ModelResponse(
+            choices=[{"message": {"role": "assistant", "content": "Hello!"}, "finish_reason": "stop"}],
+            usage={"prompt_tokens": 3, "completion_tokens": 2},
+        )
+        calls = {"n": 0}
+
+        async def fake_router_acompletion(retry_data):
+            calls["n"] += 1
+            return good_resp
+
+        monkeypatch.setattr(logger, "_router_acompletion", fake_router_acompletion)
+        response = {"content": [{"type": "text", "text": self.ATTEMPT3}], "id": "msg_1", "model": "m"}
+        out = asyncio.run(logger.async_post_call_success_hook(None, self._request_data(), response))
+        # No walk ran: the intended call executed as-is.
+        assert calls["n"] == 0
+        assert isinstance(out, dict)
+        tool_blocks = [b for b in out["content"] if b.get("type") == "tool_use"]
+        assert [b["name"] for b in tool_blocks] == ["Bash"]
+        assert out["stop_reason"] == "tool_use"
+        assert "every available model" not in lib.extract_response_text(out)
+
+    def test_nonstreaming_hook_recovers_undeclared_tool(self, mp, monkeypatch):
+        lib, plugin = mp
+        logger = self._logger(lib, plugin)
+        calls = {"n": 0}
+
+        async def fake_router_acompletion(retry_data):
+            calls["n"] += 1
+            return None
+
+        monkeypatch.setattr(logger, "_router_acompletion", fake_router_acompletion)
+        shell = '{"name": "Shell", "arguments": {"command": "ls"}}'
+        response = {"content": [{"type": "text", "text": shell}], "id": "msg_1", "model": "m"}
+        out = asyncio.run(logger.async_post_call_success_hook(None, self._request_data(), response))
+        # No walk ran: the undeclared call converted straight to a tool block.
+        assert calls["n"] == 0
+        assert isinstance(out, dict)
+        tool_blocks = [b for b in out["content"] if b.get("type") == "tool_use"]
+        assert [b["name"] for b in tool_blocks] == ["Shell"]
+        assert out["stop_reason"] == "tool_use"
+
+    def test_streaming_hook_recovers_text_payload(self, mp, monkeypatch):
+        lib, plugin = mp
+        logger = self._logger(lib, plugin)
+        calls = {"n": 0}
+
+        async def fake_router_acompletion(retry_data):
+            calls["n"] += 1
+            return litellm.ModelResponse(
+                choices=[{"message": {"role": "assistant", "content": "Hello!"}, "finish_reason": "stop"}],
+                usage={"prompt_tokens": 3, "completion_tokens": 2},
+            )
+
+        monkeypatch.setattr(logger, "_router_acompletion", fake_router_acompletion)
+
+        async def stream():
+            for e in self._events(self.ATTEMPT3):
+                yield e
+
+        async def run():
+            out = []
+            async for chunk in logger.async_post_call_streaming_iterator_hook(None, stream(), self._request_data()):
+                out.append(chunk)
+            return out
+
+        out = asyncio.run(run())
+        # No walk ran; the tail carries the recovered call as a tool block
+        # (the raw JSON text already delivered stays in the transcript —
+        # only the non-streaming path catches it pre-client).
+        assert calls["n"] == 0
+        tool_blocks = [
+            e.get("content_block", {})
+            for c in out
+            for e in plugin._chunk_events(c)
+            if e.get("type") == "content_block_start" and e.get("content_block", {}).get("type") == "tool_use"
+        ]
+        assert [b.get("name") for b in tool_blocks] == ["Bash"]
+        flat = "".join(plugin._event_text(c) for c in out)
+        assert "every available model" not in flat
+
+    def test_walk_recovers_retry_text_payload(self, mp, monkeypatch):
+        lib, plugin = mp
+        logger = self._logger(lib, plugin)
+        credits = "The account behind this API key doesn't have enough credits. Please top up."
+        events = self._events("Could not process", credits)
+        payload_resp = litellm.ModelResponse(
+            choices=[{"message": {"role": "assistant", "content": self.ATTEMPT3}, "finish_reason": "stop"}],
+            model="pollinations/community/y",
+            usage={"prompt_tokens": 3, "completion_tokens": 2},
+        )
+        calls = {"n": 0}
+
+        async def fake_router_acompletion(retry_data):
+            calls["n"] += 1
+            return payload_resp
+
+        monkeypatch.setattr(logger, "_router_acompletion", fake_router_acompletion)
+
+        async def stream():
+            for e in events:
+                yield e
+
+        async def run():
+            out = []
+            async for chunk in logger.async_post_call_streaming_iterator_hook(None, stream(), self._request_data()):
+                out.append(chunk)
+            return out
+
+        out = asyncio.run(run())
+        # One retry, and it came back as the recovered call — no second retry.
+        assert calls["n"] == 1
+        tool_blocks = [
+            e.get("content_block", {})
+            for c in out
+            for e in plugin._chunk_events(c)
+            if e.get("type") == "content_block_start" and e.get("content_block", {}).get("type") == "tool_use"
+        ]
+        assert [b.get("name") for b in tool_blocks] == ["Bash"]
+        # A recovered call is a tool-only answer, not a failure: no
+        # fallback notice may be appended to the salvaged turn.
+        flat = "".join(plugin._event_text(c) for c in out)
+        assert "every available model" not in flat
+        # The first model kept its soft failure; the retry's recovered
+        # response records no failure — the call executes and the turn
+        # succeeds.
+        assert logger.stats.derived("pollinations/community/x").soft_failures == 1
+        assert logger.stats.derived("pollinations/community/y").n_obs == 0
+
+    def test_nonstreaming_hook_unrecoverable_payload_passes_through(self, mp, monkeypatch):
+        lib, plugin = mp
+        logger = self._logger(lib, plugin)
+        calls = {"n": 0}
+
+        async def fake_router_acompletion(retry_data):
+            calls["n"] += 1
+            return None
+
+        monkeypatch.setattr(logger, "_router_acompletion", fake_router_acompletion)
+        # Attempt 1: JSON too mangled to recover. With no guard to walk on,
+        # the response passes through as text — no retry, no failure notice.
+        response = {"content": [{"type": "text", "text": self.ATTEMPT1}], "id": "msg_1", "model": "m"}
+        out = asyncio.run(logger.async_post_call_success_hook(None, self._request_data(), response))
+        assert calls["n"] == 0
+        assert out is response
+        assert logger.stats.derived("pollinations/community/x").n_obs == 0
+
+    def test_openai_calls_to_anthropic_blocks_uses_adapter_with_fallback(self, mp, monkeypatch):
+        import sys
+
+        _lib, plugin = mp
+        calls = [{"id": "call_1", "name": "Bash", "input": {"command": "ls"}}]
+        from litellm.llms.anthropic.pass_through.adapters.transformation import LiteLLMAnthropicMessagesAdapter
+
+        seen = {}
+        orig = LiteLLMAnthropicMessagesAdapter._translate_openai_content_to_anthropic
+
+        def spy(self, choices):
+            seen["hit"] = True
+            return orig(self, choices)
+
+        monkeypatch.setattr(LiteLLMAnthropicMessagesAdapter, "_translate_openai_content_to_anthropic", spy)
+        blocks = plugin._openai_calls_to_anthropic_blocks(calls)
+        assert seen.get("hit") is True
+        assert blocks == [{"type": "tool_use", "id": "call_1", "name": "Bash", "input": {"command": "ls"}}]
+        # Adapter unavailable: the same blocks, hand-built.
+        monkeypatch.setitem(sys.modules, "litellm.llms.anthropic.pass_through.adapters.transformation", None)
+        blocks = plugin._openai_calls_to_anthropic_blocks(calls)
+        assert blocks == [{"type": "tool_use", "id": "call_1", "name": "Bash", "input": {"command": "ls"}}]
+
+# ---------------------------------------------------------------------------
+# Blacklist command ("!model-picker blacklist")
+# ---------------------------------------------------------------------------
+
+
+class TestModelBlacklist:
+    CMD = "!model-picker blacklist"
+    POOL = ["pollinations/a-model", "pollinations/b-model", "pollinations/c-model"]
+
+    def _fake_pool(self, monkeypatch, lib, test_plugin, manager, names=None):
+        # Fresh per-request pick history: the shared PriorPickRegistry keys
+        # retries on a hash of the messages, and the default "hello" message
+        # is identical across tests, so without this picks leak between tests.
+        test_plugin._prior_picks = lib.PriorPickRegistry()
+
+        async def fake_snapshot(ml=None):
+            return snapshot_with(
+                lib,
+                [metric_candidate(lib, n, 0.99, 100, ctx=1048576) for n in (names or self.POOL)],
+            )
+
+        monkeypatch.setattr(manager, "get_snapshot", fake_snapshot)
+
+    def _cmd_messages(self):
+        return [{"role": "user", "content": self.CMD}]
+
+    def _run_command(self, fresh, monkeypatch):
+        """Normal pick, then the command; returns (plugin, stats, manager)."""
+        lib, test_plugin, cfg, stats, manager = fresh
+        self._fake_pool(monkeypatch, lib, test_plugin, manager)
+        asyncio.run(test_plugin.run(make_context(lib, ["lite-llm/default"])))
+        asyncio.run(
+            test_plugin.run(make_context(lib, ["lite-llm/default"], messages=self._cmd_messages()))
+        )
+        return test_plugin, stats, manager
+
+    # -- detection ---------------------------------------------------------
+
+    def test_is_blacklist_command_exact_only(self, mp):
+        lib, plugin = mp
+        assert plugin.is_blacklist_command([{"role": "user", "content": self.CMD}])
+        assert plugin.is_blacklist_command([{"role": "user", "content": "  !model-picker blacklist  "}])
+        assert plugin.is_blacklist_command(
+            [{"role": "user", "content": [{"type": "text", "text": self.CMD}]}]
+        )
+        assert plugin.is_blacklist_command(
+            [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "hi"},
+                {"role": "user", "content": self.CMD},
+            ]
+        )
+        assert not plugin.is_blacklist_command(
+            [{"role": "user", "content": "please !model-picker blacklist"}]
+        )
+        assert not plugin.is_blacklist_command([{"role": "user", "content": self.CMD + " now"}])
+        assert not plugin.is_blacklist_command([{"role": "user", "content": "hello"}])
+        assert not plugin.is_blacklist_command([])
+        assert not plugin.is_blacklist_command([{"role": "assistant", "content": self.CMD}])
+
+    # -- registry ----------------------------------------------------------
+
+    def test_blacklist_persists_in_stats_file(self, mp, tmp_path):
+        lib, _ = mp
+        path = str(tmp_path / "stats.json")
+        stats = lib.StatsRegistry(path=path)
+        stats.blacklist_add("pollinations/a-model")
+        stats.record_success("pollinations/a-model", None, now=1000.0)
+        stats2 = lib.StatsRegistry(path=path)
+        assert stats2.is_blacklisted("pollinations/a-model")
+        assert stats2.most_recent_group() == "pollinations/a-model"
+        # the notice is transient: it names one request, never the file
+        assert stats2.last_blacklist is None
+
+    def test_blacklist_loads_old_stats_file_without_key(self, mp, tmp_path):
+        lib, _ = mp
+        path = tmp_path / "stats.json"
+        path.write_text(json.dumps({"version": 1, "learned_windows": {}, "groups": {}}))
+        stats = lib.StatsRegistry(path=str(path))
+        assert stats.blacklisted() == frozenset()
+        assert stats.most_recent_group() is None
+
+    def test_most_recent_group_tracks_success_and_failure(self, mp):
+        lib, _ = mp
+        stats = lib.StatsRegistry()
+        assert stats.most_recent_group() is None
+        stats.record_success("pollinations/a-model", None, now=1000.0)
+        stats.record_success("pollinations/b-model", None, now=2000.0)
+        assert stats.most_recent_group() == "pollinations/b-model"
+        stats.record_failure("pollinations/a-model", lib.FAILURE_CLASS_ERROR, now=3000.0)
+        assert stats.most_recent_group() == "pollinations/a-model"
+
+    def test_blacklist_notice_expires(self, mp):
+        lib, _ = mp
+        stats = lib.StatsRegistry()
+        assert stats.blacklist_notice() is None
+        stats.record_blacklist("pollinations/a-model", "pollinations/b-model")
+        assert stats.blacklist_notice()["model"] == "pollinations/a-model"
+        stats.last_blacklist["ts"] = time.time() - 1000.0
+        assert stats.blacklist_notice() is None
+
+    # -- routing plugin ----------------------------------------------------
+
+    def test_command_blacklists_last_pick_and_repicks(self, fresh, env_enabled, monkeypatch):
+        lib, test_plugin, cfg, stats, manager = fresh
+        self._fake_pool(monkeypatch, lib, test_plugin, manager)
+        first = asyncio.run(test_plugin.run(make_context(lib, ["lite-llm/default"])))
+        assert first.candidate_models == ["pollinations/a-model"]
+        cmd = asyncio.run(
+            test_plugin.run(make_context(lib, ["lite-llm/default"], messages=self._cmd_messages()))
+        )
+        assert cmd.candidate_models == ["pollinations/b-model"]
+        assert stats.is_blacklisted("pollinations/a-model")
+        assert stats.last_blacklist["model"] == "pollinations/a-model"
+        assert stats.last_blacklist["pick"] == "pollinations/b-model"
+        assert stats.last_blacklist["all_blacklisted"] is False
+        # the blacklisted model never comes back, including next turn — a
+        # different message (fresh call id, so no prior-pick exclusion) so
+        # only the blacklist can be doing the excluding here
+        nxt = asyncio.run(
+            test_plugin.run(
+                make_context(
+                    lib,
+                    ["lite-llm/default"],
+                    messages=[{"role": "user", "content": "something else entirely"}],
+                )
+            )
+        )
+        assert nxt.candidate_models == ["pollinations/b-model"]
+
+    def test_second_command_blacklists_the_new_pick(self, fresh, env_enabled, monkeypatch):
+        lib, test_plugin, cfg, stats, manager = fresh
+        self._fake_pool(monkeypatch, lib, test_plugin, manager)
+        asyncio.run(test_plugin.run(make_context(lib, ["lite-llm/default"])))
+        asyncio.run(
+            test_plugin.run(make_context(lib, ["lite-llm/default"], messages=self._cmd_messages()))
+        )
+        second = asyncio.run(
+            test_plugin.run(make_context(lib, ["lite-llm/default"], messages=self._cmd_messages()))
+        )
+        assert second.candidate_models == ["pollinations/c-model"]
+        assert stats.is_blacklisted("pollinations/b-model")
+
+    def test_command_falls_back_to_most_recent_observation(self, fresh, env_enabled, monkeypatch):
+        lib, test_plugin, cfg, stats, manager = fresh
+        self._fake_pool(monkeypatch, lib, test_plugin, manager)
+        # no pick in this process (e.g. after a restart): the most
+        # recently observed model in the persisted stats is "current"
+        stats.record_success("pollinations/z-model", None, now=1000.0)
+        cmd = asyncio.run(
+            test_plugin.run(make_context(lib, ["lite-llm/default"], messages=self._cmd_messages()))
+        )
+        assert stats.is_blacklisted("pollinations/z-model")
+        assert cmd.candidate_models == ["pollinations/a-model"]
+
+    def test_command_falls_back_to_top_pick_with_no_history(self, fresh, env_enabled, monkeypatch):
+        lib, test_plugin, cfg, stats, manager = fresh
+        self._fake_pool(monkeypatch, lib, test_plugin, manager)
+        cmd = asyncio.run(
+            test_plugin.run(make_context(lib, ["lite-llm/default"], messages=self._cmd_messages()))
+        )
+        assert cmd.candidate_models == ["pollinations/b-model"]
+        assert stats.is_blacklisted("pollinations/a-model")
+
+    def test_command_requires_exact_content(self, fresh, env_enabled, monkeypatch):
+        lib, test_plugin, cfg, stats, manager = fresh
+        self._fake_pool(monkeypatch, lib, test_plugin, manager)
+        for content in ("please !model-picker blacklist", self.CMD + " now", "hello"):
+            out = asyncio.run(
+                test_plugin.run(
+                    make_context(lib, ["lite-llm/default"], messages=[{"role": "user", "content": content}])
+                )
+            )
+            assert out.candidate_models == ["pollinations/a-model"]
+        assert stats.blacklisted() == frozenset()
+
+    def test_all_blacklisted_still_serves_with_honest_notice(self, fresh, env_enabled, monkeypatch):
+        lib, test_plugin, cfg, stats, manager = fresh
+        self._fake_pool(monkeypatch, lib, test_plugin, manager)
+        stats.blacklist_add("pollinations/a-model")
+        stats.blacklist_add("pollinations/b-model")
+        asyncio.run(test_plugin.run(make_context(lib, ["lite-llm/default"])))  # picks c-model
+        cmd = asyncio.run(
+            test_plugin.run(make_context(lib, ["lite-llm/default"], messages=self._cmd_messages()))
+        )
+        # exclusion fail-opens (as with the other guards): the request is
+        # still served, by a blacklisted model, and the notice says so
+        assert len(cmd.candidate_models) == 1
+        assert cmd.candidate_models[0] in self.POOL
+        assert stats.last_blacklist["all_blacklisted"] is True
+        assert stats.last_blacklist["pick"] == cmd.candidate_models[0]
+
+    # -- post-call hooks: the confirmation reply --------------------------
+
+    def test_nonstreaming_hook_returns_confirmation(self, mp, fresh, env_enabled, monkeypatch):
+        lib, plugin = mp
+        test_plugin, stats, manager = self._run_command(fresh, monkeypatch)
+        logger = plugin.ModelPickerStatsLogger(stats=stats, manager=manager)
+        response = {
+            "id": "msg1",
+            "model": "m",
+            "content": [{"type": "text", "text": "I do not understand that command."}],
+            "usage": {},
+        }
+        out = asyncio.run(
+            logger.async_post_call_success_hook(
+                None, {"messages": self._cmd_messages(), "model": "lite-llm/default"}, response
+            )
+        )
+        text = lib.extract_response_text(out)
+        assert text == "Blacklisted pollinations/a-model. New pick: pollinations/b-model."
+
+    def test_nonstreaming_hook_ignores_stale_notice(self, mp, fresh, env_enabled, monkeypatch):
+        lib, plugin = mp
+        test_plugin, stats, manager = self._run_command(fresh, monkeypatch)
+        stats.last_blacklist["ts"] = time.time() - 1000.0
+        logger = plugin.ModelPickerStatsLogger(stats=stats, manager=manager)
+        response = {
+            "id": "msg1",
+            "model": "m",
+            "content": [{"type": "text", "text": "ordinary answer"}],
+            "usage": {},
+        }
+        out = asyncio.run(
+            logger.async_post_call_success_hook(
+                None, {"messages": self._cmd_messages(), "model": "lite-llm/default"}, response
+            )
+        )
+        assert out is response
+
+    def test_streaming_hook_returns_confirmation_without_consuming(self, mp, fresh, env_enabled, monkeypatch):
+        lib, plugin = mp
+        test_plugin, stats, manager = self._run_command(fresh, monkeypatch)
+        logger = plugin.ModelPickerStatsLogger(stats=stats, manager=manager)
+        consumed = []
+
+        async def fake_stream():
+            consumed.append(1)
+            yield {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "model reply"},
+            }
+
+        frames = []
+
+        async def collect():
+            async for frame in logger.async_post_call_streaming_iterator_hook(
+                None, fake_stream(), {"messages": self._cmd_messages(), "model": "lite-llm/default"}
+            ):
+                frames.append(frame)
+
+        asyncio.run(collect())
+        assert consumed == []
+        joined = "".join(frames)
+        assert "Blacklisted pollinations/a-model. New pick: pollinations/b-model." in joined
+        assert "message_start" in joined and "message_stop" in joined
