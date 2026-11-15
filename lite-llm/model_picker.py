@@ -1250,6 +1250,16 @@ class StatsRegistry:
         # effective window from then on — the lie costs one failed
         # request per model, not every oversized request forever.
         self._learned_windows: dict[str, int] = {}
+        # Operator blacklists, set by the "!model-picker blacklist" command:
+        # groups here are never picked again. Persisted with the stats file
+        # so a blacklist survives proxy restarts; there is no unblacklist
+        # command — remove a name from the file (or the "blacklist" key) by
+        # hand to restore it.
+        self._blacklist: set[str] = set()
+        # The most recent blacklist command, for the post-call hooks' reply:
+        # {"model", "pick", "all_blacklisted", "ts"}. Transient — it names
+        # one request, so it is never written to the stats file.
+        self.last_blacklist: dict | None = None
         if path:
             self._load()
 
@@ -1290,6 +1300,9 @@ class StatsRegistry:
                 for name, limit in learned.items():
                     if isinstance(name, str) and isinstance(limit, int) and not isinstance(limit, bool) and limit > 0:
                         self._learned_windows[name] = limit
+            blacklist = payload.get("blacklist") if isinstance(payload, dict) else None
+            if isinstance(blacklist, list):
+                self._blacklist = {name for name in blacklist if isinstance(name, str) and name}
         except FileNotFoundError:
             pass
         except Exception as e:  # noqa: BLE001 — corrupt stats must never break routing
@@ -1305,6 +1318,7 @@ class StatsRegistry:
             payload = {
                 "version": 1,
                 "learned_windows": dict(self._learned_windows),
+                "blacklist": sorted(self._blacklist),
                 "groups": {
                     name: {
                         "events": [
@@ -1359,6 +1373,63 @@ class StatsRegistry:
 
     def learned_window(self, name: str) -> int | None:
         return self._learned_windows.get(name)
+
+    def blacklist_add(self, name: str) -> None:
+        """Blacklist a group permanently (persisted). Idempotent."""
+        if not name:
+            return
+        if name not in self._blacklist:
+            self._blacklist.add(name)
+            self._save()
+
+    def is_blacklisted(self, name: str) -> bool:
+        return name in self._blacklist
+
+    def blacklisted(self) -> frozenset[str]:
+        return frozenset(self._blacklist)
+
+    def most_recent_group(self) -> str | None:
+        """Group with the most recent observation (success or failure).
+
+        The "current model" for a blacklist command when the routing
+        plugin has no pick of its own to point at (e.g. after a proxy
+        restart): the model the proxy most recently used for anything.
+        """
+        best: str | None = None
+        best_ts = -1.0
+        for name, stats in self._groups.items():
+            if stats.last_obs_ts is not None and stats.last_obs_ts > best_ts:
+                best, best_ts = name, stats.last_obs_ts
+        return best
+
+    def record_blacklist(self, model: str, pick: str | None, all_blacklisted: bool = False) -> None:
+        """Remember the latest blacklist command for the post-call hooks.
+
+        Transient (not persisted): it names the one request whose reply
+        becomes the confirmation, so it must not outlive the process.
+        """
+        self.last_blacklist = {
+            "model": model,
+            "pick": pick,
+            "all_blacklisted": bool(all_blacklisted),
+            "ts": time.time(),
+        }
+
+    def blacklist_notice(self, max_age_seconds: float = 120.0) -> dict | None:
+        """The latest blacklist command, if it is still fresh.
+
+        A hook only confirms a command the routing plugin just handled:
+        a stale record means this request did not go through the picker
+        (or the command is an old one replayed), so the model's own
+        reply stands.
+        """
+        record = self.last_blacklist
+        if not record:
+            return None
+        ts = record.get("ts")
+        if not isinstance(ts, (int, float)) or time.time() - float(ts) > max_age_seconds:
+            return None
+        return record
 
     def effective_window(self, candidate: "ModelCandidate") -> int:
         """Window the fit filter trusts: the smaller of catalog and learned.
