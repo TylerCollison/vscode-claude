@@ -2462,6 +2462,166 @@ class TestProviderCatalogs:
 
 
 # ---------------------------------------------------------------------------
+# API key gating: providers without a configured key are excluded
+# ---------------------------------------------------------------------------
+
+
+class TestApiKeyGating:
+    """Providers without an API key never enter the candidate pool."""
+
+    def test_provider_has_key_set_unset_empty(self, mp, monkeypatch):
+        lib, _ = mp
+        cfg = lib.PickerConfig()
+        # unset -> no key
+        monkeypatch.delenv("POLLINATION_API_KEY", raising=False)
+        assert cfg.provider_has_key("pollinations") is False
+        assert cfg.provider_api_key("pollinations") is None
+        # set -> key present
+        monkeypatch.setenv("POLLINATION_API_KEY", "sk-test-123")
+        assert cfg.provider_has_key("pollinations") is True
+        assert cfg.provider_api_key("pollinations") == "sk-test-123"
+        # empty string -> no key (same as unset)
+        monkeypatch.setenv("POLLINATION_API_KEY", "")
+        assert cfg.provider_has_key("pollinations") is False
+        assert cfg.provider_api_key("pollinations") is None
+        # whitespace-only -> no key
+        monkeypatch.setenv("POLLINATION_API_KEY", "   ")
+        assert cfg.provider_has_key("pollinations") is False
+        assert cfg.provider_api_key("pollinations") is None
+
+    def test_enabled_providers_returns_only_keyed(self, mp, monkeypatch):
+        lib, _ = mp
+        cfg = lib.PickerConfig()
+        monkeypatch.delenv("POLLINATION_API_KEY", raising=False)
+        monkeypatch.delenv("NIM_API_KEY", raising=False)
+        monkeypatch.delenv("LLM7_API_KEY", raising=False)
+        assert cfg.enabled_providers() == set()
+        monkeypatch.setenv("POLLINATION_API_KEY", "key-1")
+        monkeypatch.setenv("LLM7_API_KEY", "key-2")
+        assert cfg.enabled_providers() == {"pollinations", "llm7"}
+        monkeypatch.setenv("NIM_API_KEY", "")
+        # NIM still absent (empty string)
+        assert cfg.enabled_providers() == {"pollinations", "llm7"}
+
+    def test_api_key_env_vars_mapping(self, mp):
+        lib, _ = mp
+        cfg = lib.PickerConfig()
+        assert cfg.api_key_env_vars == {
+            "pollinations": "POLLINATION_API_KEY",
+            "nvidia_nim": "NIM_API_KEY",
+            "llm7": "LLM7_API_KEY",
+        }
+
+    def test_get_snapshot_only_fetches_keyed_providers(self, fresh, monkeypatch):
+        """get_snapshot skips keyless providers entirely (no fetch, no stale-serve)."""
+        lib, _, cfg, stats, manager = fresh
+        fetched: list[str] = []
+
+        async def fake_pollinations(url, api_key):
+            fetched.append("pollinations")
+            return {
+                "data": [
+                    {
+                        "id": "openai/gpt-6-luna",
+                        "input_modalities": ["text"],
+                        "output_modalities": ["text"],
+                        "supported_endpoints": ["/v1/chat/completions"],
+                        "health": {"status": "healthy", "success_rate": 99.97, "requests": 87885},
+                        "pricing": {"currency": "pollen"},
+                    }
+                ]
+            }
+
+        async def fake_fetch_provider(url, key_env):
+            provider = key_env  # "NIM_API_KEY" or "LLM7_API_KEY"
+            fetched.append(provider)
+            if provider == "NIM_API_KEY":
+                return {"data": [{"id": "z-ai/glm-5.3"}]}
+            return {"data": [{"id": "Free", "model_type": "chat", "schema_endpoints": ["openai"], "pricing": {"input": 0, "output": 0}}]}
+
+        async def empty_modelgrep(url):
+            return []
+
+        monkeypatch.setattr("model_picker._fetch_json", fake_pollinations)
+        monkeypatch.setattr("model_picker.fetch_provider_models", fake_fetch_provider)
+        monkeypatch.setattr("model_picker.fetch_modelgrep_catalog", empty_modelgrep)
+
+        # Only pollinations keyed -> only pollinations fetched
+        monkeypatch.setenv("POLLINATION_API_KEY", "key-1")
+        monkeypatch.delenv("NIM_API_KEY", raising=False)
+        monkeypatch.delenv("LLM7_API_KEY", raising=False)
+        snap = asyncio.run(manager.get_snapshot())
+        assert fetched == ["pollinations"]
+        assert {c.name for c in snap.candidates} == {"pollinations/openai/gpt-6-luna"}
+
+        # All three keyed -> all three fetched (expire TTL first so we re-fetch)
+        fetched.clear()
+        cfg.ttl_seconds = 0.05
+        time.sleep(0.06)
+        monkeypatch.setenv("NIM_API_KEY", "key-2")
+        monkeypatch.setenv("LLM7_API_KEY", "key-3")
+        snap = asyncio.run(manager.get_snapshot())
+        assert set(fetched) == {"pollinations", "NIM_API_KEY", "LLM7_API_KEY"}
+        names = {c.name for c in snap.candidates}
+        assert "pollinations/openai/gpt-6-luna" in names
+        assert "nvidia_nim/z-ai/glm-5.3" in names
+        assert "llm7/Free" in names
+
+        # No keys at all -> nothing fetched. Cold manager -> fallback snapshot.
+        manager._snapshot = None
+        fetched.clear()
+        cfg.ttl_seconds = 0.05
+        time.sleep(0.06)
+        monkeypatch.delenv("POLLINATION_API_KEY", raising=False)
+        monkeypatch.delenv("NIM_API_KEY", raising=False)
+        monkeypatch.delenv("LLM7_API_KEY", raising=False)
+        snap = asyncio.run(manager.get_snapshot())
+        assert fetched == []
+        assert snap.stale is True
+        assert any(c.name == f"pollinations/{cfg.fallback_model}" for c in snap.candidates)
+
+    def test_rank_candidates_drops_keyless_provider_candidates(self, fresh, monkeypatch):
+        """rank_candidates drops candidates whose provider has no API key."""
+        lib, _, cfg, stats, manager = fresh
+        nim_model = lib.ModelCandidate(
+            name="nvidia_nim/z-ai/glm-5.3", provider="nvidia_nim", metricless=True, free=True
+        )
+        poll_model = lib.ModelCandidate(
+            name="pollinations/openai/gpt-6-luna", provider="pollinations", metricless=False,
+            success_rate=0.9997, requests=87885, free=True,
+        )
+        llm7_model = lib.ModelCandidate(
+            name="llm7/Free", provider="llm7", metricless=True, free=True,
+        )
+
+        # No keys at all -> every candidate dropped
+        monkeypatch.delenv("NIM_API_KEY", raising=False)
+        monkeypatch.delenv("POLLINATION_API_KEY", raising=False)
+        monkeypatch.delenv("LLM7_API_KEY", raising=False)
+        ranked = lib.rank_candidates([nim_model, poll_model, llm7_model], lib.TIER_DEFAULT, stats, cfg)
+        assert ranked == []
+
+        # Only pollinations keyed -> only pollinations candidate survives
+        monkeypatch.setenv("POLLINATION_API_KEY", "key-1")
+        ranked = lib.rank_candidates([nim_model, poll_model, llm7_model], lib.TIER_DEFAULT, stats, cfg)
+        assert [r.candidate.name for r in ranked] == ["pollinations/openai/gpt-6-luna"]
+
+        # All keyed -> all survive
+        monkeypatch.setenv("NIM_API_KEY", "key-2")
+        monkeypatch.setenv("LLM7_API_KEY", "key-3")
+        ranked = lib.rank_candidates([nim_model, poll_model, llm7_model], lib.TIER_DEFAULT, stats, cfg)
+        assert len(ranked) == 3
+
+        # Empty-string NIM key -> NIM dropped again
+        monkeypatch.setenv("NIM_API_KEY", "")
+        ranked = lib.rank_candidates([nim_model, poll_model, llm7_model], lib.TIER_DEFAULT, stats, cfg)
+        names = [r.candidate.name for r in ranked]
+        assert "nvidia_nim/z-ai/glm-5.3" not in names
+        assert "pollinations/openai/gpt-6-luna" in names
+        assert "llm7/Free" in names
+
+
+# ---------------------------------------------------------------------------
 # Plugin behavior (env gate, tier routing, retries)
 # ---------------------------------------------------------------------------
 

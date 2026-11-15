@@ -205,6 +205,35 @@ class PickerConfig:
         self.modelgrep_url = os.environ.get("MODEL_PICKER_MODELGREP_URL", MODELGREP_MODELS_URL)
         self.benchmark_ttl_seconds = _env_float("MODEL_PICKER_BENCHMARK_TTL_SECONDS", DEFAULT_BENCHMARK_TTL_SECONDS)
         self.benchmarks_enabled = os.environ.get("MODEL_PICKER_BENCHMARKS_OFF", "").strip().lower() not in ("1", "true", "yes", "on")
+        # Provider -> API key env var mapping (the same keys already passed to
+        # fetch_provider_models/_fetch_json). Presence check only: unset or
+        # empty string both mean "no key set".
+        self.api_key_env_vars = dict(
+            pollinations="POLLINATION_API_KEY",
+            nvidia_nim="NIM_API_KEY",
+            llm7="LLM7_API_KEY",
+        )
+
+    def provider_api_key(self, provider: str) -> str | None:
+        """The configured API key for a provider, or None when unset/empty.
+
+        Presence check only: the picker cannot tell a real key from a
+        placeholder, so an unset or empty-string env var both count as
+        "no key set".
+        """
+        env_var = self.api_key_env_vars.get(provider)
+        if not env_var:
+            return None
+        value = os.environ.get(env_var, "").strip()
+        return value or None
+
+    def provider_has_key(self, provider: str) -> bool:
+        """True when the provider's API key env var is set and non-empty."""
+        return self.provider_api_key(provider) is not None
+
+    def enabled_providers(self) -> set[str]:
+        """Providers whose API key env var is set (and thus fetchable)."""
+        return {p for p in self.api_key_env_vars if self.provider_has_key(p)}
 
 
 def picker_enabled() -> bool:
@@ -1808,6 +1837,11 @@ def rank_candidates(
         # it somehow reaches the snapshot.
         if not c.free:
             continue
+        # Key backstop: a candidate from a provider with no API key can
+        # never authenticate, so drop it up-front (in addition to
+        # get_snapshot skipping keyless providers entirely).
+        if not cfg.provider_has_key(c.provider):
+            continue
         entry = (c, stats_registry.derived(c.name, now))
         window = stats_registry.effective_window(c)
         if window and estimate > window:
@@ -2129,23 +2163,28 @@ class CatalogManager:
             if snap is not None and (now - snap.created_at) < self.cfg.ttl_seconds:
                 return snap
             try:
-                pollinations = await self._fetch_provider(
-                    "pollinations",
-                    lambda: _fetch_json(self.cfg.pollinations_url, os.environ.get("POLLINATION_API_KEY")),
-                    parse_pollinations_models,
-                )
-                nim = await self._fetch_provider(
-                    "nvidia_nim",
-                    lambda: fetch_provider_models(NIM_MODELS_URL, "NIM_API_KEY"),
-                    parse_nim_models,
-                )
-                llm7 = await self._fetch_provider(
-                    "llm7",
-                    lambda: fetch_provider_models(LLM7_MODELS_URL, "LLM7_API_KEY"),
-                    parse_llm7_models,
-                )
+                # Only fetch providers whose API key env var is set; keyless
+                # providers contribute no candidates (no catalog network call,
+                # no last-known stale-serve).
+                enabled = self.cfg.enabled_providers()
+                provider_specs: list[tuple[str, object, object]] = []
+                if "pollinations" in enabled:
+                    provider_specs.append(
+                        ("pollinations", lambda: _fetch_json(self.cfg.pollinations_url, os.environ.get("POLLINATION_API_KEY")), parse_pollinations_models)
+                    )
+                if "nvidia_nim" in enabled:
+                    provider_specs.append(
+                        ("nvidia_nim", lambda: fetch_provider_models(NIM_MODELS_URL, "NIM_API_KEY"), parse_nim_models)
+                    )
+                if "llm7" in enabled:
+                    provider_specs.append(
+                        ("llm7", lambda: fetch_provider_models(LLM7_MODELS_URL, "LLM7_API_KEY"), parse_llm7_models)
+                    )
+                fetched: list[ModelCandidate] = []
+                for provider_key, fetch, parse in provider_specs:
+                    fetched += await self._fetch_provider(provider_key, fetch, parse)
                 await self._refresh_modelgrep()
-                candidates = pollinations + nim + llm7
+                candidates = fetched
                 candidates = self._enrich_and_gate(candidates)
                 if not candidates:
                     raise RuntimeError("provider catalogs returned no eligible models")
