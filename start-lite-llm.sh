@@ -2,7 +2,6 @@
 
 export GOOGLE_API_KEY="${GOOGLE_API_KEY:-dummy-key}"
 export CEREBRAS_API_KEY="${CEREBRAS_API_KEY:-dummy-key}"
-export NIM_API_KEY="${NIM_API_KEY:-dummy-key}"
 export OPENCODE_ZEN_API_KEY="${OPENCODE_ZEN_API_KEY:-dummy-key}"
 export MISTRAL_API_KEY="${MISTRAL_API_KEY:-dummy-key}"
 

@@ -100,7 +100,7 @@ docker run -d \
 # Access at http://localhost:8443
 ```
 
-You can also add `-e MODEL_PICKER_ENABLED=true` to route through the model picker, which discovers free models from the Pollinations, NVIDIA NIM, and LLM7 catalogs (see "LiteLLM Router"). Its provider keys — `POLLINATION_API_KEY` and `LLM7_API_KEY` — are optional.
+You can also add `-e MODEL_PICKER_ENABLED=true` to route through the model picker, which discovers free models from the Pollinations, NVIDIA NIM, and LLM7 catalogs (see "LiteLLM Router"). A provider's models are only discovered and served when its API key env var is set — `POLLINATION_API_KEY`, `NIM_API_KEY`, or `LLM7_API_KEY` — so a keyless provider never enters the candidate pool.
 
 ## Environment Variables Reference
 
@@ -182,8 +182,9 @@ For the complete plugins marketplace reference — directory layout, the bundled
 | `EXA_API_KEY` | EXA AI web search API key (enables EXA AI web search, if set) |
 | `MODEL_PICKER_ENABLED` | Set to `true` to enable model picker mode (dynamic catalog discovery and health-ranked model selection; see "LiteLLM Router") |
 | `LITELLM_CONFIG_PATH` | Path to a custom LiteLLM config file (mounted file or a file inside a mounted folder) to use instead of the built-in config — see "Overriding the LiteLLM Config" |
-| `POLLINATION_API_KEY` | Pollinations API key — **model picker mode only**. Lets the picker rank and serve Pollinations community models; the catalog is public and can be listed without it, but request routing needs the key |
-| `LLM7_API_KEY` | LLM7 API key — **model picker mode only**. Lets the picker rank and serve LLM7 models; like Pollinations, the catalog can be listed without it |
+| `POLLINATION_API_KEY` | Pollinations API key — **model picker mode only**. When set, Pollinations models enter the picker's candidate pool; when unset or empty, Pollinations is skipped entirely (no catalog fetch, no stale-serve) |
+| `NIM_API_KEY` | Nvidia NIM API key — **model picker mode only**. When set, NVIDIA NIM models enter the candidate pool; when unset or empty, NIM is skipped entirely (no catalog fetch, no stale-serve) |
+| `LLM7_API_KEY` | LLM7 API key — **model picker mode only**. When set, LLM7 models enter the candidate pool; when unset or empty, LLM7 is skipped entirely (no catalog fetch, no stale-serve) |
 
 Claude Code is pre-configured to route all requests through the LiteLLM proxy at `http://127.0.0.1:5090`. The router automatically selects models based on request content:
 
@@ -805,7 +806,7 @@ The routing configuration lives in `/lite-llm/lite-llm-default.yaml`. All config
 
 Each model group has a fallback chain defined in the YAML config, so if the primary model is unavailable, traffic routes to alternative providers automatically.
 
-**Model picker mode** (`MODEL_PICKER_ENABLED=true`): the proxy loads `/lite-llm/lite-llm-picker.yaml` instead of the default config. A routing plugin discovers free chat-capable models live from the Pollinations, NVIDIA NIM, and LLM7 catalogs, ranks them by published and self-tracked health (latency, failure and rate-limit history), and serves each request from the best-ranked candidate for its tier — retrying in-request through the next-ranked model when a provider fails or truncates mid-stream, so a partial answer is never returned as if complete. A response whose only content is a tool call written out as JSON text — instead of a structured tool call — is recovered by feeding the payload back through LiteLLM's translation, so the intended call executes; a recovered response counts as a success, not a failure. Payloads that cannot be parsed are not recovered and pass through as text; any well-formed tool-call payload is converted, whether or not the tool was declared in the request.
+**Model picker mode** (`MODEL_PICKER_ENABLED=true`): the proxy loads `/lite-llm/lite-llm-picker.yaml` instead of the default config. A routing plugin discovers free chat-capable models live from the Pollinations, NVIDIA NIM, and LLM7 catalogs, ranks them by published and self-tracked health (latency, failure and rate-limit history), and serves each request from the best-ranked candidate for its tier — retrying in-request through the next-ranked model when a provider fails or truncates mid-stream, so a partial answer is never returned as if complete. A response whose only content is a tool call written out as JSON text — instead of a structured tool call — is recovered by feeding the payload back through LiteLLM's translation, so the intended call executes; a recovered response counts as a success, not a failure. Payloads that cannot be parsed are not recovered and pass through as text; any well-formed tool-call payload is converted, whether or not the tool was declared in the request. A provider's models are only discovered when its API key env var is set (`POLLINATION_API_KEY`, `NIM_API_KEY`, `LLM7_API_KEY`); a keyless provider is skipped entirely — no catalog fetch, no last-known stale-serve — so it never ranks, serves, or retries.
 
 **Model picker ranking:** in picker mode the table's primary models above are just tier placeholders — the actual pick is ranked live per request. Before ranking, a candidate must be free (NVIDIA NIM models are treated as free, since their catalog carries no pricing), available, matched by the modelgrep gate, and fit the request's estimated size against its effective context window (the smaller of the catalog claim and any limit learned from a past context error — a provider-stated limit when the error carries one, otherwise one token below the failing request's estimate, learned on every retry attempt, not just when the whole call fails). Models that failed within the last 60 seconds, and models this request already tried, are skipped while alternatives remain. Learned health persists across proxy restarts, so a model that failed yesterday is still demoted today.
 
