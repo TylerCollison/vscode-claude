@@ -396,10 +396,20 @@ class BuildEnvironmentManager:
         container_name = self._generate_container_name()
 
         # Create and start new container
+        # Try to get the image locally first
         try:
             self.docker_client.images.get(image_name)
         except NotFound:
-            raise BuildEnvironmentError(f"Docker image not found: {image_name}")
+            # Image not found locally, attempt to pull it
+            try:
+                self.docker_client.images.pull(image_name)
+            except Exception as pull_error:
+                # Provide a helpful error message with remediation hint
+                raise BuildEnvironmentError(
+                    f"Docker image not found: {image_name}. "
+                    f"Attempted to pull but failed: {pull_error}. "
+                    f"Try pulling manually with: docker pull {image_name}"
+                )
 
         # Create container without volume mount
         # We'll copy files on each command execution for Docker-in-Docker scenarios
