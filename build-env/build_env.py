@@ -1,6 +1,7 @@
 """Build environment manager core logic."""
 
 import os
+import sys
 from typing import Dict, Optional, Any
 import docker
 from docker.errors import NotFound
@@ -432,6 +433,12 @@ class BuildEnvironmentManager:
     def _execute_command(self, container_name: str, command: str, env_vars: Dict[str, str]) -> tuple:
         """Execute command in container.
 
+        Streams stdout and stderr to the host in real time, preserving the
+        chronological interleaving of the two streams as delivered by Docker's
+        multiplexed exec protocol. Previously stdout and stderr were concatenated
+        separately (all of stdout, then all of stderr), which destroyed the
+        original ordering.
+
         Args:
             container_name: Name of the container
             command: Command to execute
@@ -450,15 +457,43 @@ class BuildEnvironmentManager:
             # Sync host → container before command execution
             self._synchronize_host_to_container(container_name, workspace_path)
 
-        # Execute command
-        exec_result = container.exec_run(
+        # Create the exec instance explicitly so we can read the exit code after
+        # the command completes. exec_run with stream=True returns exit_code=None,
+        # so we use the lower-level API to keep hold of the exec id.
+        exec_id = self.docker_client.api.exec_create(
+            container.id,
             command,
-            detach=False,
+            stdout=True,
+            stderr=True,
+            stdin=True,
+            tty=False,
             environment=env_vars,
             workdir=env_vars.get('DEFAULT_WORKSPACE', '/workspace'),
+        )['Id']
+
+        # Start the exec with stream=True and demux=True so stdout and stderr
+        # arrive as separate frames tagged with their stream id, in the exact
+        # chronological order they were produced on the container.
+        output = self.docker_client.api.exec_start(
+            exec_id,
+            detach=False,
             tty=False,
-            stdin=True
+            stream=True,
+            demux=True,
         )
+
+        interleaved: list = []
+        for stdout_chunk, stderr_chunk in output:
+            if stdout_chunk:
+                sys.stdout.buffer.write(stdout_chunk)
+                sys.stdout.buffer.flush()
+                interleaved.append(stdout_chunk)
+            if stderr_chunk:
+                sys.stderr.buffer.write(stderr_chunk)
+                sys.stderr.buffer.flush()
+                interleaved.append(stderr_chunk)
+
+        exit_code = self.docker_client.api.exec_inspect(exec_id)['ExitCode']
 
         # Synchronize workspace files back from container to host after command execution
         if self._is_docker_in_docker():
@@ -466,8 +501,8 @@ class BuildEnvironmentManager:
             # Sync container → host after command execution
             self._synchronize_container_to_host(container_name, workspace_path)
 
-        # Return exit code and output
-        return exec_result.exit_code, exec_result.output
+        # Return exit code and the interleaved output
+        return exit_code, b"".join(interleaved)
 
     def _store_container_uuid(self, container_name: str, workspace_path: str) -> None:
         """Store container UUID in a file for later shutdown.

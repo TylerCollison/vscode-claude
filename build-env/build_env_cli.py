@@ -60,16 +60,11 @@ def main():
         )
 
         if args.command:
-            # Execute command
+            # Execute command. Output is streamed to stdout/stderr in real time
+            # (with interleaving preserved) by _execute_command, so it must not
+            # be printed again here.
             command = ' '.join(args.command)
-            exit_code, output = manager._execute_command(container_name, command, env_vars)
-
-            # Print output if there is any
-            if output:
-                # Docker exec_run returns bytes, decode to string
-                if isinstance(output, bytes):
-                    output = output.decode('utf-8')
-                print(output.strip())
+            exit_code, _ = manager._execute_command(container_name, command, env_vars)
 
             return exit_code
         else:
