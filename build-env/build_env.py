@@ -1,6 +1,7 @@
 """Build environment manager core logic."""
 
 import os
+import time
 from typing import Dict, Optional, Any
 import docker
 from docker.errors import NotFound
@@ -93,6 +94,54 @@ class BuildEnvironmentManager:
             UUID string
         """
         return generate_container_uuid()
+
+    def _acquire_lock(self, workspace_path: str, timeout: float = 30.0) -> Optional[int]:
+        """Acquire a file-based lock for the workspace.
+
+        Args:
+            workspace_path: Path to the workspace
+            timeout: Maximum time to wait for lock in seconds
+
+        Returns:
+            File descriptor if lock acquired, None if timeout
+        """
+        lock_dir = os.path.join(workspace_path, ".build-env")
+        os.makedirs(lock_dir, exist_ok=True)
+        lock_file = os.path.join(lock_dir, "container.uuid.lock")
+
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            try:
+                # O_CREAT | O_EXCL ensures atomic creation - fails if file exists
+                fd = os.open(lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+                return fd
+            except FileExistsError:
+                # Lock held by another process, wait and retry
+                time.sleep(0.1)
+            except Exception:
+                # Other errors (permission, etc.)
+                return None
+
+        return None
+
+    def _release_lock(self, workspace_path: str, fd: Optional[int]) -> None:
+        """Release the file-based lock.
+
+        Args:
+            workspace_path: Path to the workspace
+            fd: File descriptor from _acquire_lock
+        """
+        if fd is None:
+            return
+        try:
+            os.close(fd)
+        except Exception:
+            pass
+        lock_file = os.path.join(workspace_path, ".build-env", "container.uuid.lock")
+        try:
+            os.remove(lock_file)
+        except Exception:
+            pass
 
     def _is_docker_in_docker(self) -> bool:
         """Check if running in Docker-in-Docker scenario.
@@ -373,61 +422,70 @@ class BuildEnvironmentManager:
         except SecurityError as e:
             raise BuildEnvironmentError(f"Invalid image name: {e}")
 
-        # First check if we have a stored UUID for this workspace
-        stored_uuid = self._get_stored_container_uuid(workspace_path)
-        if stored_uuid:
-            container_name = f"build-env-{stored_uuid}"
-            # Check if stored container exists and is running
-            try:
-                container = self.docker_client.containers.get(container_name)
-                if container.status == "running":
-                    return container_name
-                else:
-                    # Container exists but is not running, remove it
-                    container.stop()
-                    container.remove(force=True)
-                    # Remove the stale UUID file
-                    self._remove_stored_uuid(workspace_path)
-            except NotFound:
-                # Stored container doesn't exist, remove stale UUID file
-                self._remove_stored_uuid(workspace_path)
+        # Acquire lock to prevent race conditions during container creation
+        lock_fd = self._acquire_lock(workspace_path)
+        if lock_fd is None:
+            raise BuildEnvironmentError("Could not acquire lock for container creation")
 
-        # Generate new container name
-        container_name = self._generate_container_name()
-
-        # Create and start new container
         try:
-            self.docker_client.images.get(image_name)
-        except NotFound:
-            raise BuildEnvironmentError(f"Docker image not found: {image_name}")
+            # First check if we have a stored UUID for this workspace
+            stored_uuid = self._get_stored_container_uuid(workspace_path)
+            if stored_uuid:
+                container_name = f"build-env-{stored_uuid}"
+                # Check if stored container exists and is running
+                try:
+                    container = self.docker_client.containers.get(container_name)
+                    if container.status == "running":
+                        return container_name
+                    else:
+                        # Container exists but is not running, remove it
+                        container.stop()
+                        container.remove(force=True)
+                        # Remove the stale UUID file
+                        self._remove_stored_uuid(workspace_path)
+                except NotFound:
+                    # Stored container doesn't exist, remove stale UUID file
+                    self._remove_stored_uuid(workspace_path)
 
-        # Create container without volume mount
-        # We'll copy files on each command execution for Docker-in-Docker scenarios
-        container = self.docker_client.containers.create(
-            image=image_name,
-            name=container_name,
-            working_dir=workspace_path,
-            environment=env_vars,
-            command=["tail", "-f", "/dev/null"],  # Keep container running
-            detach=True
-        )
-        container.start()
+            # Generate new container name
+            container_name = self._generate_container_name()
 
-        # Synchronize workspace files for Docker-in-Docker scenarios
-        if self._is_docker_in_docker():
-            # Sync host → container initially
-            self._synchronize_host_to_container(container_name, workspace_path)
+            # Create and start new container
+            try:
+                self.docker_client.images.get(image_name)
+            except NotFound:
+                raise BuildEnvironmentError(f"Docker image not found: {image_name}")
 
-        # Synchronize workspace files after container startup
-        # This ensures any initial container setup is reflected back to host
-        if self._is_docker_in_docker():
-            # Sync container → host after startup
-            self._synchronize_container_to_host(container_name, workspace_path)
+            # Create container without volume mount
+            # We'll copy files on each command execution for Docker-in-Docker scenarios
+            container = self.docker_client.containers.create(
+                image=image_name,
+                name=container_name,
+                working_dir=workspace_path,
+                environment=env_vars,
+                command=["tail", "-f", "/dev/null"],  # Keep container running
+                detach=True
+            )
+            container.start()
 
-        # Store container UUID in file for later shutdown
-        self._store_container_uuid(container_name, workspace_path)
+            # Synchronize workspace files for Docker-in-Docker scenarios
+            if self._is_docker_in_docker():
+                # Sync host → container initially
+                self._synchronize_host_to_container(container_name, workspace_path)
 
-        return container_name
+            # Synchronize workspace files after container startup
+            # This ensures any initial container setup is reflected back to host
+            if self._is_docker_in_docker():
+                # Sync container → host after startup
+                self._synchronize_container_to_host(container_name, workspace_path)
+
+            # Store container UUID in file for later shutdown
+            self._store_container_uuid(container_name, workspace_path)
+
+            return container_name
+        finally:
+            # Always release the lock
+            self._release_lock(workspace_path, lock_fd)
 
     def _execute_command(self, container_name: str, command: str, env_vars: Dict[str, str]) -> tuple:
         """Execute command in container.
