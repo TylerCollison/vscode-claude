@@ -1,7 +1,15 @@
 """Build environment manager core logic."""
 
 import os
+<<<<<<< HEAD
 from typing import Dict, Optional, Any
+=======
+import subprocess
+import tempfile
+import tarfile
+import io
+from typing import Dict, Optional, Any, Set, Tuple, List, NamedTuple
+>>>>>>> 45a58277430e0b931b04bce9cc53b0c1dff4934a
 import docker
 from docker.errors import NotFound
 
@@ -12,6 +20,16 @@ from security import (
 )
 
 
+<<<<<<< HEAD
+=======
+class FileMetadata(NamedTuple):
+    """File metadata for synchronization comparison."""
+    path: str
+    mtime: float
+    size: int
+
+
+>>>>>>> 45a58277430e0b931b04bce9cc53b0c1dff4934a
 class BuildEnvironmentError(Exception):
     """Build environment error."""
     pass
@@ -104,6 +122,7 @@ class BuildEnvironmentManager:
         docker_in_docker = os.path.exists('/.dockerenv') and os.path.exists('/var/run/docker.sock')
         return docker_in_docker
 
+<<<<<<< HEAD
     def _get_file_mtime_map(self, directory: str) -> Dict[str, float]:
         """Get a map of relative file paths to their modification times.
 
@@ -171,6 +190,10 @@ class BuildEnvironmentManager:
 
     def _synchronize_host_to_container(self, container_name: str, workspace_path: str) -> bool:
         """Synchronize files from host to container with incremental sync using mtime comparison.
+=======
+    def _synchronize_host_to_container(self, container_name: str, workspace_path: str) -> bool:
+        """Synchronize files from host to container with timestamp-based conflict resolution.
+>>>>>>> 45a58277430e0b931b04bce9cc53b0c1dff4934a
 
         Args:
             container_name: Name of the container
@@ -180,10 +203,13 @@ class BuildEnvironmentManager:
             True if successful, False otherwise
         """
         try:
+<<<<<<< HEAD
             import subprocess
             import tarfile
             import io
 
+=======
+>>>>>>> 45a58277430e0b931b04bce9cc53b0c1dff4934a
             # Get container
             container = self.docker_client.containers.get(container_name)
 
@@ -195,6 +221,7 @@ class BuildEnvironmentManager:
             # Remove .build-env directory in container to prevent UUID contamination
             container.exec_run(f'rm -rf {workspace_path}/.build-env')
 
+<<<<<<< HEAD
             # Get file mtime maps for comparison
             host_mtime_map = self._get_file_mtime_map(workspace_path)
             container_mtime_map = self._get_container_file_mtime_map(container_name, workspace_path)
@@ -233,12 +260,44 @@ class BuildEnvironmentManager:
             )
 
             return result.returncode == 0
+=======
+            # Get file metadata from both sides
+            host_metadata = {meta.path: meta for meta in self._get_file_metadata(workspace_path)}
+            container_metadata = {meta.path: meta for meta in self._get_container_file_metadata(container_name, workspace_path)}
+
+            host_files = set(host_metadata.keys())
+            container_files = set(container_metadata.keys())
+
+            # Delete files in container that don't exist on host
+            files_to_delete = container_files - host_files
+            for file_path in files_to_delete:
+                container.exec_run(f'rm -rf {workspace_path}/{file_path}')
+
+            # Copy files from host to container, using timestamp comparison for conflicts
+            for file_path, host_meta in host_metadata.items():
+                container_meta = container_metadata.get(file_path)
+                if container_meta is None:
+                    # File doesn't exist in container, copy it
+                    self._copy_file_to_container(container_name, workspace_path, file_path)
+                else:
+                    # File exists in both, compare timestamps
+                    if host_meta.mtime > container_meta.mtime:
+                        # Host version is newer, copy it
+                        self._copy_file_to_container(container_name, workspace_path, file_path)
+                    # If container version is newer or equal, keep container version (no action needed)
+
+            return True
+>>>>>>> 45a58277430e0b931b04bce9cc53b0c1dff4934a
 
         except Exception as e:
             return False
 
     def _synchronize_container_to_host(self, container_name: str, workspace_path: str) -> bool:
+<<<<<<< HEAD
         """Synchronize files from container to host with incremental sync using mtime comparison.
+=======
+        """Synchronize files from container to host with timestamp-based conflict resolution.
+>>>>>>> 45a58277430e0b931b04bce9cc53b0c1dff4934a
 
         Args:
             container_name: Name of the container
@@ -248,22 +307,37 @@ class BuildEnvironmentManager:
             True if successful, False otherwise
         """
         try:
+<<<<<<< HEAD
             import subprocess
             import tarfile
             import io
 
+=======
+>>>>>>> 45a58277430e0b931b04bce9cc53b0c1dff4934a
             # Remove .build-env directory on host to prevent UUID contamination
             build_env_path = os.path.join(workspace_path, '.build-env')
             if os.path.exists(build_env_path):
                 import shutil
                 shutil.rmtree(build_env_path)
 
+<<<<<<< HEAD
             # Get file mtime maps for comparison
             host_mtime_map = self._get_file_mtime_map(workspace_path)
             container_mtime_map = self._get_container_file_mtime_map(container_name, workspace_path)
 
             # Determine files to delete (exist on host but not in container)
             files_to_delete = set(host_mtime_map.keys()) - set(container_mtime_map.keys())
+=======
+            # Get file metadata from both sides
+            host_metadata = {meta.path: meta for meta in self._get_file_metadata(workspace_path)}
+            container_metadata = {meta.path: meta for meta in self._get_container_file_metadata(container_name, workspace_path)}
+
+            host_files = set(host_metadata.keys())
+            container_files = set(container_metadata.keys())
+
+            # Delete files on host that don't exist in container
+            files_to_delete = host_files - container_files
+>>>>>>> 45a58277430e0b931b04bce9cc53b0c1dff4934a
             for file_path in files_to_delete:
                 full_path = os.path.join(workspace_path, file_path)
                 try:
@@ -273,6 +347,7 @@ class BuildEnvironmentManager:
                         import shutil
                         shutil.rmtree(full_path)
                 except Exception:
+<<<<<<< HEAD
                     pass  # Continue with other files
 
             # Determine files to copy (new or modified based on mtime)
@@ -310,6 +385,22 @@ class BuildEnvironmentManager:
 
             with tarfile.open(fileobj=tar_buffer, mode='r') as tar:
                 tar.extractall(path=workspace_path)
+=======
+                    pass  # Continue with other files even if one fails
+
+            # Copy files from container to host, using timestamp comparison for conflicts
+            for file_path, container_meta in container_metadata.items():
+                host_meta = host_metadata.get(file_path)
+                if host_meta is None:
+                    # File doesn't exist on host, copy it
+                    self._copy_file_from_container(container_name, workspace_path, file_path, workspace_path)
+                else:
+                    # File exists in both, compare timestamps
+                    if container_meta.mtime > host_meta.mtime:
+                        # Container version is newer, copy it
+                        self._copy_file_from_container(container_name, workspace_path, file_path, workspace_path)
+                    # If host version is newer or equal, keep host version (no action needed)
+>>>>>>> 45a58277430e0b931b04bce9cc53b0c1dff4934a
 
             return True
 
@@ -332,7 +423,11 @@ class BuildEnvironmentManager:
         container_to_host = self._synchronize_container_to_host(container_name, workspace_path)
         return host_to_container and container_to_host
 
+<<<<<<< HEAD
     def _get_file_list(self, directory: str) -> set[str]:
+=======
+    def _get_file_list(self, directory: str) -> Set[str]:
+>>>>>>> 45a58277430e0b931b04bce9cc53b0c1dff4934a
         """Get recursive file and directory list from directory, skipping .build-env directories.
 
         Args:
@@ -346,12 +441,35 @@ class BuildEnvironmentManager:
             NotADirectoryError: If path is not a directory
             PermissionError: If access to directory is denied
         """
+<<<<<<< HEAD
+=======
+        return {meta.path for meta in self._get_file_metadata(directory)}
+
+    def _get_file_metadata(self, directory: str) -> List[FileMetadata]:
+        """Get recursive file metadata from directory, skipping .build-env directories.
+
+        Args:
+            directory: Path to directory
+
+        Returns:
+            List of FileMetadata (path, mtime, size) for files and directories
+
+        Raises:
+            FileNotFoundError: If directory doesn't exist
+            NotADirectoryError: If path is not a directory
+            PermissionError: If access to directory is denied
+        """
+>>>>>>> 45a58277430e0b931b04bce9cc53b0c1dff4934a
         if not os.path.exists(directory):
             raise FileNotFoundError(f"Directory does not exist: {directory}")
         if not os.path.isdir(directory):
             raise NotADirectoryError(f"Path is not a directory: {directory}")
 
+<<<<<<< HEAD
         file_list = set()
+=======
+        file_metadata = []
+>>>>>>> 45a58277430e0b931b04bce9cc53b0c1dff4934a
 
         try:
             for root, dirs, files in os.walk(directory):
@@ -363,17 +481,135 @@ class BuildEnvironmentManager:
                 for dir_name in dirs:
                     abs_path = os.path.join(root, dir_name)
                     rel_path = os.path.relpath(abs_path, directory)
+<<<<<<< HEAD
                     file_list.add(rel_path)
+=======
+                    stat = os.stat(abs_path)
+                    file_metadata.append(FileMetadata(
+                        path=rel_path,
+                        mtime=stat.st_mtime,
+                        size=stat.st_size
+                    ))
+>>>>>>> 45a58277430e0b931b04bce9cc53b0c1dff4934a
 
                 # Add files to the list
                 for file in files:
                     abs_path = os.path.join(root, file)
                     rel_path = os.path.relpath(abs_path, directory)
+<<<<<<< HEAD
                     file_list.add(rel_path)
         except PermissionError as e:
             raise PermissionError(f"Permission denied accessing directory: {directory}") from e
 
         return file_list
+=======
+                    stat = os.stat(abs_path)
+                    file_metadata.append(FileMetadata(
+                        path=rel_path,
+                        mtime=stat.st_mtime,
+                        size=stat.st_size
+                    ))
+        except PermissionError as e:
+            raise PermissionError(f"Permission denied accessing directory: {directory}") from e
+
+        return file_metadata
+
+    def _get_container_file_metadata(self, container_name: str, workspace_path: str) -> List[FileMetadata]:
+        """Get file metadata from container workspace.
+
+        Args:
+            container_name: Name of the container
+            workspace_path: Path to the workspace in container
+
+        Returns:
+            List of FileMetadata for files in container
+        """
+        try:
+            # Use docker exec with find to get file metadata from container
+            # Format: path|mtime|size
+            cmd = [
+                'find', workspace_path,
+                '-not', '-path', f'{workspace_path}/.build-env/*',
+                '-not', '-path', f'{workspace_path}/.build-env',
+                '-printf', '%P|%T@|%s\\n'
+            ]
+            result = subprocess.run(
+                ['docker', 'exec', container_name] + cmd,
+                capture_output=True,
+                text=True
+            )
+
+            file_metadata = []
+            if result.returncode == 0 and result.stdout:
+                for line in result.stdout.strip().split('\n'):
+                    if line:
+                        parts = line.split('|')
+                        if len(parts) == 3:
+                            path, mtime_str, size_str = parts
+                            try:
+                                file_metadata.append(FileMetadata(
+                                    path=path,
+                                    mtime=float(mtime_str),
+                                    size=int(size_str)
+                                ))
+                            except (ValueError, TypeError):
+                                pass
+            return file_metadata
+        except Exception:
+            return []
+
+    def _copy_file_to_container(self, container_name: str, workspace_path: str, file_path: str) -> bool:
+        """Copy a single file from host to container.
+
+        Args:
+            container_name: Name of the container
+            workspace_path: Workspace path in container
+            file_path: Relative file path to copy
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            host_file = os.path.join(workspace_path, file_path)
+            if not os.path.exists(host_file):
+                return False
+
+            # Use docker cp for single file
+            result = subprocess.run(
+                ['docker', 'cp', host_file, f'{container_name}:{workspace_path}/{file_path}'],
+                capture_output=True,
+                text=True
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+
+    def _copy_file_from_container(self, container_name: str, workspace_path: str, file_path: str, host_workspace_path: str) -> bool:
+        """Copy a single file from container to host.
+
+        Args:
+            container_name: Name of the container
+            workspace_path: Workspace path in container
+            file_path: Relative file path to copy
+            host_workspace_path: Host workspace path
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            host_file = os.path.join(host_workspace_path, file_path)
+            os.makedirs(os.path.dirname(host_file), exist_ok=True)
+
+            # Use docker cp for single file
+            result = subprocess.run(
+                ['docker', 'cp', f'{container_name}:{workspace_path}/{file_path}', host_file],
+                capture_output=True,
+                text=True
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+>>>>>>> 45a58277430e0b931b04bce9cc53b0c1dff4934a
 
     def _delete_files_in_destination(self, dest_dir: str, source_files: set[str], dest_files: set[str]) -> None:
         """Delete files in destination that don't exist in source.
