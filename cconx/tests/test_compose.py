@@ -113,17 +113,19 @@ def test_generate_with_empty_environment_vars():
     service = config["services"]["vscode-claude"]
 
     env_vars = {item.split('=')[0]: item.split('=')[1] for item in service["environment"]}
-    assert len(env_vars) == 2  # Only default variables
+    assert len(env_vars) == 1  # Only default variables (IDE_ADDRESS)
 
 
 def test_environment_variable_merging():
     """Test that environment variables merge correctly"""
-    # Override default variables
-    config = generate("test-instance", 8443, env_vars, enabled_volumes=["/config", "/workspace"])
+    # Custom variables merged with defaults; custom values override
+    custom_env_vars = {"IDE_ADDRESS": "http://custom:9999", "CUSTOM_VAR": "custom_value"}
+    config = generate("test-instance", 8443, custom_env_vars, enabled_volumes=["/config", "/workspace"])
     service = config["services"]["vscode-claude"]
 
     env_vars_dict = {item.split('=')[0]: item.split('=')[1] for item in service["environment"]}
-    assert env_vars_dict["IDE_ADDRESS"] == "http://localhost:8443"
+    assert env_vars_dict["IDE_ADDRESS"] == "http://custom:9999"  # Custom value should override
+    assert env_vars_dict["CUSTOM_VAR"] == "custom_value"
 
 
 def test_volume_configuration():

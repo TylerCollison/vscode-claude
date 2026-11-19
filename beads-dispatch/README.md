@@ -1,0 +1,150 @@
+# Beads Dispatch
+
+Automatically dispatches a worker (swarm service or local container) whenever you **commit** in
+the workspace repo and a Beads task is **ready** (open, no active blockers). Each worker is
+created from the running container's own image, with `GIT_BRANCH_NAME` set to a branch named
+after the task and **no volume mounts** (ephemeral filesystem — the existing `git-repo-setup.sh`
+clones the repo and creates/checks out the branch on boot).
+
+## How it works
+
+1. On container start, a **root daemon** (`beads-dispatch --daemon`) installs a `post-commit`
+   hook in the workspace repo and listens on `/run/beads-dispatch.sock`.
+2. Every `git commit` runs the hook (as the committer). The hook **pings the socket** — nothing
+   else; commits stay fast and are never broken.
+3. The daemon checks `bd list --ready --json` and, for each ready task **not yet dispatched**,
+   creates a worker:
+   - **branch name** = `task/<issue-id>-<slug>` (derived but not created by the dispatcher),
+   - passes the branch name via `GIT_BRANCH_NAME` environment variable to the worker,
+   - **swarm manager node** → `docker service create` (a swarm service),
+   - **otherwise** → `docker run -d` (a local container).
+4. The task is recorded in the seen-set so a later commit never re-dispatches it. To
+   re-dispatch anyway (e.g. after a crashed or deleted worker), run `dispatch-beads --force`
+   (one-shot), or start the daemon with `--force` to force every trigger.
+5. The worker (via `git-repo-setup.sh`) clones the repository and **automatically creates
+   the branch off the default branch** (typically `main`) if it doesn't exist, or checks it out if it does.
+
+On a swarm manager the service is created with `docker service create --with-registry-auth`, so the
+caller's Docker credential config is forwarded to the node that pulls the worker image — see
+[Private registries](#private-registries) below.
+
+## Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BEADS_DISPATCH` | *(unset)* | `true` enables the dispatcher on container startup |
+| `BEADS_DISPATCH_BRANCH_PREFIX` | `task` | Git branch prefix: `<prefix>/<issue-id>-<slug>` |
+| `BEADS_DISPATCH_PORT_BASE` | `8000` | Lowest host port considered for the worker's code-server (8443) mapping |
+| `BEADS_DISPATCH_WORKER_PORT` | `8443` | Internal port published on the worker (code-server) |
+| `BEADS_DISPATCH_STATE_DIR` | `/config/.beads-dispatch` | Where the seen-set state file lives |
+| `WORKER_RESERVE_MEMORY` | `1g` | Swarm memory reservation per worker (`docker service create --reserve-memory`); `0` disables it. A worker runs ~0.5–1GB, and with no reservation Swarm counted workers as free and overloaded 8GB dockerblade (2026-11-18) |
+| `WORKER_RESERVE_CPU` | `0.5` | Swarm CPU reservation per worker (`--reserve-cpu`); `0` disables it |
+| `WORKER_LIMIT_MEMORY` | `2g` | Swarm memory limit per worker (`--limit-memory`); `0` disables it. Must be >= `WORKER_RESERVE_MEMORY` or `docker service create` rejects the service |
+| `WORKER_LIMIT_CPU` | `2` | Swarm CPU limit per worker (`--limit-cpu`); `0` disables it. Must be >= `WORKER_RESERVE_CPU` |
+| `WORKER_NODE_ALLOWLIST` | *(unset)* | Comma-separated Swarm node hostnames workers may run on; unset means all nodes eligible. A multi-node list is enforced by excluding every other node (Swarm constraints are ANDed, so several `node.hostname==` constraints could never match) |
+| `WORKER_NODE_DENYLIST` | *(unset)* | Comma-separated Swarm node hostnames workers must not run on (e.g. `dockerblade`); subtracted from the allowlist when both are set. If the filter cannot be enforced, dispatch fails closed rather than dispatching unconstrained |
+| `BEADS_REMOTE` | *(set on workers)* | Git URL all bd (task-DB) operations sync through. When set in the parent env, the dispatcher targets it (`dolt remote add` / `dolt push`) and workers inherit it as their sync source; when unset, the workspace git repo (`GIT_REPO_URL` / git origin) is used |
+
+## Task sync (Dolt)
+
+Beads tasks live in the **embedded Dolt database** (`.beads/embeddeddolt/...`), which is
+**gitignored** — a plain repo clone never contains the tasks. To make tasks available in
+replicated workers, the dispatcher and the startup script sync the Dolt DB through the git
+remote:
+
+- **On dispatch** (`beads_dispatch.py`): before creating the worker, the dispatcher runs
+  `bd dolt remote add origin <remote>` (idempotent) and `bd dolt push`, so the task data
+  (including the just-created task) is on the remote. The remote is **`BEADS_REMOTE` when
+  set** in the parent env, else the workspace git repo.
+- **On worker startup** (`configure-beads.sh`): the worker runs `bd bootstrap --yes`, which
+  auto-detects the Dolt DB on the remote and clones it (creating the local DB from the
+  remote — recommended over `init` + `dolt pull`, which risks divergent histories). If the
+  remote has nothing yet, `bd dolt pull` runs as a fallback; workers do not run `bd init`
+  (it requires `BEADS_ENABLED=true`).
+- The worker knows where to sync from via **`BEADS_REMOTE`** (set by the dispatcher's
+  `compose_worker_env`: the parent's `BEADS_REMOTE` when set, defaulting to the repo URL).
+
+This requires the same git credentials as the branch push (configured automatically via the
+`gh` / `glab` credential helpers on startup).
+
+## Prerequisites
+
+- The container must be started with `/var/run/docker.sock` mounted (standard config).
+- A git repo in the workspace (`GIT_REPO_URL` set, or a mounted/checked-out repo), and the parent
+  must be able to **push** to its origin (credential helper / token configured) — or to
+  `BEADS_REMOTE` when set, which the Dolt push uses instead.
+- Beads setup runs automatically for workers: the dispatcher sets `BEADS_REMOTE`, so
+  `configure-beads.sh` bootstraps the Dolt task DB on startup regardless of `BEADS_ENABLED`
+  (workers get `BEADS_ENABLED=false`; `bd init` itself still requires `BEADS_ENABLED=true`).
+  The script tolerates a missing `bd` binary.
+
+## Private registries
+
+Workers are created from the parent container's own image (`inspect_self()` → `Config.Image`), so
+a worker can be asked to pull an image from a **private registry**.
+
+On a **swarm manager** the worker is a `docker service create` call, and the swarm node that pulls
+the image does not necessarily have the caller's credentials. The dispatcher therefore passes
+`--with-registry-auth`, which forwards the local Docker credential config to the pulling node.
+Without it, a node that has not logged in cannot pull the image and the worker fails to start with
+an image-pull error. The flag is a **no-op when the registry has no credential entry**, so
+unauthenticated environments are unaffected.
+
+`docker run` (local dispatch) has no such flag and needs none: the local daemon already uses the
+local credential config when it pulls.
+
+> **Prerequisite:** registry credentials must exist **inside the container** for the flag to have
+> any effect — run `docker login <your-registry>` in the container, or mount a populated
+> `~/.docker/config.json` (e.g. `- /path/to/docker-config:/root/.docker:ro`). The dispatcher does
+> not perform a registry login itself.
+
+## Worker behavior
+
+- Same image and full environment as the parent, with `GIT_BRANCH_NAME` set, `GIT_REPO_URL`
+  ensured, `BEADS_REMOTE` set (Dolt sync source), and `BEADS_DISPATCH=false` (workers never
+  dispatch their own workers; no hook is installed in their repos).
+- **Hostname = container name** — the worker's hostname matches its container name, which is
+  derived from the task (`<issue-slug>-<issue-id>`, e.g. `update-readme-workspace-4yd`), so
+  `docker ps`/`exec` match the task.
+- **Docker socket is the only volume** — `/var/run/docker.sock` is mounted (so a replicated
+  container can drive the host daemon); `/config` and `/workspace` stay ephemeral (no other
+  volumes are replicated).
+- **Network config is replicated** — the worker inherits the parent's DNS servers,
+  search domains, DNS options and extra hosts (`docker inspect .HostConfig.Dns/{DnsSearch/
+  DnsOptions/ExtraHosts}`), so the worker resolves the same names (e.g. compose `dns:`).
+- On startup the worker runs `bd bootstrap` to clone the task DB from the remote, so
+  `bd list` shows the dispatched task.
+- The dispatched agent is instructed (via the injected prompt) to **claim the task**
+  (`bd update <issue-id> --claim` — assigns itself and sets it in-progress) and run
+  `bd dolt push` before starting on the work, so the in-progress state is visible on
+  the remote.
+- Code-server (8443) is published on the first free host port ≥ `BEADS_DISPATCH_PORT_BASE`.
+- Restart policy is inherited from the parent (local) / `any` (swarm service).
+
+## Development
+
+```bash
+# Unit tests (no docker daemon needed)
+python3 beads-dispatch/tests/test_beads_dispatch.py
+
+# One-shot install + dispatch (manual testing)
+BEADS_DISPATCH=true /usr/local/bin/beads-dispatch --once
+
+# Manual trigger (if daemon is already running)
+dispatch-beads
+
+# Forced re-dispatch: also dispatch tasks dispatched previously (one-shot)
+dispatch-beads --force
+
+# Watch the daemon log
+tail -f /tmp/beads-dispatch.log
+```
+
+## Troubleshooting
+
+- **No worker appears after a commit** → check `/tmp/beads-dispatch.log` for "Commit trigger
+  received", push errors, or `bd` not ready.
+- **"could not push branch"** → the parent needs credentials for its git origin (token /
+  credential helper); configure and commit again.
+- **`beads.task` label** → `docker service ls --filter label=beads.task` (swarm) or
+  `docker ps --filter label=beads.task` (local) lists dispatched workers.

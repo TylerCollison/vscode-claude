@@ -1,0 +1,39 @@
+{
+  "name": "claude-conx",
+  "description": "Container feature plugins for the ClaudeConX VS Code + Claude Code container",
+  "owner": {
+    "name": "Tyler Collison"
+  },
+  "plugins": [
+    {
+      "name": "claude-conx-build-env",
+      "description": "Create persistent Docker build environments with bidirectional file synchronization",
+      "source": "./plugins/claude-conx-build-env"
+    },
+    {
+      "name": "claude-conx-cconx",
+      "description": "Manage ClaudeConX Docker instances with the cconx CLI",
+      "source": "./plugins/claude-conx-cconx"
+    },
+    {
+      "name": "claude-conx-dispatch-beads",
+      "description": "Manually trigger the Beads Dispatch daemon",
+      "source": "./plugins/claude-conx-dispatch-beads"
+    },
+    {
+      "name": "claude-conx-happier",
+      "description": "Use the Happier CLI for agent orchestration",
+      "source": "./plugins/claude-conx-happier"
+    },
+    {
+      "name": "claude-conx-litellm-health-check",
+      "description": "Run the LiteLLM health check to verify the router and providers",
+      "source": "./plugins/claude-conx-litellm-health-check"
+    },
+    {
+      "name": "claude-conx-shutdown",
+      "description": "Gracefully shut down the container with cleanup",
+      "source": "./plugins/claude-conx-shutdown"
+    }
+  ]
+}

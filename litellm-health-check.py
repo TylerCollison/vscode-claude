@@ -424,7 +424,7 @@ def compute_summary_stats(results, config_path, base_url):
 
 def main():
     parser = argparse.ArgumentParser(description="LiteLLM Model Health Check Script")
-    parser.add_argument("--config", default="/workspace/lite-llm/lite-llm-default.yaml", help="Path to LiteLLM default YAML configuration")
+    parser.add_argument("--config", default="/lite-llm/lite-llm-default.yaml", help="Path to LiteLLM default YAML configuration")
     parser.add_argument("--endpoint", default="http://127.0.0.1:5090/v1", help="Base URL of LiteLLM API")
     parser.add_argument("--api-key", default="dummy", help="API key for LiteLLM")
     parser.add_argument("--timeout", type=float, default=300.0, help="Request timeout per model in seconds")

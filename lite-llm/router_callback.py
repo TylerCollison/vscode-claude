@@ -84,6 +84,7 @@ class MultiStageRouter(CustomLogger):
         data: dict,
         call_type: Literal[
             "completion",
+            "acompletion",
             "text_completion",
             "embeddings",
             "image_generation",
@@ -92,10 +93,13 @@ class MultiStageRouter(CustomLogger):
             "anthropic_messages",
         ],
     ) -> dict:
-        # Both the /v1/chat/completions (call_type="completion") and
-        # /v1/messages / Anthropic passthrough (call_type="anthropic_messages")
-        # paths should go through the routing pipeline.
-        if call_type not in ("completion", "anthropic_messages"):
+        # All three proxy surfaces must go through the routing pipeline:
+        #   - /v1/chat/completions passes call_type="acompletion" (litellm
+        #     >=1.104 passes the route_type verbatim; older releases passed
+        #     "completion" — keep accepting both)
+        #   - /v1/responses and other passthroughs are unaffected
+        #   - /v1/messages Anthropic passthrough passes "anthropic_messages"
+        if call_type not in ("completion", "acompletion", "anthropic_messages"):
             return data
 
         original_model = data.get("model", "")

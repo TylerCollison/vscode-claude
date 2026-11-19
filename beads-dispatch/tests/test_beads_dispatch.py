@@ -1,0 +1,672 @@
+"""Unit tests for the Beads Dispatch daemon's pure functions.
+
+Run with: python3 -m pytest beads-dispatch/tests/  (or run directly: python3 beads-dispatch/tests/test_beads_dispatch.py)
+"""
+
+import importlib.util
+import json
+import os
+import sys
+import tempfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+# Load dispatch_utils FIRST and register it in sys.modules, so the module-level
+# `import dispatch_utils as du` inside beads_dispatch.py (exec'd below) gets
+# THIS copy — not a stale installed one — and attribute patches on `du` affect
+# dispatch_worker.
+UTIL_SPEC = importlib.util.spec_from_file_location("dispatch_utils", os.path.join(HERE, "..", "dispatch_utils.py"))
+du = importlib.util.module_from_spec(UTIL_SPEC)
+sys.modules["dispatch_utils"] = du
+UTIL_SPEC.loader.exec_module(du)
+
+# Load beads_dispatch module
+SPEC = importlib.util.spec_from_file_location("beads_dispatch", os.path.join(HERE, "..", "beads_dispatch.py"))
+bd = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(bd)
+
+
+def test_worker_name_includes_timestamp():
+    # worker name includes a timestamp suffix for uniqueness
+    name = bd.worker_name({"id": "probe-n5h", "title": "Update README"}, "parent")
+    # Format: base-timestamp where base is slugified title + issue id
+    assert name.startswith("beads-update-readme-probe-n5h-")
+    # Timestamp suffix should be 20 digits (YYYYMMDDHHMMSSffffff)
+    suffix = name.split("-")[-1]
+    assert suffix.isdigit()
+    assert len(suffix) == 20
+
+
+def test_worker_name_sanitizes_invalid_chars():
+    # underscores/dots/uppercase are normalized; safe for containers and services
+    name = bd.worker_name({"id": "probe-n5h", "title": "Task A.B!"}, "vsclaude-code")
+    assert name.startswith("beads-task-a-b-probe-n5h-")
+    suffix = name.split("-")[-1]
+    assert suffix.isdigit()
+    assert len(suffix) == 20
+    assert not name.startswith("-")
+    assert not name.endswith("-")
+
+
+def test_worker_name_fallback_to_parent_when_title_empty():
+    # empty / non-slug-able title falls back to <parent>-<issue-id> with timestamp
+    name = bd.worker_name({"id": "x", "title": ""}, "claude-dev")
+    assert name.startswith("beads-claude-dev-x-")
+    suffix = name.split("-")[-1]
+    assert suffix.isdigit()
+    assert len(suffix) == 20
+
+    name = bd.worker_name({"id": "x", "title": "!!!"}, "-bad-.parent")
+    assert name.startswith("beads-bad-parent-x-")
+    suffix = name.split("-")[-1]
+    assert suffix.isdigit()
+    assert len(suffix) == 20
+
+
+def test_worker_name_respects_swarm_length_limit():
+    # Total length should not exceed 63 characters (Docker Swarm service name limit)
+    # Test with a very long title
+    long_title = "a" * 100
+    name = bd.worker_name({"id": "probe-n5h", "title": long_title}, "parent")
+    assert len(name) <= 63
+    # Timestamp should always be preserved
+    suffix = name.split("-")[-1]
+    assert suffix.isdigit()
+    assert len(suffix) == 20
+
+
+def test_slugify():
+    assert du.slugify("Task A") == "task-a"
+    assert du.slugify("HELLO, World!!") == "hello-world"
+    assert du.slugify("") == ""
+    assert du.slugify("foo---bar") == "foo-bar"
+
+
+def test_derive_branch_name_with_title():
+    assert bd.derive_branch_name({"id": "probe-n5h", "title": "Task A"}, "task") == "task/probe-n5h-task-a"
+
+
+def test_derive_branch_name_falls_back_to_id_only():
+    assert bd.derive_branch_name({"id": "probe-n5h", "title": "!@#"}, "task") == "task/probe-n5h"
+    assert bd.derive_branch_name({"id": "probe-n5h", "title": ""}, "task") == "task/probe-n5h"
+
+
+def test_compose_worker_env_overrides_branch_and_disables_recursion():
+    parent = [
+        "PATH=/usr/bin",
+        "GIT_BRANCH_NAME=old-branch",
+        "GIT_REPO_URL=https://example.com/repo.git",
+        "API_KEY=secret",
+        "BEADS_DISPATCH=true",
+    ]
+    env = bd.compose_worker_env(parent, "task/probe-n5h-task-a", "https://example.com/repo.git")
+    env_dict = dict(e.split("=", 1) for e in env)
+    assert env_dict["GIT_BRANCH_NAME"] == "task/probe-n5h-task-a"
+    assert env_dict["GIT_REPO_URL"] == "https://example.com/repo.git"
+    assert env_dict["BEADS_DISPATCH"] == "false"
+    assert env_dict["BEADS_REMOTE"] == "https://example.com/repo.git"  # dolt sync source
+    assert env_dict["API_KEY"] == "secret"  # secrets inherited
+    assert env_dict["PATH"] == "/usr/bin"
+    assert "GIT_BRANCH" not in env_dict  # only GIT_BRANCH_NAME is set
+
+
+def test_compose_worker_env_keeps_inherited_repo_url_when_no_override():
+    parent = ["GIT_REPO_URL=https://example.com/repo.git"]
+    env = bd.compose_worker_env(parent, "task/x", None)
+    assert any(e == "GIT_REPO_URL=https://example.com/repo.git" for e in env)
+    # No explicit repo_url -> BEADS_REMOTE is not added (nothing to sync from)
+    assert not any(e.startswith("BEADS_REMOTE=") for e in env)
+
+
+def test_compose_worker_env_includes_beads_remote():
+    parent = ["GIT_REPO_URL=https://example.com/repo.git"]
+    env = bd.compose_worker_env(parent, "task/x", "https://example.com/repo.git")
+    assert any(e == "BEADS_REMOTE=https://example.com/repo.git" for e in env)
+
+
+NET = {
+    "dns": ["192.168.1.245"],
+    "dns_search": ["corp.example.com"],
+    "dns_options": ["ndots:2"],
+    "extra_hosts": ["db:10.0.0.5"],
+}
+
+
+def test_dispatch_local_sets_hostname_and_socket_mount():
+    captured = {}
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return 0, "created", ""
+    orig = du.run
+    du.run = fake_run
+    try:
+        du.dispatch_local("myparent-probe-n5h", "img", ["A=B"], 8000, 8443, "probe-n5h")
+    finally:
+        du.run = orig
+    cmd = captured["cmd"]
+    assert cmd[:3] == ["docker", "run", "-d"]
+    assert "--hostname" in cmd
+    assert cmd[cmd.index("--hostname") + 1] == "myparent-probe-n5h"
+    assert "--name" in cmd
+    assert cmd[cmd.index("--name") + 1] == "myparent-probe-n5h"
+    # Workers should never restart
+    assert "--restart" in cmd
+    assert cmd[cmd.index("--restart") + 1] == "no"
+    # the ONLY volume mount is the docker socket
+    mount_idx = [i for i, c in enumerate(cmd) if c == "-v"]
+    assert len(mount_idx) == 1
+    assert cmd[mount_idx[0] + 1] == "/var/run/docker.sock:/var/run/docker.sock"
+
+
+def test_dispatch_local_copies_dns_config():
+    captured = {}
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return 0, "created", ""
+    orig = du.run
+    du.run = fake_run
+    try:
+        du.dispatch_local("w-probe", "img", ["A=B"], 8000, 8443, "probe",
+                          net=NET)
+    finally:
+        du.run = orig
+    cmd = captured["cmd"]
+    # Workers should never restart
+    assert "--restart" in cmd
+    assert cmd[cmd.index("--restart") + 1] == "no"
+    # DNS server, search, options, extra hosts all replicated
+    assert "--dns" in cmd and cmd[cmd.index("--dns") + 1] == "192.168.1.245"
+    assert "--dns-search" in cmd and cmd[cmd.index("--dns-search") + 1] == "corp.example.com"
+    assert "--dns-option" in cmd and cmd[cmd.index("--dns-option") + 1] == "ndots:2"
+    assert "--add-host" in cmd and cmd[cmd.index("--add-host") + 1] == "db:10.0.0.5"
+
+
+def test_dispatch_swarm_sets_hostname_and_docker_socket_mount():
+    captured = {}
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return 0, "created", ""
+    orig = du.run
+    du.run = fake_run
+    try:
+        du.dispatch_swarm("myparent-probe-n5h", "img", ["A=B"], 8000, 8443, "probe-n5h")
+    finally:
+        du.run = orig
+    cmd = captured["cmd"]
+    assert cmd[:3] == ["docker", "service", "create"]
+    assert "--hostname" in cmd
+    assert cmd[cmd.index("--hostname") + 1] == "myparent-probe-n5h"
+    # Workers should never restart
+    assert "--restart-condition" in cmd
+    assert cmd[cmd.index("--restart-condition") + 1] == "none"
+    # only one --mount and it's the docker socket
+    mounts = [cmd[i + 1] for i, c in enumerate(cmd) if c == "--mount"]
+    assert mounts == ["type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock"]
+
+
+def test_dispatch_swarm_copies_dns_config():
+    captured = {}
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return 0, "created", ""
+    orig = du.run
+    du.run = fake_run
+    try:
+        du.dispatch_swarm("w-probe", "img", ["A=B"], 8000, 8443, "probe", net=NET)
+    finally:
+        du.run = orig
+    cmd = captured["cmd"]
+    # Workers should never restart
+    assert "--restart-condition" in cmd
+    assert cmd[cmd.index("--restart-condition") + 1] == "none"
+    assert "--dns" in cmd and cmd[cmd.index("--dns") + 1] == "192.168.1.245"
+    assert "--dns-search" in cmd and cmd[cmd.index("--dns-search") + 1] == "corp.example.com"
+    assert "--dns-option" in cmd and cmd[cmd.index("--dns-option") + 1] == "ndots:2"
+    # swarm service create uses --host (host:ip), not --add-host
+    assert "--add-host" not in cmd
+    assert "--host" in cmd and cmd[cmd.index("--host") + 1] == "db:10.0.0.5"
+
+
+def test_derive_git_repo_url_from_env():
+    env = ["OTHER=1", "GIT_REPO_URL=https://env.git"]
+    assert du.derive_git_repo_url(env, "/tmp") == "https://env.git"
+
+
+def test_env_value_extracts_from_parent_env_list():
+    assert du.env_value(["A=1", "BEADS_REMOTE=https://beads.git"], "BEADS_REMOTE") == "https://beads.git"
+    assert du.env_value(["A=1"], "BEADS_REMOTE") is None
+    assert du.env_value(["BEADS_REMOTE="], "BEADS_REMOTE") is None  # empty -> None
+    assert du.env_value([], "BEADS_REMOTE") is None
+    assert du.env_value(None, "BEADS_REMOTE") is None
+
+
+def test_dispatch_worker_respects_parent_beads_remote():
+    """When the parent sets BEADS_REMOTE, it is used for the task-DB sync end to
+    end: the dispatcher's dolt_remote_add targets it and workers receive it as
+    their BEADS_REMOTE (the workspace git repo is not substituted)."""
+    captured = {}
+
+    def fake_dolt_remote_add(workspace, remote, user):
+        captured["dolt_remote"] = remote
+        return True
+
+    def fake_dispatch_local(worker, image, env, port, worker_port, issue_id,
+                            net=None, labels=None):
+        captured["env"] = env
+        return 0, "created", ""
+
+    orig = {
+        "is_swarm": du.is_swarm_manager,
+        "dispatch_local": du.dispatch_local,
+        "find_port": du.find_free_host_port,
+        "repo": du.derive_git_repo_url,
+        "owner": du.get_workspace_owner,
+        "remote_add": bd.dolt_remote_add,
+        "push": bd.dolt_push,
+        "worker_exists": du.worker_exists,
+        "log": du.log,
+        "env": du.env,
+    }
+    du.is_swarm_manager = lambda: False
+    du.dispatch_local = fake_dispatch_local
+    du.find_free_host_port = lambda base: 8000
+    du.derive_git_repo_url = lambda env, ws, user=None: "https://workspace.example.com/repo.git"
+    du.get_workspace_owner = lambda ws: "abc"
+    bd.dolt_remote_add = fake_dolt_remote_add
+    bd.dolt_push = lambda ws, user: True
+    du.worker_exists = lambda name, swarm: False
+    du.log = lambda msg: None
+    du.env = lambda name, default=None: None
+    try:
+        cfg = bd.Config.__new__(bd.Config)
+        cfg.workspace = "/tmp"
+        cfg.state_dir = "/tmp"
+        cfg.branch_prefix = "task"
+        cfg.port_base = 8000
+        cfg.worker_port = 8443
+        cfg.dispatch_prompt = None
+        self_info = {"name": "parent", "image": "img",
+                     "env": ["BEADS_REMOTE=https://beads.example.com/repo.git"]}
+        assert bd.dispatch_worker({"id": "probe-n5h", "title": "Task A"}, cfg, self_info) is True
+
+        assert captured["dolt_remote"] == "https://beads.example.com/repo.git"
+        env_dict = dict(e.split("=", 1) for e in captured["env"])
+        assert env_dict["BEADS_REMOTE"] == "https://beads.example.com/repo.git"
+        # Git (code) operations stay on the workspace repo
+        assert env_dict["GIT_REPO_URL"] == "https://workspace.example.com/repo.git"
+    finally:
+        du.is_swarm_manager = orig["is_swarm"]
+        du.dispatch_local = orig["dispatch_local"]
+        du.find_free_host_port = orig["find_port"]
+        du.derive_git_repo_url = orig["repo"]
+        du.get_workspace_owner = orig["owner"]
+        bd.dolt_remote_add = orig["remote_add"]
+        bd.dolt_push = orig["push"]
+        du.worker_exists = orig["worker_exists"]
+        du.log = orig["log"]
+        du.env = orig["env"]
+
+
+def test_dispatch_worker_falls_back_to_repo_url_without_beads_remote():
+    """Without BEADS_REMOTE (default), the workspace git repo is used for the
+    Dolt remote and as the worker's sync source — current behavior."""
+    captured = {}
+
+    def fake_dolt_remote_add(workspace, remote, user):
+        captured["dolt_remote"] = remote
+        return True
+
+    def fake_dispatch_local(worker, image, env, port, worker_port, issue_id,
+                            net=None, labels=None):
+        captured["env"] = env
+        return 0, "created", ""
+
+    orig = {
+        "is_swarm": du.is_swarm_manager,
+        "dispatch_local": du.dispatch_local,
+        "find_port": du.find_free_host_port,
+        "repo": du.derive_git_repo_url,
+        "owner": du.get_workspace_owner,
+        "remote_add": bd.dolt_remote_add,
+        "push": bd.dolt_push,
+        "worker_exists": du.worker_exists,
+        "log": du.log,
+        "env": du.env,
+    }
+    du.is_swarm_manager = lambda: False
+    du.dispatch_local = fake_dispatch_local
+    du.find_free_host_port = lambda base: 8000
+    du.derive_git_repo_url = lambda env, ws, user=None: "https://workspace.example.com/repo.git"
+    du.get_workspace_owner = lambda ws: "abc"
+    bd.dolt_remote_add = fake_dolt_remote_add
+    bd.dolt_push = lambda ws, user: True
+    du.worker_exists = lambda name, swarm: False
+    du.log = lambda msg: None
+    du.env = lambda name, default=None: None
+    try:
+        cfg = bd.Config.__new__(bd.Config)
+        cfg.workspace = "/tmp"
+        cfg.state_dir = "/tmp"
+        cfg.branch_prefix = "task"
+        cfg.port_base = 8000
+        cfg.worker_port = 8443
+        cfg.dispatch_prompt = None
+        self_info = {"name": "parent", "image": "img", "env": []}
+        assert bd.dispatch_worker({"id": "probe-n5h", "title": "Task A"}, cfg, self_info) is True
+
+        assert captured["dolt_remote"] == "https://workspace.example.com/repo.git"
+        env_dict = dict(e.split("=", 1) for e in captured["env"])
+        assert env_dict["BEADS_REMOTE"] == "https://workspace.example.com/repo.git"
+    finally:
+        du.is_swarm_manager = orig["is_swarm"]
+        du.dispatch_local = orig["dispatch_local"]
+        du.find_free_host_port = orig["find_port"]
+        du.derive_git_repo_url = orig["repo"]
+        du.get_workspace_owner = orig["owner"]
+        bd.dolt_remote_add = orig["remote_add"]
+        bd.dolt_push = orig["push"]
+        du.worker_exists = orig["worker_exists"]
+        du.log = orig["log"]
+        du.env = orig["env"]
+
+
+def test_derive_git_repo_url_none_when_missing():
+    assert du.derive_git_repo_url([], "/nonexistent-dir-xyz") is None
+
+
+def test_load_save_state_roundtrip():
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = bd.Config.__new__(bd.Config)
+        cfg.state_dir = tmp
+        state_file = os.path.join(cfg.state_dir, "state.json")
+        assert du.load_state(state_file) == set()
+        du.save_state(state_file, {"a", "b"})
+        assert du.load_state(state_file) == {"a", "b"}
+
+
+def test_find_free_host_port_skips_used():
+    used = {8000, 8001, 8002}
+    orig = du.used_host_ports
+    du.used_host_ports = lambda: used
+    try:
+        port = du.find_free_host_port(8000)
+    finally:
+        du.used_host_ports = orig
+    assert port == 8003
+
+
+
+
+def test_git_env_sets_terminal_prompt_off():
+    e = du.git_env()
+    assert e.get("GIT_TERMINAL_PROMPT") == "0"
+
+
+def test_get_workspace_owner_prefers_non_root():
+    # A temp dir owned by the current user (root here) falls back to 'abc'
+    with tempfile.TemporaryDirectory() as tmp:
+        owner = du.get_workspace_owner(tmp)
+        assert owner in ("abc", "coder", "user", "root")
+    # When root-owned and abc exists, prefer abc (non-root).
+    try:
+        pwd_entry = du.pwd.getpwuid(0)
+    except KeyError:
+        pwd_entry = None
+    if pwd_entry:
+        assert du.get_workspace_owner("/") not in ("", None)
+
+
+def test_derive_git_repo_url_prefers_credentialed_remote():
+    real_run = du.run
+    def fake_run(cmd, **kwargs):
+        if len(cmd) >= 2 and cmd[-2:] == ["get-url", "origin"]:
+            return 0, "https://user:token@github.com/org/repo.git", ""
+        return real_run(cmd, **kwargs)
+    old = du.run
+    du.run = fake_run
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            url = du.derive_git_repo_url(
+                ["GIT_REPO_URL=https://github.com/org/repo.git"], tmp, "abc")
+        assert url == "https://user:token@github.com/org/repo.git"
+    finally:
+        du.run = old
+
+
+def test_has_credential_helper_detects_existing():
+    # Not configured yet -> False
+    assert du._has_credential_helper("gh auth git-credential") in (True, False)
+
+
+def test_env_function_not_shadowed_in_dispatch_worker():
+    """dispatch_worker calls module-level env() before assigning local env_vars.
+
+    Regression: a local named 'env' shadowed the module function, causing
+    UnboundLocalError at dispatch time.
+    """
+    # dispatch_worker should not define a local named 'env' in its fast path.
+    import inspect
+    src = inspect.getsource(bd.dispatch_worker)
+    # 'env(' is the module call; 'env =' or 'env,' local assignments are the trap.
+    # The local worker-env variable must be named env_vars.
+    assert "env_vars = compose_worker_env" in src
+    assert "env = compose_worker_env" not in src
+
+
+def test_configure_credential_helpers_idempotent():
+    # This machine has at least one of gh/glab; calling twice should not
+    # duplicate helpers and should still report configured.
+    first = du.configure_credential_helpers()
+    before = du.run(["git", "config", "--global", "--get-all", "credential.helper"])[1]
+    second = du.configure_credential_helpers()
+    after = du.run(["git", "config", "--global", "--get-all", "credential.helper"])[1]
+    assert after == before, "second configure duplicated helpers"
+
+
+def test_default_dispatch_prompt_includes_claim_and_push_steps():
+    # The agent must indicate the task is in progress before starting on the
+    # work: claim it (assigns itself and sets it in-progress), then push the
+    # beads DB so the in-progress state syncs to the remote.
+    prompt = bd.default_dispatch_prompt("probe-n5h", "task/probe-n5h-task-a", "https://github.com/o/r.git")
+    assert "bd update <issue-id> --claim" in prompt
+    assert "in progress" in prompt
+    assert "bd dolt push" in prompt
+    # Claiming and pushing come before the implementation step.
+    assert prompt.index("bd update <issue-id> --claim") < prompt.index("implementing the required changes")
+    assert prompt.index("bd dolt push") < prompt.index("implementing the required changes")
+
+
+def test_default_dispatch_prompt_closes_with_bd_close():
+    # 'bd complete' is not a valid bd command; closing uses 'bd close'.
+    prompt = bd.default_dispatch_prompt("probe-n5h", "task/probe-n5h-task-a", "https://github.com/o/r.git")
+    assert "bd close <issue-id>" in prompt
+    assert "bd complete" not in prompt
+    assert "Closing the bead does not shut the worker down" not in prompt
+
+
+def _stub_cfg(state_dir):
+    # Minimal Config: dispatch_all only touches workspace (patched away) and state_dir
+    cfg = bd.Config.__new__(bd.Config)
+    cfg.workspace = "/tmp"
+    cfg.state_dir = state_dir
+    return cfg
+
+
+def test_force_requested_defaults():
+    # Default: no daemon --force, no trigger message
+    assert bd.force_requested(b"manual", default=False) is False
+    assert bd.force_requested(b"", default=False) is False
+    # Daemon --force set: every trigger is forced
+    assert bd.force_requested(b"", default=True) is True
+    assert bd.force_requested(b"manual", default=True) is True
+    # Trigger message contains "force" (dispatch-beads --force)
+    assert bd.force_requested(b"manual force", default=False) is True
+    assert bd.force_requested(b"force", default=False) is True
+
+
+def test_dispatch_all_force_redispatches_seen():
+    """force=True ignores the seen-set: already-dispatched issues get a worker."""
+    dispatched = []
+    def fake_dispatch_worker(issue, cfg, self_info):
+        dispatched.append(issue["id"])
+        return True
+
+    orig_ready = bd.get_ready_issues
+    orig_worker = bd.dispatch_worker
+    bd.get_ready_issues = lambda workspace: [
+        {"id": "already-seen-1", "title": "Old task"},
+        {"id": "fresh-task", "title": "New task"},
+    ]
+    bd.dispatch_worker = fake_dispatch_worker
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = _stub_cfg(tmp)
+            seen = {"already-seen-1"}
+            n = bd.dispatch_all(cfg, {}, seen, force=True)
+            assert n == 2
+            assert set(dispatched) == {"already-seen-1", "fresh-task"}
+            # Dispatched IDs are still persisted, so normal dedup resumes afterwards
+            state_file = os.path.join(tmp, "state.json")
+            assert du.load_state(state_file) == {"already-seen-1", "fresh-task"}
+    finally:
+        bd.get_ready_issues = orig_ready
+        bd.dispatch_worker = orig_worker
+
+
+def test_dispatch_all_no_force_skips_seen():
+    """Without force (default), issues in the seen-set are never re-dispatched."""
+    dispatched = []
+    def fake_dispatch_worker(issue, cfg, self_info):
+        dispatched.append(issue["id"])
+        return True
+
+    orig_ready = bd.get_ready_issues
+    orig_worker = bd.dispatch_worker
+    bd.get_ready_issues = lambda workspace: [
+        {"id": "already-seen-1", "title": "Old task"},
+        {"id": "fresh-task", "title": "New task"},
+    ]
+    bd.dispatch_worker = fake_dispatch_worker
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = _stub_cfg(tmp)
+            n = bd.dispatch_all(cfg, {}, {"already-seen-1"})
+            assert n == 1
+            assert dispatched == ["fresh-task"]
+            # Seen-set keeps the skipped ID and gains the newly dispatched one
+            assert du.load_state(os.path.join(tmp, "state.json")) == {"already-seen-1", "fresh-task"}
+    finally:
+        bd.get_ready_issues = orig_ready
+        bd.dispatch_worker = orig_worker
+
+
+def test_dispatch_all_force_still_requires_ready():
+    """Forced dispatch still re-checks readiness: an issue that is no longer
+    ready between snapshots is not dispatched."""
+    dispatched = []
+    def fake_dispatch_worker(issue, cfg, self_info):
+        dispatched.append(issue["id"])
+        return True
+
+    calls = {"n": 0}
+    def flaky_ready(workspace):
+        # First call (initial snapshot): issue ready. Later calls (re-check): gone.
+        calls["n"] += 1
+        return [{"id": "probe-1", "title": "Task one"}] if calls["n"] == 1 else []
+
+    orig_ready = bd.get_ready_issues
+    orig_worker = bd.dispatch_worker
+    bd.get_ready_issues = flaky_ready
+    bd.dispatch_worker = fake_dispatch_worker
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = _stub_cfg(tmp)
+            n = bd.dispatch_all(cfg, {}, set(), force=True)
+            assert n == 0
+            assert dispatched == []
+    finally:
+        bd.get_ready_issues = orig_ready
+        bd.dispatch_worker = orig_worker
+
+
+def _fake_bd_run(payload):
+    """Stub du.run for `bd list --ready --json` calls, returning the given payload."""
+    return lambda cmd, **kwargs: (0, json.dumps(payload), "")
+
+
+def test_get_ready_issues_filters_epics():
+    """Epics are containers, not actionable work — they never reach the ready set."""
+    orig = du.run
+    du.run = _fake_bd_run([
+        {"id": "epic-1", "title": "Epic container", "issue_type": "epic"},
+        {"id": "task-1", "title": "Real task", "issue_type": "task"},
+    ])
+    try:
+        issues = bd.get_ready_issues("/tmp")
+    finally:
+        du.run = orig
+    assert issues == [{"id": "task-1", "title": "Real task"}]
+
+
+def test_get_ready_issues_keeps_items_without_issue_type():
+    # Older bd versions may not emit issue_type — nothing is filtered then.
+    orig = du.run
+    du.run = _fake_bd_run([{"id": "task-1", "title": "Legacy task"}])
+    try:
+        issues = bd.get_ready_issues("/tmp")
+    finally:
+        du.run = orig
+    assert issues == [{"id": "task-1", "title": "Legacy task"}]
+
+
+def _assert_dispatch_all_skips_epic(force):
+    """Shared body: dispatch_all must never dispatch an epic, force or not."""
+    dispatched = []
+    def fake_dispatch_worker(issue, cfg, self_info):
+        dispatched.append(issue["id"])
+        return True
+
+    fake_run = _fake_bd_run([
+        {"id": "epic-1", "title": "Epic container", "issue_type": "epic"},
+        {"id": "task-1", "title": "Real task", "issue_type": "task"},
+    ])
+    orig_run = du.run
+    orig_worker = bd.dispatch_worker
+    du.run = fake_run
+    bd.dispatch_worker = fake_dispatch_worker
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = _stub_cfg(tmp)
+            n = bd.dispatch_all(cfg, {}, set(), force=force)
+            assert n == 1
+            assert dispatched == ["task-1"]
+            # Only the dispatched task lands in the seen-set (epics are not recorded)
+            assert du.load_state(os.path.join(tmp, "state.json")) == {"task-1"}
+    finally:
+        du.run = orig_run
+        bd.dispatch_worker = orig_worker
+
+
+def test_dispatch_all_skips_epics():
+    """The dispatch loop never creates workers for epics."""
+    _assert_dispatch_all_skips_epic(force=False)
+
+
+def test_dispatch_all_force_skips_epics():
+    """Forced re-dispatch (--force) also skips epics."""
+    _assert_dispatch_all_skips_epic(force=True)
+
+
+if __name__ == "__main__":
+    import traceback
+
+    failures = 0
+    for name, fn in sorted(globals().items()):
+        if name.startswith("test_") and callable(fn):
+            try:
+                fn()
+                print("PASS %s" % name)
+            except Exception:
+                failures += 1
+                print("FAIL %s" % name)
+                traceback.print_exc()
+    sys.exit(1 if failures else 0)

@@ -1,0 +1,8 @@
+{
+  "name": "claude-conx-shutdown",
+  "description": "Gracefully shut down the container with cleanup",
+  "version": "1.0.0",
+  "author": {
+    "name": "Tyler Collison"
+  }
+}

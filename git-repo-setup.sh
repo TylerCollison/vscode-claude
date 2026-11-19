@@ -4,6 +4,7 @@
 # - GIT_REPO_URL: Repository URL (required)
 # - DEFAULT_WORKSPACE: Target directory (optional, defaults to /workspace)
 # - GIT_BRANCH_NAME: Branch name (optional, generates procedural name if not specified)
+# - GIT_CHECKOUT_BASE_BRANCH: Base branch to create new branch from if target branch doesn't exist (optional, defaults to default branch/HEAD)
 
 set -euo pipefail
 
@@ -18,6 +19,12 @@ log() {
 error_exit() {
     log "ERROR: $1" >&2
     exit 1
+}
+
+# Strip userinfo (user:token@) from a URL so embedded credentials in
+# GIT_REPO_URL never reach log or error output.
+strip_userinfo() {
+    sed -E 's#^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@]*@#\1#' <<< "$1"
 }
 
 # Success logging function
@@ -72,12 +79,13 @@ fi
 
 # Validate repository URL format
 if [[ ! "$GIT_REPO_URL" =~ ^https?:// ]]; then
-    error_exit "Repository URL must start with http:// or https://: $GIT_REPO_URL"
+    error_exit "Repository URL must start with http:// or https://: $(strip_userinfo "$GIT_REPO_URL")"
 fi
 
 # Optional environment variables with defaults
 DEFAULT_WORKSPACE="${DEFAULT_WORKSPACE:-/workspace}"
 GIT_BRANCH_NAME="${GIT_BRANCH_NAME:-}"
+GIT_CHECKOUT_BASE_BRANCH="${GIT_CHECKOUT_BASE_BRANCH:-}"
 
 # If no branch name specified, generate procedural name
 if [ -z "$GIT_BRANCH_NAME" ]; then
@@ -99,14 +107,18 @@ if [ -d "$TARGET_DIR" ]; then
 fi
 
 log "Preparing to clone repository:"
-log "  URL: $GIT_REPO_URL"
+log "  URL: $(strip_userinfo "$GIT_REPO_URL")"
 log "  Branch: $GIT_BRANCH_NAME"
+if [ -n "$GIT_CHECKOUT_BASE_BRANCH" ]; then
+    log "  Base branch (for new branch creation): $GIT_CHECKOUT_BASE_BRANCH"
+fi
 log "  Target: $TARGET_DIR"
 
-# Clone repository
+# Clone repository (with submodules to reduce fetches; the post-checkout
+# submodule update below is the authoritative sync point)
 log "Cloning repository..."
-if ! git clone "$GIT_REPO_URL" "$TARGET_DIR"; then
-    error_exit "Failed to clone git repository: $GIT_REPO_URL"
+if ! git clone --recurse-submodules "$GIT_REPO_URL" "$TARGET_DIR"; then
+    error_exit "Failed to clone git repository: $(strip_userinfo "$GIT_REPO_URL")"
 fi
 
 log "Successfully cloned repository"
@@ -127,8 +139,18 @@ if branch_exists "$TARGET_DIR" "$GIT_BRANCH_NAME"; then
         error_exit "Failed to checkout branch '$GIT_BRANCH_NAME'"
     fi
 else
-    # Branch doesn't exist, create new branch from current HEAD
+    # Branch doesn't exist, create new branch
     log "Branch '$GIT_BRANCH_NAME' does not exist, creating new branch..."
+
+    # If GIT_CHECKOUT_BASE_BRANCH is set, check it out first
+    if [ -n "$GIT_CHECKOUT_BASE_BRANCH" ]; then
+        log "Checking out base branch '$GIT_CHECKOUT_BASE_BRANCH' before creating new branch..."
+        if ! git checkout "$GIT_CHECKOUT_BASE_BRANCH"; then
+            error_exit "Failed to checkout base branch '$GIT_CHECKOUT_BASE_BRANCH'"
+        fi
+    fi
+
+    # Create new branch from current HEAD (which is either the base branch or default branch)
     if ! git checkout -b "$GIT_BRANCH_NAME"; then
         error_exit "Failed to create branch '$GIT_BRANCH_NAME'"
     fi
@@ -136,11 +158,20 @@ fi
 
 log "Branch '$GIT_BRANCH_NAME' is now active"
 
+# Initialize submodules recursively. Runs after the branch checkout so
+# submodules match the checked-out branch (the checkout can point submodules
+# at different commits than the default-branch clone would have initialized).
+# Unconditional: a fast no-op for repos without submodules.
+log "Initializing submodules recursively..."
+if ! git submodule update --init --recursive; then
+    error_exit "Failed to initialize submodules recursively (private or unreachable submodule?): $(strip_userinfo "$GIT_REPO_URL")"
+fi
+
 # Output success information
 log_success "Git repository setup completed successfully"
 log "Repository location: $TARGET_DIR"
 log "Active branch: $GIT_BRANCH_NAME"
-log "Remote URL: $GIT_REPO_URL"
+log "Remote URL: $(strip_userinfo "$GIT_REPO_URL")"
 
 # Cleanup will happen automatically via trap
 exit 0

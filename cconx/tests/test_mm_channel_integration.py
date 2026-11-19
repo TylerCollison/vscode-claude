@@ -3,9 +3,7 @@ from unittest.mock import Mock, patch, MagicMock
 import sys
 import os
 
-# Mock docker before importing cli
-sys.modules['docker'] = MagicMock()
-sys.modules['docker.errors'] = MagicMock()
+# The docker module is mocked by cconx/conftest.py before tests run
 
 # Add the parent directory to Python path to import cli module
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -18,6 +16,9 @@ class TestMMChannelIntegration(unittest.TestCase):
         args.name = "integration-test"
         args.port = 9090
         args.env = []
+        args.env_append = []
+        args.image = None  # No --image flag
+        args.dns = None  # No --dns flag
 
         with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
              patch('cconx.cconx.ports.PortManager') as MockPortManager, \
@@ -30,6 +31,7 @@ class TestMMChannelIntegration(unittest.TestCase):
                 "environment": {}
             }
             mock_config_manager.get_global_environment.return_value = {}
+            mock_config_manager.get_default_image.return_value = "tylercollison2089/vscode-claude:latest"
             mock_config_manager.format_ide_address.return_value = "http://localhost:9090"
 
             mock_port_manager = MockPortManager.return_value
@@ -65,6 +67,9 @@ class TestMMChannelIntegration(unittest.TestCase):
         args.name = "priority-test"
         args.port = 9091
         args.env = ["MM_CHANNEL=env-override"]
+        args.env_append = []
+        args.image = None  # No --image flag
+        args.dns = None  # No --dns flag
 
         with patch('cconx.cconx.config.ConfigManager') as MockConfigManager, \
              patch('cconx.cconx.ports.PortManager') as MockPortManager, \
@@ -77,6 +82,7 @@ class TestMMChannelIntegration(unittest.TestCase):
                 "environment": {"MM_CHANNEL": "global-value"}
             }
             mock_config_manager.get_global_environment.return_value = {"MM_CHANNEL": "global-value"}
+            mock_config_manager.get_default_image.return_value = "tylercollison2089/vscode-claude:latest"
             mock_config_manager.format_ide_address.return_value = "http://localhost:9091"
 
             mock_port_manager = MockPortManager.return_value

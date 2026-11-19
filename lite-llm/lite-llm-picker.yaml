@@ -1,0 +1,234 @@
+# LiteLLM config for MODEL PICKER mode (selected by start-lite-llm.sh when
+# MODEL_PICKER_ENABLED is truthy; lite-llm-default.yaml is used otherwise).
+#
+# This is a hand-maintained fork of lite-llm-default.yaml. Do not regenerate it
+# from the default — operators may add fallbacks here by hand and they must
+# survive. It differs from the default config ONLY in the deltas documented in
+# beads workspace-c8o (asserted by tests/test_model_picker.py::test_config_deltas):
+#
+#   1. Replaces the hand-maintained static provider groups with the
+#      `pollinations/*`, `nvidia_nim/*`, and `llm7/*` wildcard entries (dynamic
+#      catalog models). The pollinations wildcard carries a high
+#      model_info.allowed_fails — a single-deployment pattern group shares
+#      one cooldown bucket, so the default allowed_fails=1 would cool ALL
+#      pollinations routing off one failure. The picker's recency guard and
+#      per-request retry exclusion take over cooldown's role.
+#   2. Adds the model_picker routing plugin to complexity_router_config.plugins.
+#   3. Removes the default config's static fallbacks for the
+#      complexity-path groups as the primary failure path — failures
+#      retry through the picker's next-ranked candidates instead.
+#      webSearch/image fallbacks are kept (gemini path, untouched by the
+#      picker). But the picker tiers (think, ultra-think, default, plus
+#      complexity itself) DO carry a last-resort fallback net, added after
+#      a session died on a 400: non-retryable errors — notably a
+#      context_length BadRequestError, which LiteLLM does not retry and
+#      which NVIDIA reports as a bare "Invalid request", so it never maps
+#      to ContextWindowExceededError either — bypass the retry path
+#      entirely and go straight to fallbacks. With no fallback entry the
+#      error surfaced to the client, which treats a 400 as terminal
+#      (unlike 408s, which it retries). The net is keyed by the tier
+#      LiteLLM's fallback lookup consults first for complexity-routed
+#      requests. Targets are concrete models, not tier groups: fallback
+#      attempts bypass the picker plugin (it is attached to the
+#      complexity router only), and the tier groups' own deployments are
+#      placeholders, so a tier target would serve an arbitrary model. The
+#      targets are models that answered in the session that produced the
+#      400. This net is for errors the retry walk cannot reach; it does
+#      not replace ranking.
+#   4. Retry changes: the default config's all-zero retry_policy is dropped
+#      (it zeroes retries per exception type) and num_retries is set so failed
+#      picks retry in-request against the picker's next-ranked model. Fallbacks
+#      manually added to this file engage after those retries exhaust.
+#
+# Everything else is identical to lite-llm-default.yaml.
+model_list:
+  # =========================================================================
+  # 1) UNDERLYING MODELS (DEPLOYMENTS)
+  # =========================================================================
+
+  # --- Model Picker wildcard ---
+  # Serves any pollinations catalog id as `pollinations/<id>`; the picker
+  # plugin rewrites eligible requests to pollinations/<best-free-community-model>
+  # (official catalog models are credit limited and never picked).
+  # allowed_fails is effectively disabled: the wildcard resolves to a single
+  # deployment, so one failure would otherwise cool every pollinations pick
+  # for the cooldown window. See the header note above.
+  - model_name: pollinations/*
+    litellm_params:
+      model: openai/*
+      api_base: https://gen.pollinations.ai/v1
+      api_key: os.environ/POLLINATION_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+    model_info:
+      allowed_fails: 1000000
+
+  # --- Provider wildcards (picker mode) ---
+  # Every provider is catalog-driven: the picker lists each provider's
+  # /v1/models at refresh time and rewrites eligible requests to
+  # <provider>/<catalog-id>, served by these wildcard entries. The provider
+  # catalogs churn (model ids come and go), so nothing here is hand-maintained.
+  - model_name: nvidia_nim/*
+    litellm_params:
+      model: nvidia_nim/*
+      api_key: os.environ/NIM_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+    model_info:
+      allowed_fails: 1000000
+
+  - model_name: llm7/*
+    litellm_params:
+      model: openai/*
+      api_base: https://api.llm7.io/v1
+      api_key: os.environ/LLM7_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+    model_info:
+      allowed_fails: 1000000
+
+  # --- Google AI Studio Models ---
+  # These models are all generally (<1sec of latency) fast but sometimes fairly slow (more than 1min of latency)
+  - model_name: gemini-3.5-flash-lite
+    litellm_params:
+      model: gemini/gemini-3.5-flash-lite
+      api_key: os.environ/GOOGLE_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  - model_name: gemini-3.1-flash-lite
+    litellm_params:
+      model: gemini/gemini-3.1-flash-lite
+      api_key: os.environ/GOOGLE_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  # =========================================================================
+  # 2) UNIFIED ROUTER (TWO-STAGE PIPELINE)
+  # =========================================================================
+  #
+  # "lite-llm/router" is a single endpoint that pipelines two routing
+  # stages:
+  #
+  #   1. Content-based  (callback)        → lite-llm/image
+  #   2. Complexity     (complexity_router)  → lite-llm/default or lite-llm/think
+  #
+  # PICKER MODE: complexity_router_config.plugins runs the model picker after
+  # the tier decision; the surviving value is the model that serves the request.
+
+  - model_name: lite-llm/router
+    litellm_params:
+      # The callback (router_callback.py) intercepts every request and
+      # rewrites the model
+      model: nvidia_nim/nvidia/nemotron-3.5-lightning-30b-a3b
+      api_key: os.environ/NIM_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  - model_name: lite-llm/complexity
+    litellm_params:
+      model: auto_router/complexity_router
+      complexity_router_config:
+        plugins: ["model_picker_plugin.picker"]
+        tiers:
+          SIMPLE: lite-llm/default
+          MEDIUM: lite-llm/default
+          COMPLEX: lite-llm/think
+          REASONING: lite-llm/ultra-think
+        # The default stamps max_tokens = the tier model's output ceiling
+        # (128000 for the gpt-named pollinations models per litellm's OpenAI
+        # catalog) onto every routed request, replacing the caller's value —
+        # pollinations' credit gate prices that estimate against the account
+        # balance and rejects it. Let the caller's own max_tokens through.
+        max_tokens_from_tier_model: false
+      complexity_router_default_model: lite-llm/default
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  # =========================================================================
+  # 3) ENTRYPOINT MODEL GROUPS (THE NAMES CLIENTS WILL CALL)
+  # =========================================================================
+
+  - model_name: lite-llm/default
+    litellm_params:
+      model: nvidia_nim/nvidia/nemotron-3.5-lightning-30b-a3b
+      api_key: os.environ/NIM_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  - model_name: lite-llm/think
+    litellm_params:
+      model: nvidia_nim/minimaxai/minimax-m3.1-flash
+      api_key: os.environ/NIM_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  - model_name: lite-llm/ultra-think
+    litellm_params:
+      model: nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b
+      api_key: os.environ/NIM_API_KEY
+      stream_timeout: 600.0
+      timeout: 600.0
+
+  - model_name: lite-llm/longContext
+    litellm_params:
+      model: nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b
+      api_key: os.environ/NIM_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  - model_name: lite-llm/webSearch
+    litellm_params:
+      model: gemini/gemini-3.5-flash-lite
+      api_key: os.environ/GOOGLE_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+  - model_name: lite-llm/image
+    litellm_params:
+      model: gemini/gemini-3.5-flash-lite
+      api_key: os.environ/GOOGLE_API_KEY
+      stream_timeout: 30.0
+      timeout: 180.0
+
+litellm_settings:
+  # Fixes a bug in translating between an Anthropic client and an OpenAI provider
+  use_chat_completions_url_for_anthropic_messages: true
+  #convert_lm_reasoning_to_text: true # Forces reasoning tokens into standard text blocks
+  modify_params: true
+  drop_params: true
+  # Force-sanitize historical empty texts that cause agent loop crashes
+  #sanitize_input_messages: true
+  #remove_empty_system_messages: true
+
+  # model_picker_plugin.stats_logger feeds the picker's passive health stats.
+  callbacks: ["router_callback.router_handler", "websearch_interception", "model_picker_plugin.stats_logger"]
+  websearch_interception_params:
+    enabled_providers:
+      - openai
+      - gemini
+      - nvidia_nim
+      - mistral
+      - cerebras
+    search_tool_name: exa-search
+
+search_tools:
+  - search_tool_name: exa-search
+    litellm_params:
+      search_provider: exa_ai
+      api_key: os.environ/EXA_API_KEY
+
+router_settings:
+  # Picker mode retries failed picks in-request for retryable errors; the
+  # plugin excludes its prior picks per request, so each retry lands on the
+  # next-ranked candidate. The budget spans the catalog-driven pool (the
+  # walk continues until a model works or none are left; most failures —
+  # 404s, credit gates — fail fast). Non-retryable errors (400s) skip
+  # retries entirely and go to the fallbacks below instead — that is why
+  # the tier entries exist even though the retry walk is the primary path.
+  # The default config's all-zero retry_policy is deliberately NOT carried
+  # over (it would zero retries per exception type).
+  num_retries: 64
+
+  allowed_fails: 1
+  fallbacks: [{"lite-llm/webSearch": ["gemini-3.1-flash-lite", "nvidia_nim/z-ai/glm-5.3-flash", "nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b", "llm7/GLM-5.3-Flash"]}, {"lite-llm/image": ["gemini-3.1-flash-lite", "nvidia_nim/z-ai/glm-5.3-flash"]}, {"lite-llm/think": ["nvidia_nim/z-ai/glm-5.3", "nvidia_nim/stepfun-ai/step-5-preview"]}, {"lite-llm/ultra-think": ["nvidia_nim/z-ai/glm-5.3", "nvidia_nim/stepfun-ai/step-5-preview"]}, {"lite-llm/default": ["nvidia_nim/z-ai/glm-5.3", "nvidia_nim/stepfun-ai/step-5-preview"]}, {"lite-llm/complexity": ["nvidia_nim/z-ai/glm-5.3", "nvidia_nim/stepfun-ai/step-5-preview"]}]
