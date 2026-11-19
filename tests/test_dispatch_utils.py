@@ -205,6 +205,7 @@ def test_dispatch_swarm_stamps_container_labels():
 
 def _clear_placement_env(monkeypatch):
     for name in ("WORKER_RESERVE_MEMORY", "WORKER_RESERVE_CPU",
+                 "WORKER_LIMIT_MEMORY", "WORKER_LIMIT_CPU",
                  "WORKER_NODE_ALLOWLIST", "WORKER_NODE_DENYLIST"):
         monkeypatch.delenv(name, raising=False)
 
@@ -216,23 +217,30 @@ def _constraints(cmd):
 def test_dispatch_swarm_reserves_memory_and_cpu_by_default(monkeypatch):
     # A worker runs ~0.5-1GB of RAM; with no reservation Swarm counted it
     # as costing nothing and kept piling workers onto 8GB dockerblade.
+    # The limits cap a runaway worker while leaving spike headroom.
     _clear_placement_env(monkeypatch)
     with mock.patch.object(du, "run", return_value=(0, "", "")) as run_mock:
         du.dispatch_swarm("dispatch-test", "img:1", [], 8000, 8443, "workspace-c4u")
     cmd = run_mock.call_args[0][0]
     assert cmd[cmd.index("--reserve-memory") + 1] == "1g", cmd
     assert cmd[cmd.index("--reserve-cpu") + 1] == "0.5", cmd
+    assert cmd[cmd.index("--limit-memory") + 1] == "2g", cmd
+    assert cmd[cmd.index("--limit-cpu") + 1] == "2", cmd
 
 
 def test_dispatch_swarm_reserves_are_configurable(monkeypatch):
     _clear_placement_env(monkeypatch)
     monkeypatch.setenv("WORKER_RESERVE_MEMORY", "2g")
     monkeypatch.setenv("WORKER_RESERVE_CPU", "1")
+    monkeypatch.setenv("WORKER_LIMIT_MEMORY", "4g")
+    monkeypatch.setenv("WORKER_LIMIT_CPU", "4")
     with mock.patch.object(du, "run", return_value=(0, "", "")) as run_mock:
         du.dispatch_swarm("dispatch-test", "img:1", [], 8000, 8443, "workspace-c4u")
     cmd = run_mock.call_args[0][0]
     assert cmd[cmd.index("--reserve-memory") + 1] == "2g", cmd
     assert cmd[cmd.index("--reserve-cpu") + 1] == "1", cmd
+    assert cmd[cmd.index("--limit-memory") + 1] == "4g", cmd
+    assert cmd[cmd.index("--limit-cpu") + 1] == "4", cmd
 
 
 def test_dispatch_swarm_no_node_constraints_by_default(monkeypatch):

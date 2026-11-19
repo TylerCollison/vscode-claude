@@ -39,6 +39,8 @@ caller's Docker credential config is forwarded to the node that pulls the worker
 | `BEADS_DISPATCH_STATE_DIR` | `/config/.beads-dispatch` | Where the seen-set state file lives |
 | `WORKER_RESERVE_MEMORY` | `1g` | Swarm memory reservation per worker (`docker service create --reserve-memory`); `0` disables it. A worker runs ~0.5–1GB, and with no reservation Swarm counted workers as free and overloaded 8GB dockerblade (2026-11-18) |
 | `WORKER_RESERVE_CPU` | `0.5` | Swarm CPU reservation per worker (`--reserve-cpu`); `0` disables it |
+| `WORKER_LIMIT_MEMORY` | `2g` | Swarm memory limit per worker (`--limit-memory`); `0` disables it. Must be >= `WORKER_RESERVE_MEMORY` or `docker service create` rejects the service |
+| `WORKER_LIMIT_CPU` | `2` | Swarm CPU limit per worker (`--limit-cpu`); `0` disables it. Must be >= `WORKER_RESERVE_CPU` |
 | `WORKER_NODE_ALLOWLIST` | *(unset)* | Comma-separated Swarm node hostnames workers may run on; unset means all nodes eligible. A multi-node list is enforced by excluding every other node (Swarm constraints are ANDed, so several `node.hostname==` constraints could never match) |
 | `WORKER_NODE_DENYLIST` | *(unset)* | Comma-separated Swarm node hostnames workers must not run on (e.g. `dockerblade`); subtracted from the allowlist when both are set. If the filter cannot be enforced, dispatch fails closed rather than dispatching unconstrained |
 | `BEADS_REMOTE` | *(set on workers)* | Git URL all bd (task-DB) operations sync through. When set in the parent env, the dispatcher targets it (`dolt remote add` / `dolt push`) and workers inherit it as their sync source; when unset, the workspace git repo (`GIT_REPO_URL` / git origin) is used |

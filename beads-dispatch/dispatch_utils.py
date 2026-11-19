@@ -524,18 +524,29 @@ def _swarm_node_hostnames():
 
 
 def swarm_resource_args():
-    """`docker service create` resource-reservation flags for a worker.
+    """`docker service create` resource flags for a worker.
 
-    Configured by WORKER_RESERVE_MEMORY (default "1g") and
-    WORKER_RESERVE_CPU (default "0.5"). Set either to "0" to disable that
-    reservation. The defaults come from the 2026-11-18 dockerblade incident:
-    a worker runs ~0.5-1GB of RAM, and the node was evicting workers once
-    its 8GB was exhausted — with no reservation Swarm's scheduler counted
-    each worker as costing nothing, so it kept piling them on.
+    Reservations (what the scheduler accounts for): WORKER_RESERVE_MEMORY
+    (default "1g") and WORKER_RESERVE_CPU (default "0.5"). Limits (the hard
+    cap on what a worker may actually use): WORKER_LIMIT_MEMORY (default
+    "2g") and WORKER_LIMIT_CPU (default "2"). Set any of them to "0" to
+    disable it. A limit must be >= its reservation or `docker service
+    create` rejects the service.
+
+    The defaults come from the 2026-11-18 dockerblade incident: a worker
+    runs ~0.5-1GB of RAM, and the node was evicting workers once its 8GB
+    was exhausted — with no reservation Swarm's scheduler counted each
+    worker as costing nothing, so it kept piling them on. The 2g memory
+    limit leaves headroom for spikes while capping a runaway worker; the
+    2-CPU limit lets a worker burst (builds, agent work) without hogging
+    the node.
     """
     memory = (env("WORKER_RESERVE_MEMORY") or "1g").strip() or "1g"
     cpu = (env("WORKER_RESERVE_CPU") or "0.5").strip() or "0.5"
-    return ["--reserve-memory", memory, "--reserve-cpu", cpu]
+    limit_memory = (env("WORKER_LIMIT_MEMORY") or "2g").strip() or "2g"
+    limit_cpu = (env("WORKER_LIMIT_CPU") or "2").strip() or "2"
+    return ["--reserve-memory", memory, "--reserve-cpu", cpu,
+            "--limit-memory", limit_memory, "--limit-cpu", limit_cpu]
 
 
 def swarm_placement_constraints():
