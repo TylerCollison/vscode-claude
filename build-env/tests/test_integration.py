@@ -16,8 +16,8 @@ class TestIntegration:
 
     def test_build_env_help(self):
         """Test build-env help command."""
-        # Use the full path to build-env command
-        build_env_path = f"{sys.prefix}/bin/build-env"
+        # Use the build-env command from PATH
+        build_env_path = "build-env"
         result = subprocess.run(
             [build_env_path, '--help'],
             capture_output=True,
@@ -28,13 +28,14 @@ class TestIntegration:
 
     def test_build_env_missing_environment(self):
         """Test build-env fails with missing environment variables."""
-        # Use the full path to build-env command
-        build_env_path = f"{sys.prefix}/bin/build-env"
+        # Use the build-env command from PATH
+        build_env_path = "build-env"
+        # Provide minimal environment with PATH but no BUILD_CONTAINER/DEFAULT_WORKSPACE
         result = subprocess.run(
             [build_env_path, 'echo', 'hello'],
             capture_output=True,
             text=True,
-            env={}  # Empty environment
+            env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")}  # Minimal environment
         )
         assert result.returncode != 0
         assert "BUILD_CONTAINER environment variable must be set" in result.stderr
@@ -43,8 +44,8 @@ class TestIntegration:
         """Test build-env --exit command."""
         # This test requires a running container, so it might fail
         # but should handle the error gracefully
-        # Use the full path to build-env command
-        build_env_path = f"{sys.prefix}/bin/build-env"
+        # Use the build-env command from PATH
+        build_env_path = "build-env"
         result = subprocess.run(
             [build_env_path, '--exit'],
             capture_output=True,

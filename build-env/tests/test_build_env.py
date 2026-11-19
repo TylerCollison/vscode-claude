@@ -28,7 +28,10 @@ def mock_docker_client():
 @pytest.fixture
 def manager(mock_docker_client):
     """BuildEnvironmentManager fixture."""
-    return BuildEnvironmentManager(docker_client=mock_docker_client)
+    manager = BuildEnvironmentManager(docker_client=mock_docker_client)
+    # Mock _is_docker_in_docker to return False for unit tests
+    manager._is_docker_in_docker = Mock(return_value=False)
+    return manager
 
 
 def test_build_env_manager_initialization():
@@ -137,7 +140,6 @@ def test_start_container_creates_new_container(manager, mock_docker_client):
 
     # Use correct Docker exception
     from docker.errors import NotFound
-    mock_docker_client.containers.get.side_effect = NotFound("Not found")
     mock_docker_client.images.get.return_value = mock_image
     mock_docker_client.containers.create.return_value = mock_container
     mock_container.start.return_value = None
@@ -154,9 +156,8 @@ def test_start_container_creates_new_container(manager, mock_docker_client):
             # Assertions
             mock_validate.assert_called_once_with("test-image:latest")
             mock_name.assert_called_once()
-            # Called twice: once in _start_container and once in _synchronize_host_to_container
-            assert mock_docker_client.containers.get.call_count == 2
-            mock_docker_client.containers.get.assert_any_call("build-env-12345678-1234-5678-1234-567812345678")
+            # In the "new container" path, containers.get is not called (no stored UUID)
+            mock_docker_client.containers.get.assert_not_called()
             mock_docker_client.images.get.assert_called_once_with("test-image:latest")
             mock_docker_client.containers.create.assert_called_once_with(
                 image="test-image:latest",
@@ -204,8 +205,8 @@ def test_execute_command(manager, mock_docker_client):
     mock_docker_client.containers.get.return_value = mock_container
     mock_container.exec_run.return_value = mock_exec_result
 
-    # Call method
-    result = manager._execute_command("build-env-12345678-1234-5678-1234-567812345678", "echo hello", {"TEST_VAR": "test_value"})
+    # Call method (using non-streaming mode, the default)
+    result = manager._execute_command("build-env-12345678-1234-5678-1234-567812345678", "echo hello", {"TEST_VAR": "test_value"}, stream_output=False)
 
     # Assertions
     mock_docker_client.containers.get.assert_called_once_with("build-env-12345678-1234-5678-1234-567812345678")
@@ -214,10 +215,11 @@ def test_execute_command(manager, mock_docker_client):
         detach=False,
         environment={"TEST_VAR": "test_value"},
         workdir="/workspace",
-        tty=True,
+        tty=False,
         stdin=True
     )
-    assert result == mock_exec_result
+    # Method now returns tuple (exit_code, output)
+    assert result == (0, b"Command output")
 
 
 def test_shutdown_container(manager, mock_docker_client):
@@ -257,33 +259,39 @@ def test_execute_command_filters_dangerous_env_vars(manager, mock_docker_client)
     mock_container = Mock()
     mock_exec_result = Mock()
     mock_exec_result.exit_code = 0
+    mock_exec_result.output = b"Command output"
 
     mock_docker_client.containers.get.return_value = mock_container
     mock_container.exec_run.return_value = mock_exec_result
 
-    # Call method with dangerous environment variables
+    # Call method with dangerous environment variables (non-streaming mode)
+    # Use actual dangerous patterns: DOCKER_* and AWS_SECRET_ACCESS_KEY
     result = manager._execute_command(
         "build-env-12345678-1234-5678-1234-567812345678",
         "echo hello",
-        {"DANGEROUS_VAR": "dangerous", "SAFE_VAR": "safe_value"}
+        {"DOCKER_SECRET": "secret", "AWS_SECRET_ACCESS_KEY": "key", "SAFE_VAR": "safe_value"},
+        stream_output=False
     )
 
-    # Assertions
+    # Assertions - DOCKER_* and AWS_SECRET_ACCESS_KEY should be filtered out
     mock_container.exec_run.assert_called_once_with(
         "echo hello",
         detach=False,
         environment={"SAFE_VAR": "safe_value"},
         workdir="/workspace",
-        tty=True,
+        tty=False,
         stdin=True
     )
+    # Method now returns tuple (exit_code, output)
+    assert result == (0, b"Command output")
 
 
 def test_start_container_image_not_found(manager, mock_docker_client):
     """Test handling of image not found error."""
     # Setup mocks
-    mock_docker_client.containers.get.side_effect = Exception("Not found")
-    mock_docker_client.images.get.side_effect = Exception("Image not found")
+    from docker.errors import NotFound
+    mock_docker_client.containers.get.side_effect = NotFound("Not found")
+    mock_docker_client.images.get.side_effect = NotFound("Image not found")
     sys.modules['security'].validate_image_name.return_value = True
 
     # Call method
@@ -300,7 +308,7 @@ def test_cli_exit_command():
         # Mock BuildEnvironmentManager before importing CLI
         with patch('build_env.BuildEnvironmentManager') as mock_manager:
             mock_instance = mock_manager.return_value
-            mock_instance._get_container_uuid.return_value = "12345678-1234-5678-1234-567812345678"
+            mock_instance._get_stored_container_uuid.return_value = "12345678-1234-5678-1234-567812345678"
 
             # Import CLI after mocking
             import importlib

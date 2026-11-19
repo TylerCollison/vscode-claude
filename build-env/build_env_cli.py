@@ -60,16 +60,13 @@ def main():
         )
 
         if args.command:
-            # Execute command
+            # Execute command with streaming for real-time output
             command = ' '.join(args.command)
-            exit_code, output = manager._execute_command(container_name, command, env_vars)
+            exit_code, output = manager._execute_command(container_name, command, env_vars, stream_output=True)
 
-            # Print output if there is any
-            if output:
-                # Docker exec_run returns bytes, decode to string
-                if isinstance(output, bytes):
-                    output = output.decode('utf-8')
-                print(output.strip())
+            # Output is already printed in real-time when streaming
+            # But we may still need to handle the case where output was collected
+            # (streaming already prints, so no need to print again)
 
             return exit_code
         else:

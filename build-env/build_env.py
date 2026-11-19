@@ -8,7 +8,9 @@ from docker.errors import NotFound
 from security import (
     generate_container_uuid,
     validate_image_name,
-    SecurityError
+    SecurityError,
+    SAFE_ENV_VARS,
+    DANGEROUS_ENV_PATTERNS
 )
 
 
@@ -429,45 +431,130 @@ class BuildEnvironmentManager:
 
         return container_name
 
-    def _execute_command(self, container_name: str, command: str, env_vars: Dict[str, str]) -> tuple:
+    def _filter_env_vars(self, env_vars: Dict[str, str]) -> Dict[str, str]:
+        """Filter environment variables to remove dangerous ones.
+
+        Args:
+            env_vars: Dictionary of environment variables
+
+        Returns:
+            Filtered dictionary with only safe environment variables
+        """
+        import fnmatch
+
+        filtered = {}
+        for key, value in env_vars.items():
+            # Check if explicitly safe
+            if key in SAFE_ENV_VARS:
+                filtered[key] = value
+                continue
+
+            # Check if matches dangerous patterns
+            dangerous = False
+            for pattern in DANGEROUS_ENV_PATTERNS:
+                if fnmatch.fnmatch(key, pattern):
+                    dangerous = True
+                    break
+
+            # Also check for patterns ending with _KEY, _SECRET, _TOKEN, _PASSWORD
+            if any(key.endswith(suffix) for suffix in ('_KEY', '_SECRET', '_TOKEN', '_PASSWORD')):
+                dangerous = True
+
+            if not dangerous:
+                filtered[key] = value
+
+        return filtered
+
+    def _execute_command(self, container_name: str, command: str, env_vars: Dict[str, str],
+                         stream_output: bool = False) -> tuple:
         """Execute command in container.
 
         Args:
             container_name: Name of the container
             command: Command to execute
             env_vars: Environment variables
+            stream_output: If True, stream output in real-time and print to stdout
 
         Returns:
             Tuple of (exit_code, output)
         """
+        # Filter environment variables to remove dangerous ones
+        safe_env_vars = self._filter_env_vars(env_vars)
+
         # Get container
         container = self.docker_client.containers.get(container_name)
 
         # If running Docker-in-Docker, synchronize workspace files before executing command
         docker_in_docker = self._is_docker_in_docker()
         if docker_in_docker:
-            workspace_path = env_vars.get('DEFAULT_WORKSPACE', '/workspace')
+            workspace_path = safe_env_vars.get('DEFAULT_WORKSPACE', '/workspace')
             # Sync host → container before command execution
             self._synchronize_host_to_container(container_name, workspace_path)
 
-        # Execute command
-        exec_result = container.exec_run(
-            command,
-            detach=False,
-            environment=env_vars,
-            workdir=env_vars.get('DEFAULT_WORKSPACE', '/workspace'),
-            tty=False,
-            stdin=True
-        )
+        if stream_output:
+            # Use streaming exec for real-time output
+            # First create the exec instance
+            exec_create_resp = container.client.api.exec_create(
+                container.id,
+                command,
+                stdout=True,
+                stderr=True,
+                stdin=True,
+                tty=False,
+                environment=safe_env_vars,
+                workdir=safe_env_vars.get('DEFAULT_WORKSPACE', '/workspace'),
+            )
+            exec_id = exec_create_resp['Id']
+
+            # Start exec with streaming
+            output_generator = container.client.api.exec_start(
+                exec_id,
+                detach=False,
+                tty=False,
+                stream=True,
+                demux=False
+            )
+
+            # Stream output in real-time
+            collected_output = []
+            for chunk in output_generator:
+                if chunk:
+                    # Decode bytes to string if needed
+                    if isinstance(chunk, bytes):
+                        chunk_str = chunk.decode('utf-8', errors='replace')
+                    else:
+                        chunk_str = chunk
+                    # Print to stdout immediately
+                    print(chunk_str, end='', flush=True)
+                    collected_output.append(chunk_str)
+
+            # Get exit code from exec_inspect after streaming completes
+            exec_inspect = container.client.api.exec_inspect(exec_id)
+            exit_code = exec_inspect.get('ExitCode', 0)
+
+            # Combine collected output
+            full_output = ''.join(collected_output).encode('utf-8') if collected_output else b''
+        else:
+            # Non-streaming execution (original behavior)
+            exec_result = container.exec_run(
+                command,
+                detach=False,
+                environment=safe_env_vars,
+                workdir=safe_env_vars.get('DEFAULT_WORKSPACE', '/workspace'),
+                tty=False,
+                stdin=True
+            )
+            exit_code = exec_result.exit_code
+            full_output = exec_result.output
 
         # Synchronize workspace files back from container to host after command execution
         if self._is_docker_in_docker():
-            workspace_path = env_vars.get('DEFAULT_WORKSPACE', '/workspace')
+            workspace_path = safe_env_vars.get('DEFAULT_WORKSPACE', '/workspace')
             # Sync container → host after command execution
             self._synchronize_container_to_host(container_name, workspace_path)
 
         # Return exit code and output
-        return exec_result.exit_code, exec_result.output
+        return exit_code, full_output
 
     def _store_container_uuid(self, container_name: str, workspace_path: str) -> None:
         """Store container UUID in a file for later shutdown.
