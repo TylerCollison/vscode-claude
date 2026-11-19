@@ -90,3 +90,45 @@ def generate_container_uuid() -> str:
         UUID string
     """
     return str(uuid_lib.uuid4())
+
+
+def _matches_pattern(var_name: str, pattern: str) -> bool:
+    """Check if a variable name matches a pattern (supports * wildcard at end)."""
+    if pattern.endswith('*'):
+        prefix = pattern[:-1]
+        return var_name.startswith(prefix)
+    return var_name == pattern
+
+
+def filter_environment_variables(env_vars: Dict[str, str]) -> Dict[str, str]:
+    """Filter environment variables to only allow safe ones.
+
+    Uses a whitelist approach: only variables matching SAFE_ENV_VARS patterns
+    are allowed, unless they also match DANGEROUS_ENV_PATTERNS (deny takes precedence).
+
+    Args:
+        env_vars: Dictionary of environment variables to filter
+
+    Returns:
+        Filtered dictionary containing only safe environment variables
+    """
+    filtered = {}
+
+    for var_name, var_value in env_vars.items():
+        # Check if explicitly dangerous (deny takes precedence)
+        is_dangerous = any(
+            _matches_pattern(var_name, pattern)
+            for pattern in DANGEROUS_ENV_PATTERNS
+        )
+        if is_dangerous:
+            continue
+
+        # Check if explicitly safe (whitelist)
+        is_safe = any(
+            _matches_pattern(var_name, pattern)
+            for pattern in SAFE_ENV_VARS
+        )
+        if is_safe:
+            filtered[var_name] = var_value
+
+    return filtered

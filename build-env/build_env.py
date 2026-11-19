@@ -8,7 +8,8 @@ from docker.errors import NotFound
 from security import (
     generate_container_uuid,
     validate_image_name,
-    SecurityError
+    SecurityError,
+    filter_environment_variables
 )
 
 
@@ -367,6 +368,9 @@ class BuildEnvironmentManager:
         Returns:
             Container name
         """
+        # Filter environment variables to prevent secret leakage
+        env_vars = filter_environment_variables(env_vars)
+
         # Validate image name
         try:
             validate_image_name(image_name)
@@ -440,6 +444,9 @@ class BuildEnvironmentManager:
         Returns:
             Tuple of (exit_code, output)
         """
+        # Filter environment variables to prevent secret leakage
+        env_vars = filter_environment_variables(env_vars)
+
         # Get container
         container = self.docker_client.containers.get(container_name)
 

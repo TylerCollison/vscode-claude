@@ -6,6 +6,7 @@ import sys
 from typing import List
 
 from build_env import BuildEnvironmentManager, BuildEnvironmentError
+from security import filter_environment_variables
 
 
 def main():
@@ -31,6 +32,9 @@ def main():
 
     # Get environment variables and convert to regular dict to avoid Docker SDK issues
     env_vars = dict(os.environ)
+
+    # Filter environment variables to prevent secret leakage into containers
+    env_vars = filter_environment_variables(env_vars)
 
     try:
         manager = BuildEnvironmentManager()
