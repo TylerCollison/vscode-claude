@@ -3,9 +3,9 @@
 import argparse
 import os
 import sys
-from typing import List
+from typing import List, Optional, Dict, List as ListType, Tuple
 
-from build_env import BuildEnvironmentManager, BuildEnvironmentError
+from build_env import BuildEnvironmentManager, BuildEnvironmentError, parse_port_mappings
 
 
 def main():
@@ -20,6 +20,13 @@ def main():
         help='Shutdown the build environment container'
     )
 
+    parser.add_argument(
+        '--ports',
+        type=str,
+        help='Port mappings in format "8000:8000,3000:3000" (container_port:host_port). '
+             'Can also be set via BUILD_PORTS environment variable.'
+    )
+
     # Remaining arguments are the command to execute
     parser.add_argument(
         'command',
@@ -31,6 +38,10 @@ def main():
 
     # Get environment variables and convert to regular dict to avoid Docker SDK issues
     env_vars = dict(os.environ)
+
+    # Parse port mappings from CLI argument or environment variable
+    port_spec = args.ports or os.environ.get('BUILD_PORTS', '')
+    port_mappings = parse_port_mappings(port_spec) if port_spec else None
 
     try:
         manager = BuildEnvironmentManager()
@@ -56,8 +67,18 @@ def main():
         container_name = manager._start_container(
             env_vars["BUILD_CONTAINER"],
             env_vars["DEFAULT_WORKSPACE"],
-            env_vars
+            env_vars,
+            port_mappings
         )
+
+        if port_mappings and port_mappings.get('ports'):
+            port_strs = []
+            for container_port, host_port in port_mappings['ports']:
+                if host_port:
+                    port_strs.append(f"{container_port}:{host_port}")
+                else:
+                    port_strs.append(container_port)
+            print(f"Published ports: {', '.join(port_strs)}")
 
         if args.command:
             # Execute command
