@@ -439,6 +439,9 @@ class BuildEnvironmentManager:
 
         Returns:
             Tuple of (exit_code, output)
+
+        Raises:
+            BuildEnvironmentError: If command execution times out
         """
         # Get container
         container = self.docker_client.containers.get(container_name)
@@ -450,15 +453,30 @@ class BuildEnvironmentManager:
             # Sync host → container before command execution
             self._synchronize_host_to_container(container_name, workspace_path)
 
-        # Execute command
-        exec_result = container.exec_run(
-            command,
-            detach=False,
-            environment=env_vars,
-            workdir=env_vars.get('DEFAULT_WORKSPACE', '/workspace'),
-            tty=False,
-            stdin=True
-        )
+        # Get timeout from environment variable (default: 300 seconds / 5 minutes)
+        # Set to 0 or negative to disable timeout
+        timeout_str = env_vars.get('BUILD_ENV_TIMEOUT', '300')
+        try:
+            timeout = int(timeout_str)
+        except ValueError:
+            timeout = 300
+
+        # Execute command with timeout
+        try:
+            exec_result = container.exec_run(
+                command,
+                detach=False,
+                environment=env_vars,
+                workdir=env_vars.get('DEFAULT_WORKSPACE', '/workspace'),
+                tty=False,
+                stdin=True,
+                timeout=timeout if timeout > 0 else None
+            )
+        except Exception as e:
+            # Handle timeout and other execution errors
+            if "timeout" in str(e).lower() or "timed out" in str(e).lower():
+                raise BuildEnvironmentError(f"Command timed out after {timeout} seconds: {command}")
+            raise
 
         # Synchronize workspace files back from container to host after command execution
         if self._is_docker_in_docker():
