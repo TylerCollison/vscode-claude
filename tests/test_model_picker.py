@@ -4576,3 +4576,88 @@ class TestModelBlacklist:
         joined = "".join(frames)
         assert "Blacklisted pollinations/a-model. New pick: pollinations/b-model." in joined
         assert "message_start" in joined and "message_stop" in joined
+
+
+class TestToolCallInstruction:
+    """The pre-call hook injects the tool-call turn rule at the start."""
+
+    @pytest.fixture(scope="module")
+    def router(self):
+        return _load_module("router_callback_test", LITE_LLM_DIR / "router_callback.py")
+
+    def _run_hook(self, router, data, call_type="acompletion"):
+        return asyncio.run(
+            router.MultiStageRouter().async_pre_call_hook(None, None, data, call_type)
+        )
+
+    def _base_data(self):
+        return {
+            "model": "lite-llm/router",
+            "messages": [
+                {"role": "system", "content": "client system prompt"},
+                {"role": "user", "content": "hi"},
+            ],
+        }
+
+    def test_injects_after_client_system_message(self, router):
+        data = self._base_data()
+        out = self._run_hook(router, data)
+        assert out is data
+        assert data["messages"][0] == {"role": "system", "content": "client system prompt"}
+        assert data["messages"][1] == {"role": "system", "content": router._TOOL_CALL_INSTRUCTION}
+        assert data["messages"][2] == {"role": "user", "content": "hi"}
+        assert data["model"] == "lite-llm/complexity"
+
+    def test_injects_at_index_zero_without_client_system(self, router):
+        data = {"model": "lite-llm/router", "messages": [{"role": "user", "content": "hi"}]}
+        self._run_hook(router, data)
+        assert data["messages"][0] == {"role": "system", "content": router._TOOL_CALL_INSTRUCTION}
+        assert data["messages"][1] == {"role": "user", "content": "hi"}
+
+    def test_appends_to_top_level_system_string(self, router):
+        data = {"model": "lite-llm/router", "system": "client system prompt",
+                "messages": [{"role": "user", "content": "hi"}]}
+        self._run_hook(router, data, call_type="anthropic_messages")
+        assert data["system"] == "client system prompt\n\n" + router._TOOL_CALL_INSTRUCTION
+        assert all(m.get("role") != "system" for m in data["messages"])
+
+    def test_appends_block_to_top_level_system_list(self, router):
+        data = {"model": "lite-llm/router",
+                "system": [{"type": "text", "text": "client system prompt"}],
+                "messages": [{"role": "user", "content": "hi"}]}
+        self._run_hook(router, data, call_type="anthropic_messages")
+        assert data["system"][0] == {"type": "text", "text": "client system prompt"}
+        assert data["system"][1] == {"type": "text", "text": router._TOOL_CALL_INSTRUCTION}
+        assert all(m.get("role") != "system" for m in data["messages"])
+
+    def test_idempotent_on_second_pass(self, router):
+        data = self._base_data()
+        self._run_hook(router, data)
+        self._run_hook(router, data)
+        assert sum(
+            router._TOOL_CALL_INSTRUCTION_MARKER in str(m.get("content", ""))
+            for m in data["messages"]
+        ) == 1
+
+    def test_idempotent_when_system_already_has_it(self, router):
+        data = {"model": "lite-llm/router",
+                "system": "client prompt\n\n" + router._TOOL_CALL_INSTRUCTION,
+                "messages": [{"role": "user", "content": "hi"}]}
+        self._run_hook(router, data, call_type="anthropic_messages")
+        assert data["system"].count(router._TOOL_CALL_INSTRUCTION_MARKER) == 1
+        assert all(m.get("role") != "system" for m in data["messages"])
+
+    def test_skips_non_router_models(self, router):
+        data = {"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]}
+        out = self._run_hook(router, data)
+        assert out is data
+        assert data["messages"] == [{"role": "user", "content": "hi"}]
+        assert data["model"] == "gpt-4"
+
+    def test_skips_other_call_types(self, router):
+        data = self._base_data()
+        self._run_hook(router, data, call_type="embeddings")
+        assert data["messages"] == [
+            {"role": "system", "content": "client system prompt"},
+            {"role": "user", "content": "hi"},
+        ]
