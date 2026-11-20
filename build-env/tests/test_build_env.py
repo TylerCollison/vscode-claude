@@ -204,8 +204,10 @@ def test_execute_command(manager, mock_docker_client):
     mock_docker_client.containers.get.return_value = mock_container
     mock_container.exec_run.return_value = mock_exec_result
 
-    # Call method
-    result = manager._execute_command("build-env-12345678-1234-5678-1234-567812345678", "echo hello", {"TEST_VAR": "test_value"})
+    # Mock _is_docker_in_docker to return False to avoid sync calls
+    with patch.object(manager, '_is_docker_in_docker', return_value=False):
+        # Call method
+        result = manager._execute_command("build-env-12345678-1234-5678-1234-567812345678", "echo hello", {"TEST_VAR": "test_value"})
 
     # Assertions
     mock_docker_client.containers.get.assert_called_once_with("build-env-12345678-1234-5678-1234-567812345678")
@@ -214,10 +216,157 @@ def test_execute_command(manager, mock_docker_client):
         detach=False,
         environment={"TEST_VAR": "test_value"},
         workdir="/workspace",
-        tty=True,
+        tty=False,
         stdin=True
     )
-    assert result == mock_exec_result
+    # _execute_command returns (exit_code, output) tuple
+    assert result == (0, b"Command output")
+
+
+def test_execute_command_with_shell_metacharacters(manager, mock_docker_client):
+    """Test executing a command with shell metacharacters gets wrapped in sh -c."""
+    # Setup mocks
+    mock_container = Mock()
+    mock_exec_result = Mock()
+    mock_exec_result.exit_code = 0
+    mock_exec_result.output = b"Command output"
+
+    mock_docker_client.containers.get.return_value = mock_container
+    mock_container.exec_run.return_value = mock_exec_result
+
+    # Mock _is_docker_in_docker to return False to avoid sync calls
+    with patch.object(manager, '_is_docker_in_docker', return_value=False):
+        # Call method with shell metacharacters (ampersand)
+        result = manager._execute_command(
+            "build-env-12345678-1234-5678-1234-567812345678",
+            "echo a & echo b",
+            {"TEST_VAR": "test_value"}
+        )
+
+    # Assertions - command should be wrapped in sh -c
+    mock_docker_client.containers.get.assert_called_once_with("build-env-12345678-1234-5678-1234-567812345678")
+    mock_container.exec_run.assert_called_once()
+    call_args = mock_container.exec_run.call_args
+    assert call_args[0][0] == "sh -c 'echo a & echo b'"
+    assert call_args[1]['detach'] is False
+    assert call_args[1]['environment'] == {"TEST_VAR": "test_value"}
+    assert call_args[1]['workdir'] == "/workspace"
+    assert call_args[1]['tty'] is False
+    assert call_args[1]['stdin'] is True
+    # _execute_command returns (exit_code, output) tuple
+    assert result == (0, b"Command output")
+
+
+def test_execute_command_with_pipe(manager, mock_docker_client):
+    """Test executing a command with pipe gets wrapped in sh -c."""
+    # Setup mocks
+    mock_container = Mock()
+    mock_exec_result = Mock()
+    mock_exec_result.exit_code = 0
+    mock_exec_result.output = b"Command output"
+
+    mock_docker_client.containers.get.return_value = mock_container
+    mock_container.exec_run.return_value = mock_exec_result
+
+    # Mock _is_docker_in_docker to return False to avoid sync calls
+    with patch.object(manager, '_is_docker_in_docker', return_value=False):
+        # Call method with pipe
+        result = manager._execute_command(
+            "build-env-12345678-1234-5678-1234-567812345678",
+            "echo hello | grep hello",
+            {"TEST_VAR": "test_value"}
+        )
+
+    # Assertions - command should be wrapped in sh -c
+    mock_container.exec_run.assert_called_once()
+    call_args = mock_container.exec_run.call_args
+    assert call_args[0][0] == "sh -c 'echo hello | grep hello'"
+    # _execute_command returns (exit_code, output) tuple
+    assert result == (0, b"Command output")
+
+
+def test_execute_command_with_redirect(manager, mock_docker_client):
+    """Test executing a command with redirect gets wrapped in sh -c."""
+    # Setup mocks
+    mock_container = Mock()
+    mock_exec_result = Mock()
+    mock_exec_result.exit_code = 0
+    mock_exec_result.output = b"Command output"
+
+    mock_docker_client.containers.get.return_value = mock_container
+    mock_container.exec_run.return_value = mock_exec_result
+
+    # Mock _is_docker_in_docker to return False to avoid sync calls
+    with patch.object(manager, '_is_docker_in_docker', return_value=False):
+        # Call method with redirect
+        result = manager._execute_command(
+            "build-env-12345678-1234-5678-1234-567812345678",
+            "echo hello > /tmp/test.txt",
+            {"TEST_VAR": "test_value"}
+        )
+
+    # Assertions - command should be wrapped in sh -c
+    mock_container.exec_run.assert_called_once()
+    call_args = mock_container.exec_run.call_args
+    assert call_args[0][0] == "sh -c 'echo hello > /tmp/test.txt'"
+    # _execute_command returns (exit_code, output) tuple
+    assert result == (0, b"Command output")
+
+
+def test_execute_command_with_and_operator(manager, mock_docker_client):
+    """Test executing a command with && operator gets wrapped in sh -c."""
+    # Setup mocks
+    mock_container = Mock()
+    mock_exec_result = Mock()
+    mock_exec_result.exit_code = 0
+    mock_exec_result.output = b"Command output"
+
+    mock_docker_client.containers.get.return_value = mock_container
+    mock_container.exec_run.return_value = mock_exec_result
+
+    # Mock _is_docker_in_docker to return False to avoid sync calls
+    with patch.object(manager, '_is_docker_in_docker', return_value=False):
+        # Call method with &&
+        result = manager._execute_command(
+            "build-env-12345678-1234-5678-1234-567812345678",
+            "echo hello && echo world",
+            {"TEST_VAR": "test_value"}
+        )
+
+    # Assertions - command should be wrapped in sh -c
+    mock_container.exec_run.assert_called_once()
+    call_args = mock_container.exec_run.call_args
+    assert call_args[0][0] == "sh -c 'echo hello && echo world'"
+    # _execute_command returns (exit_code, output) tuple
+    assert result == (0, b"Command output")
+
+
+def test_execute_command_no_wrap_for_simple_command(manager, mock_docker_client):
+    """Test that simple commands without metacharacters are not wrapped."""
+    # Setup mocks
+    mock_container = Mock()
+    mock_exec_result = Mock()
+    mock_exec_result.exit_code = 0
+    mock_exec_result.output = b"Command output"
+
+    mock_docker_client.containers.get.return_value = mock_container
+    mock_container.exec_run.return_value = mock_exec_result
+
+    # Mock _is_docker_in_docker to return False to avoid sync calls
+    with patch.object(manager, '_is_docker_in_docker', return_value=False):
+        # Call method with simple command
+        result = manager._execute_command(
+            "build-env-12345678-1234-5678-1234-567812345678",
+            "echo hello",
+            {"TEST_VAR": "test_value"}
+        )
+
+    # Assertions - command should NOT be wrapped
+    mock_container.exec_run.assert_called_once()
+    call_args = mock_container.exec_run.call_args
+    assert call_args[0][0] == "echo hello"
+    # _execute_command returns (exit_code, output) tuple
+    assert result == (0, b"Command output")
 
 
 def test_shutdown_container(manager, mock_docker_client):
@@ -261,20 +410,22 @@ def test_execute_command_filters_dangerous_env_vars(manager, mock_docker_client)
     mock_docker_client.containers.get.return_value = mock_container
     mock_container.exec_run.return_value = mock_exec_result
 
-    # Call method with dangerous environment variables
-    result = manager._execute_command(
-        "build-env-12345678-1234-5678-1234-567812345678",
-        "echo hello",
-        {"DANGEROUS_VAR": "dangerous", "SAFE_VAR": "safe_value"}
-    )
+    # Mock _is_docker_in_docker to return False to avoid sync calls
+    with patch.object(manager, '_is_docker_in_docker', return_value=False):
+        # Call method with dangerous environment variables
+        result = manager._execute_command(
+            "build-env-12345678-1234-5678-1234-567812345678",
+            "echo hello",
+            {"GITHUB_TOKEN": "secret-token", "SAFE_VAR": "safe_value"}
+        )
 
-    # Assertions
+    # Assertions - GITHUB_TOKEN should be filtered out
     mock_container.exec_run.assert_called_once_with(
         "echo hello",
         detach=False,
         environment={"SAFE_VAR": "safe_value"},
         workdir="/workspace",
-        tty=True,
+        tty=False,
         stdin=True
     )
 
