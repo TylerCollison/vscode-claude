@@ -66,9 +66,9 @@ def main():
 
             # Print output if there is any
             if output:
-                # Docker exec_run returns bytes, decode to string
+                # Docker exec_run returns bytes, decode to string with error handling
                 if isinstance(output, bytes):
-                    output = output.decode('utf-8')
+                    output = output.decode('utf-8', errors='replace')
                 print(output.strip())
 
             return exit_code
