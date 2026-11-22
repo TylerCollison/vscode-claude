@@ -443,8 +443,8 @@ class BuildEnvironmentManager:
         Raises:
             BuildEnvironmentError: If command execution times out
         """
-        # Get container
-        container = self.docker_client.containers.get(container_name)
+        import subprocess
+        import shlex
 
         # If running Docker-in-Docker, synchronize workspace files before executing command
         docker_in_docker = self._is_docker_in_docker()
@@ -461,31 +461,51 @@ class BuildEnvironmentManager:
         except ValueError:
             timeout = 300
 
+        # Build docker exec command with environment variables and working directory
+        # Environment variables are passed via -e flags
+        env_args = []
+        for key, value in env_vars.items():
+            env_args.extend(['-e', f'{key}={value}'])
+
+        workdir = env_vars.get('DEFAULT_WORKSPACE', '/workspace')
+
+        # Use docker exec with subprocess for proper timeout support
+        # docker exec doesn't support passing stdin in a way that works with subprocess timeout easily
+        # We use a simple approach: pass command as shell -c to handle complex commands
+        docker_cmd = [
+            'docker', 'exec',
+            '-w', workdir,
+        ] + env_args + [
+            container_name,
+            'sh', '-c', command
+        ]
+
         # Execute command with timeout
         try:
-            exec_result = container.exec_run(
-                command,
-                detach=False,
-                environment=env_vars,
-                workdir=env_vars.get('DEFAULT_WORKSPACE', '/workspace'),
-                tty=False,
-                stdin=True,
-                timeout=timeout if timeout > 0 else None
-            )
-        except Exception as e:
-            # Handle timeout and other execution errors
-            if "timeout" in str(e).lower() or "timed out" in str(e).lower():
-                raise BuildEnvironmentError(f"Command timed out after {timeout} seconds: {command}")
-            raise
+            if timeout > 0:
+                result = subprocess.run(
+                    docker_cmd,
+                    capture_output=True,
+                    timeout=timeout
+                )
+            else:
+                # No timeout
+                result = subprocess.run(
+                    docker_cmd,
+                    capture_output=True
+                )
+        except subprocess.TimeoutExpired as e:
+            raise BuildEnvironmentError(f"Command timed out after {timeout} seconds: {command}")
 
         # Synchronize workspace files back from container to host after command execution
-        if self._is_docker_in_docker():
+        if docker_in_docker:
             workspace_path = env_vars.get('DEFAULT_WORKSPACE', '/workspace')
             # Sync container → host after command execution
             self._synchronize_container_to_host(container_name, workspace_path)
 
-        # Return exit code and output
-        return exec_result.exit_code, exec_result.output
+        # Return exit code and output (combine stdout and stderr)
+        output = result.stdout + result.stderr
+        return result.returncode, output
 
     def _store_container_uuid(self, container_name: str, workspace_path: str) -> None:
         """Store container UUID in a file for later shutdown.

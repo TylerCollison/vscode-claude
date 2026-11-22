@@ -195,31 +195,21 @@ def test_start_container_reuses_running_container(manager, mock_docker_client):
 
 def test_execute_command(manager, mock_docker_client):
     """Test executing a command in the container."""
-    # Setup mocks
-    mock_container = Mock()
-    mock_exec_result = Mock()
-    mock_exec_result.exit_code = 0
-    mock_exec_result.output = b"Command output"
-
-    mock_docker_client.containers.get.return_value = mock_container
-    mock_container.exec_run.return_value = mock_exec_result
-
     # Mock _is_docker_in_docker to return False to avoid sync calls
     with patch.object(manager, '_is_docker_in_docker', return_value=False):
-        # Call method
-        result = manager._execute_command("build-env-12345678-1234-5678-1234-567812345678", "echo hello", {"TEST_VAR": "test_value"})
+        # Mock subprocess.run
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = Mock(returncode=0, stdout=b"Command output", stderr=b"")
+
+            # Call method
+            result = manager._execute_command("build-env-12345678-1234-5678-1234-567812345678", "echo hello", {"TEST_VAR": "test_value"})
 
     # Assertions
-    mock_docker_client.containers.get.assert_called_once_with("build-env-12345678-1234-5678-1234-567812345678")
-    mock_container.exec_run.assert_called_once_with(
-        "echo hello",
-        detach=False,
-        environment={"TEST_VAR": "test_value"},
-        workdir="/workspace",
-        tty=False,
-        stdin=True,
-        timeout=300
-    )
+    mock_run.assert_called_once()
+    call_args = mock_run.call_args
+    assert call_args[0][0] == ['docker', 'exec', '-w', '/workspace', '-e', 'TEST_VAR=test_value', 'build-env-12345678-1234-5678-1234-567812345678', 'sh', '-c', 'echo hello']
+    assert call_args[1]['capture_output'] is True
+    assert call_args[1]['timeout'] == 300
     # Code returns tuple of (exit_code, output)
     assert result == (0, b"Command output")
 
@@ -257,33 +247,31 @@ def test_start_container_invalid_image_name(manager):
 
 def test_execute_command_filters_dangerous_env_vars(manager, mock_docker_client):
     """Test that environment variables are passed to the container."""
-    # Setup mocks
-    mock_container = Mock()
-    mock_exec_result = Mock()
-    mock_exec_result.exit_code = 0
-
-    mock_docker_client.containers.get.return_value = mock_container
-    mock_container.exec_run.return_value = mock_exec_result
-
     # Mock _is_docker_in_docker to return False to avoid sync calls
     with patch.object(manager, '_is_docker_in_docker', return_value=False):
-        # Call method with environment variables
-        result = manager._execute_command(
-            "build-env-12345678-1234-5678-1234-567812345678",
-            "echo hello",
-            {"DANGEROUS_VAR": "dangerous", "SAFE_VAR": "safe_value"}
-        )
+        # Mock subprocess.run
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = Mock(returncode=0, stdout=b"", stderr=b"")
+
+            # Call method with environment variables
+            result = manager._execute_command(
+                "build-env-12345678-1234-5678-1234-567812345678",
+                "echo hello",
+                {"DANGEROUS_VAR": "dangerous", "SAFE_VAR": "safe_value"}
+            )
 
     # Assertions - env vars are passed as-is (filtering is handled elsewhere)
-    mock_container.exec_run.assert_called_once_with(
-        "echo hello",
-        detach=False,
-        environment={"DANGEROUS_VAR": "dangerous", "SAFE_VAR": "safe_value"},
-        workdir="/workspace",
-        tty=False,
-        stdin=True,
-        timeout=300
-    )
+    mock_run.assert_called_once()
+    call_args = mock_run.call_args
+    docker_cmd = call_args[0][0]
+    assert docker_cmd[:5] == ['docker', 'exec', '-w', '/workspace', '-e']
+    # Check both env vars are in the command
+    env_args = docker_cmd[4:-3]  # exclude docker exec -w /workspace and sh -c command
+    assert '-e' in env_args
+    assert 'DANGEROUS_VAR=dangerous' in docker_cmd
+    assert 'SAFE_VAR=safe_value' in docker_cmd
+    assert call_args[1]['capture_output'] is True
+    assert call_args[1]['timeout'] == 300
 
 
 def test_start_container_image_not_found(manager, mock_docker_client):
@@ -607,22 +595,20 @@ def test_container_to_host_sync_with_deletions():
 
 def test_execute_command_timeout(manager, mock_docker_client):
     """Test that command execution timeout works correctly."""
-    # Setup mocks
-    mock_container = Mock()
-    # Raise a timeout exception
-    mock_container.exec_run.side_effect = Exception("timeout after 30s")
-
-    mock_docker_client.containers.get.return_value = mock_container
-
     # Mock _is_docker_in_docker to return False
     with patch.object(manager, '_is_docker_in_docker', return_value=False):
-        # Call method with a short timeout
-        with pytest.raises(BuildEnvironmentError) as exc_info:
-            manager._execute_command(
-                "build-env-12345678-1234-5678-1234-567812345678",
-                "sleep 60",
-                {"BUILD_ENV_TIMEOUT": "10", "TEST_VAR": "test_value"}
-            )
+        # Mock subprocess.run to raise TimeoutExpired
+        import subprocess
+        with patch('subprocess.run') as mock_run:
+            mock_run.side_effect = subprocess.TimeoutExpired(cmd='docker exec...', timeout=10)
+
+            # Call method with a short timeout
+            with pytest.raises(BuildEnvironmentError) as exc_info:
+                manager._execute_command(
+                    "build-env-12345678-1234-5678-1234-567812345678",
+                    "sleep 60",
+                    {"BUILD_ENV_TIMEOUT": "10", "TEST_VAR": "test_value"}
+                )
 
     # Verify the error message includes the timeout info
     assert "timed out" in str(exc_info.value).lower()
