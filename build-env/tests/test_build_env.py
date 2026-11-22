@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from security import SecurityError
 
 # Import build_env after setting up path
-from build_env import BuildEnvironmentManager, BuildEnvironmentError
+from build_env import BuildEnvironmentManager, BuildEnvironmentError, parse_port_mappings
 
 
 @pytest.fixture
@@ -409,6 +409,45 @@ def test_cli_missing_environment_variables():
                 result = main()
                 # Should return non-zero exit code
                 assert result == 1
+
+
+def test_parse_port_mappings():
+    """Test parse_port_mappings function."""
+    # Single port only
+    result = parse_port_mappings("8000")
+    assert result == {'ports': [('8000', None)]}
+
+    # Container port mapped to same host port
+    result = parse_port_mappings("8000:8000")
+    assert result == {'ports': [('8000', '8000')]}
+
+    # Multiple ports with same mapping
+    result = parse_port_mappings("8000:8000,3000:3000")
+    assert result == {'ports': [('8000', '8000'), ('3000', '3000')]}
+
+    # Multiple ports with protocols
+    result = parse_port_mappings("8000/tcp,3000/udp")
+    assert result == {'ports': [('8000/tcp', None), ('3000/udp', None)]}
+
+    # Mixed: one port only, one with mapping
+    result = parse_port_mappings("8000,3000:3000")
+    assert result == {'ports': [('8000', None), ('3000', '3000')]}
+
+    # Empty string
+    result = parse_port_mappings("")
+    assert result == {'ports': []}
+
+    # Whitespace only
+    result = parse_port_mappings("  ")
+    assert result == {'ports': []}
+
+    # Port with trailing colon
+    result = parse_port_mappings("8000:")
+    assert result == {'ports': [('8000', None)]}
+
+    # Multiple ports with spaces after comma
+    result = parse_port_mappings("8000:8000, 3000:3000 ")
+    assert result == {'ports': [('8000', '8000'), ('3000', '3000')]}
 
 
 def test_get_file_list():

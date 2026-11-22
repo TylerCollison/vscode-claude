@@ -1,7 +1,8 @@
 """Build environment manager core logic."""
 
 import os
-from typing import Dict, Optional, Any
+import re
+from typing import Dict, Optional, Any, List, Tuple
 import docker
 from docker.errors import NotFound
 
@@ -10,6 +11,50 @@ from security import (
     validate_image_name,
     SecurityError
 )
+
+
+def parse_port_mappings(port_spec: str) -> Dict[str, List[Tuple[str, str]]]:
+    """Parse port mappings from string specification.
+
+    Args:
+        port_spec: String like "8000:8000,3000:3000" or "8000,3000:3000"
+
+    Returns:
+        Dictionary with 'ports' key containing list of (container_port, host_port) tuples.
+        Host port can be None for random assignment.
+
+    Examples:
+        "8000" -> {'ports': [('8000', None)]}
+        "8000:8000" -> {'ports': [('8000', '8000')]}
+        "8000:8000,3000:3000" -> {'ports': [('8000', '8000'), ('3000', '3000')]}
+        "8000/tcp,3000/udp" -> {'ports': [('8000/tcp', None), ('3000/udp', None)]}
+    """
+    result = {'ports': []}
+
+    if not port_spec or not port_spec.strip():
+        return result
+
+    # Split by comma
+    mappings = port_spec.split(',')
+
+    for mapping in mappings:
+        mapping = mapping.strip()
+        if not mapping:
+            continue
+
+        # Parse container_port:host_port or just container_port
+        if ':' in mapping:
+            parts = mapping.split(':', 1)
+            container_port = parts[0].strip()
+            host_port = parts[1].strip() if parts[1].strip() else None
+        else:
+            container_port = mapping.strip()
+            host_port = None
+
+        if container_port:
+            result['ports'].append((container_port, host_port))
+
+    return result
 
 
 class BuildEnvironmentError(Exception):
@@ -356,13 +401,14 @@ class BuildEnvironmentManager:
         except Exception:
             return False
 
-    def _start_container(self, image_name: str, workspace_path: str, env_vars: Dict[str, str]) -> str:
+    def _start_container(self, image_name: str, workspace_path: str, env_vars: Dict[str, str], port_mappings: Optional[Dict[str, List[Tuple[str, str]]]] = None) -> str:
         """Start or create build container.
 
         Args:
             image_name: Docker image name
             workspace_path: Path to the workspace
             env_vars: Environment variables
+            port_mappings: Optional dict with 'ports' key containing list of (container_port, host_port) tuples
 
         Returns:
             Container name
@@ -411,6 +457,14 @@ class BuildEnvironmentManager:
                     f"Try pulling manually with: docker pull {image_name}"
                 )
 
+        # Prepare port configuration for Docker
+        ports = None
+        if port_mappings and port_mappings.get('ports'):
+            ports = {}
+            for container_port, host_port in port_mappings['ports']:
+                # Docker SDK expects dict with container_port as key and host_port as value (or None for random)
+                ports[container_port] = host_port
+
         # Create container without volume mount
         # We'll copy files on each command execution for Docker-in-Docker scenarios
         container = self.docker_client.containers.create(
@@ -419,7 +473,8 @@ class BuildEnvironmentManager:
             working_dir=workspace_path,
             environment=env_vars,
             command=["tail", "-f", "/dev/null"],  # Keep container running
-            detach=True
+            detach=True,
+            ports=ports
         )
         container.start()
 
