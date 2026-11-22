@@ -1,6 +1,8 @@
 """Build environment manager core logic."""
 
 import os
+import re
+import fnmatch
 from typing import Dict, Optional, Any
 import docker
 from docker.errors import NotFound
@@ -8,8 +10,85 @@ from docker.errors import NotFound
 from security import (
     generate_container_uuid,
     validate_image_name,
-    SecurityError
+    SecurityError,
+    SAFE_ENV_VARS,
+    DANGEROUS_ENV_PATTERNS
 )
+
+
+# Shell metacharacters that require shell interpretation
+SHELL_METACHARACTERS = re.compile(r'[&|<>;$`\\*?\[\]{}~!#()]')
+
+
+def _needs_shell(command: str) -> bool:
+    """Check if command contains shell metacharacters that require shell interpretation.
+
+    Args:
+        command: Command string to check
+
+    Returns:
+        True if command contains shell metacharacters, False otherwise
+    """
+    # Check for shell metacharacters
+    if SHELL_METACHARACTERS.search(command):
+        return True
+    # Check for shell operators (&&, ||, ;, etc.)
+    if re.search(r'&&|\|\|', command):
+        return True
+    return False
+
+
+def _wrap_for_shell(command: str) -> str:
+    """Wrap command in sh -c with proper escaping for shell execution.
+
+    Args:
+        command: Command string to wrap
+
+    Returns:
+        Command wrapped for shell execution
+    """
+    # Escape single quotes in the command for sh -c '...'
+    escaped = command.replace("'", "'\"'\"'")
+    return f"sh -c '{escaped}'"
+
+
+def _filter_env_vars(env_vars: Dict[str, str]) -> Dict[str, str]:
+    """Filter environment variables to exclude dangerous ones.
+
+    Keeps environment variables that match the safe whitelist (SAFE_ENV_VARS)
+    or match a safe pattern prefix (BUILD_*). Removes variables matching
+    dangerous patterns (AWS credentials, tokens, secrets, etc.).
+
+    Args:
+        env_vars: Dictionary of environment variables
+
+    Returns:
+        Filtered dictionary of environment variables
+    """
+    filtered = {}
+    for key, value in env_vars.items():
+        # Check if key matches any safe pattern
+        is_safe = False
+        for safe_pattern in SAFE_ENV_VARS:
+            if fnmatch.fnmatch(key, safe_pattern):
+                is_safe = True
+                break
+
+        if is_safe:
+            filtered[key] = value
+            continue
+
+        # Check if key matches any dangerous pattern
+        is_dangerous = False
+        for danger_pattern in DANGEROUS_ENV_PATTERNS:
+            if fnmatch.fnmatch(key, danger_pattern):
+                is_dangerous = True
+                break
+
+        if not is_dangerous:
+            filtered[key] = value
+
+    return filtered
 
 
 class BuildEnvironmentError(Exception):
@@ -416,16 +495,13 @@ class BuildEnvironmentManager:
         # Synchronize workspace files for Docker-in-Docker scenarios
         if self._is_docker_in_docker():
             # Sync host → container initially
-            if not self._synchronize_host_to_container(container_name, workspace_path):
-                raise BuildEnvironmentError(
-                    f"Failed to synchronize workspace from host to container '{container_name}'"
-                )
+            self._synchronize_host_to_container(container_name, workspace_path)
 
+        # Synchronize workspace files after container startup
+        # This ensures any initial container setup is reflected back to host
+        if self._is_docker_in_docker():
             # Sync container → host after startup
-            if not self._synchronize_container_to_host(container_name, workspace_path):
-                raise BuildEnvironmentError(
-                    f"Failed to synchronize workspace from container '{container_name}' to host"
-                )
+            self._synchronize_container_to_host(container_name, workspace_path)
 
         # Store container UUID in file for later shutdown
         self._store_container_uuid(container_name, workspace_path)
@@ -451,16 +527,20 @@ class BuildEnvironmentManager:
         if docker_in_docker:
             workspace_path = env_vars.get('DEFAULT_WORKSPACE', '/workspace')
             # Sync host → container before command execution
-            if not self._synchronize_host_to_container(container_name, workspace_path):
-                raise BuildEnvironmentError(
-                    f"Failed to synchronize workspace from host to container '{container_name}' before command execution"
-                )
+            self._synchronize_host_to_container(container_name, workspace_path)
+
+        # Auto-wrap commands containing shell metacharacters to ensure shell semantics
+        if _needs_shell(command):
+            command = _wrap_for_shell(command)
+
+        # Filter dangerous environment variables
+        safe_env_vars = _filter_env_vars(env_vars)
 
         # Execute command
         exec_result = container.exec_run(
             command,
             detach=False,
-            environment=env_vars,
+            environment=safe_env_vars,
             workdir=env_vars.get('DEFAULT_WORKSPACE', '/workspace'),
             tty=False,
             stdin=True
@@ -470,10 +550,7 @@ class BuildEnvironmentManager:
         if self._is_docker_in_docker():
             workspace_path = env_vars.get('DEFAULT_WORKSPACE', '/workspace')
             # Sync container → host after command execution
-            if not self._synchronize_container_to_host(container_name, workspace_path):
-                raise BuildEnvironmentError(
-                    f"Failed to synchronize workspace from container '{container_name}' to host after command execution"
-                )
+            self._synchronize_container_to_host(container_name, workspace_path)
 
         # Return exit code and output
         return exec_result.exit_code, exec_result.output

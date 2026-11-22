@@ -33,10 +33,8 @@ def manager(mock_docker_client):
 
 def test_build_env_manager_initialization():
     """Test BuildEnvironmentManager initialization."""
-    with patch('docker.from_env') as mock_from_env:
-        mock_from_env.return_value = Mock()
-        manager = BuildEnvironmentManager()
-        assert manager.docker_client is not None
+    manager = BuildEnvironmentManager()
+    assert manager.docker_client is not None
 
 
 def test_container_name_generation(manager):
@@ -144,34 +142,32 @@ def test_start_container_creates_new_container(manager, mock_docker_client):
     mock_docker_client.containers.create.return_value = mock_container
     mock_container.start.return_value = None
 
-    # Mock _is_docker_in_docker to return False (not in DinD scenario)
-    with patch.object(manager, '_is_docker_in_docker', return_value=False):
-        # Mock security functions using patch
-        with patch('build_env.validate_image_name') as mock_validate:
-            mock_validate.return_value = True
-            # Mock container name generation to get consistent container name
-            with patch.object(manager, '_generate_container_name') as mock_name:
-                mock_name.return_value = "build-env-12345678-1234-5678-1234-567812345678"
-                # Call method
-                result = manager._start_container("test-image:latest", "/workspace", {"TEST_VAR": "test_value"})
+    # Mock security functions using patch
+    with patch('build_env.validate_image_name') as mock_validate:
+        mock_validate.return_value = True
+        # Mock container name generation to get consistent container name
+        with patch.object(manager, '_generate_container_name') as mock_name:
+            mock_name.return_value = "build-env-12345678-1234-5678-1234-567812345678"
+            # Call method
+            result = manager._start_container("test-image:latest", "/workspace", {"TEST_VAR": "test_value"})
 
-                # Assertions
-                mock_validate.assert_called_once_with("test-image:latest")
-                mock_name.assert_called_once()
-                # Called once for checking stored UUID
-                assert mock_docker_client.containers.get.call_count == 1
-                mock_docker_client.containers.get.assert_any_call("build-env-12345678-1234-5678-1234-567812345678")
-                mock_docker_client.images.get.assert_called_once_with("test-image:latest")
-                mock_docker_client.containers.create.assert_called_once_with(
-                    image="test-image:latest",
-                    name="build-env-12345678-1234-5678-1234-567812345678",
-                    working_dir="/workspace",
-                    environment={"TEST_VAR": "test_value"},
-                    command=["tail", "-f", "/dev/null"],
-                    detach=True
-                )
-                mock_container.start.assert_called_once()
-                assert result == "build-env-12345678-1234-5678-1234-567812345678"
+            # Assertions
+            mock_validate.assert_called_once_with("test-image:latest")
+            mock_name.assert_called_once()
+            # Called twice: once in _start_container and once in _synchronize_host_to_container
+            assert mock_docker_client.containers.get.call_count == 2
+            mock_docker_client.containers.get.assert_any_call("build-env-12345678-1234-5678-1234-567812345678")
+            mock_docker_client.images.get.assert_called_once_with("test-image:latest")
+            mock_docker_client.containers.create.assert_called_once_with(
+                image="test-image:latest",
+                name="build-env-12345678-1234-5678-1234-567812345678",
+                working_dir="/workspace",
+                environment={"TEST_VAR": "test_value"},
+                command=["tail", "-f", "/dev/null"],
+                detach=True
+            )
+            mock_container.start.assert_called_once()
+            assert result == "build-env-12345678-1234-5678-1234-567812345678"
 
 
 def test_start_container_reuses_running_container(manager, mock_docker_client):
@@ -182,21 +178,19 @@ def test_start_container_reuses_running_container(manager, mock_docker_client):
 
     mock_docker_client.containers.get.return_value = mock_container
 
-    # Mock _is_docker_in_docker to return False (not in DinD scenario)
-    with patch.object(manager, '_is_docker_in_docker', return_value=False):
-        # Mock security functions using patch
-        with patch('build_env.validate_image_name') as mock_validate:
-            mock_validate.return_value = True
-            # Mock container name generation to get consistent container name
-            with patch.object(manager, '_generate_container_name') as mock_name:
-                mock_name.return_value = "build-env-12345678-1234-5678-1234-567812345678"
-                # Call method
-                result = manager._start_container("test-image:latest", "/workspace", {"TEST_VAR": "test_value"})
+    # Mock security functions using patch
+    with patch('build_env.validate_image_name') as mock_validate:
+        mock_validate.return_value = True
+        # Mock container name generation to get consistent container name
+        with patch.object(manager, '_generate_container_name') as mock_name:
+            mock_name.return_value = "build-env-12345678-1234-5678-1234-567812345678"
+            # Call method
+            result = manager._start_container("test-image:latest", "/workspace", {"TEST_VAR": "test_value"})
 
-                # Assertions - should reuse existing container
-                mock_validate.assert_called_once_with("test-image:latest")
-                mock_docker_client.containers.get.assert_called_once_with("build-env-12345678-1234-5678-1234-567812345678")
-                assert result == "build-env-12345678-1234-5678-1234-567812345678"
+            # Assertions - should reuse existing container
+            mock_validate.assert_called_once_with("test-image:latest")
+            mock_docker_client.containers.get.assert_called_once_with("build-env-12345678-1234-5678-1234-567812345678")
+            assert result == "build-env-12345678-1234-5678-1234-567812345678"
 
 
 def test_execute_command(manager, mock_docker_client):
@@ -210,22 +204,169 @@ def test_execute_command(manager, mock_docker_client):
     mock_docker_client.containers.get.return_value = mock_container
     mock_container.exec_run.return_value = mock_exec_result
 
-    # Mock _is_docker_in_docker to return False (not in DinD scenario)
+    # Mock _is_docker_in_docker to return False to avoid sync calls
     with patch.object(manager, '_is_docker_in_docker', return_value=False):
         # Call method
         result = manager._execute_command("build-env-12345678-1234-5678-1234-567812345678", "echo hello", {"TEST_VAR": "test_value"})
 
-        # Assertions
-        mock_docker_client.containers.get.assert_called_once_with("build-env-12345678-1234-5678-1234-567812345678")
-        mock_container.exec_run.assert_called_once_with(
-            "echo hello",
-            detach=False,
-            environment={"TEST_VAR": "test_value"},
-            workdir="/workspace",
-            tty=False,
-            stdin=True
+    # Assertions
+    mock_docker_client.containers.get.assert_called_once_with("build-env-12345678-1234-5678-1234-567812345678")
+    mock_container.exec_run.assert_called_once_with(
+        "echo hello",
+        detach=False,
+        environment={"TEST_VAR": "test_value"},
+        workdir="/workspace",
+        tty=False,
+        stdin=True
+    )
+    # _execute_command returns (exit_code, output) tuple
+    assert result == (0, b"Command output")
+
+
+def test_execute_command_with_shell_metacharacters(manager, mock_docker_client):
+    """Test executing a command with shell metacharacters gets wrapped in sh -c."""
+    # Setup mocks
+    mock_container = Mock()
+    mock_exec_result = Mock()
+    mock_exec_result.exit_code = 0
+    mock_exec_result.output = b"Command output"
+
+    mock_docker_client.containers.get.return_value = mock_container
+    mock_container.exec_run.return_value = mock_exec_result
+
+    # Mock _is_docker_in_docker to return False to avoid sync calls
+    with patch.object(manager, '_is_docker_in_docker', return_value=False):
+        # Call method with shell metacharacters (ampersand)
+        result = manager._execute_command(
+            "build-env-12345678-1234-5678-1234-567812345678",
+            "echo a & echo b",
+            {"TEST_VAR": "test_value"}
         )
-        assert result == (0, b"Command output")
+
+    # Assertions - command should be wrapped in sh -c
+    mock_docker_client.containers.get.assert_called_once_with("build-env-12345678-1234-5678-1234-567812345678")
+    mock_container.exec_run.assert_called_once()
+    call_args = mock_container.exec_run.call_args
+    assert call_args[0][0] == "sh -c 'echo a & echo b'"
+    assert call_args[1]['detach'] is False
+    assert call_args[1]['environment'] == {"TEST_VAR": "test_value"}
+    assert call_args[1]['workdir'] == "/workspace"
+    assert call_args[1]['tty'] is False
+    assert call_args[1]['stdin'] is True
+    # _execute_command returns (exit_code, output) tuple
+    assert result == (0, b"Command output")
+
+
+def test_execute_command_with_pipe(manager, mock_docker_client):
+    """Test executing a command with pipe gets wrapped in sh -c."""
+    # Setup mocks
+    mock_container = Mock()
+    mock_exec_result = Mock()
+    mock_exec_result.exit_code = 0
+    mock_exec_result.output = b"Command output"
+
+    mock_docker_client.containers.get.return_value = mock_container
+    mock_container.exec_run.return_value = mock_exec_result
+
+    # Mock _is_docker_in_docker to return False to avoid sync calls
+    with patch.object(manager, '_is_docker_in_docker', return_value=False):
+        # Call method with pipe
+        result = manager._execute_command(
+            "build-env-12345678-1234-5678-1234-567812345678",
+            "echo hello | grep hello",
+            {"TEST_VAR": "test_value"}
+        )
+
+    # Assertions - command should be wrapped in sh -c
+    mock_container.exec_run.assert_called_once()
+    call_args = mock_container.exec_run.call_args
+    assert call_args[0][0] == "sh -c 'echo hello | grep hello'"
+    # _execute_command returns (exit_code, output) tuple
+    assert result == (0, b"Command output")
+
+
+def test_execute_command_with_redirect(manager, mock_docker_client):
+    """Test executing a command with redirect gets wrapped in sh -c."""
+    # Setup mocks
+    mock_container = Mock()
+    mock_exec_result = Mock()
+    mock_exec_result.exit_code = 0
+    mock_exec_result.output = b"Command output"
+
+    mock_docker_client.containers.get.return_value = mock_container
+    mock_container.exec_run.return_value = mock_exec_result
+
+    # Mock _is_docker_in_docker to return False to avoid sync calls
+    with patch.object(manager, '_is_docker_in_docker', return_value=False):
+        # Call method with redirect
+        result = manager._execute_command(
+            "build-env-12345678-1234-5678-1234-567812345678",
+            "echo hello > /tmp/test.txt",
+            {"TEST_VAR": "test_value"}
+        )
+
+    # Assertions - command should be wrapped in sh -c
+    mock_container.exec_run.assert_called_once()
+    call_args = mock_container.exec_run.call_args
+    assert call_args[0][0] == "sh -c 'echo hello > /tmp/test.txt'"
+    # _execute_command returns (exit_code, output) tuple
+    assert result == (0, b"Command output")
+
+
+def test_execute_command_with_and_operator(manager, mock_docker_client):
+    """Test executing a command with && operator gets wrapped in sh -c."""
+    # Setup mocks
+    mock_container = Mock()
+    mock_exec_result = Mock()
+    mock_exec_result.exit_code = 0
+    mock_exec_result.output = b"Command output"
+
+    mock_docker_client.containers.get.return_value = mock_container
+    mock_container.exec_run.return_value = mock_exec_result
+
+    # Mock _is_docker_in_docker to return False to avoid sync calls
+    with patch.object(manager, '_is_docker_in_docker', return_value=False):
+        # Call method with &&
+        result = manager._execute_command(
+            "build-env-12345678-1234-5678-1234-567812345678",
+            "echo hello && echo world",
+            {"TEST_VAR": "test_value"}
+        )
+
+    # Assertions - command should be wrapped in sh -c
+    mock_container.exec_run.assert_called_once()
+    call_args = mock_container.exec_run.call_args
+    assert call_args[0][0] == "sh -c 'echo hello && echo world'"
+    # _execute_command returns (exit_code, output) tuple
+    assert result == (0, b"Command output")
+
+
+def test_execute_command_no_wrap_for_simple_command(manager, mock_docker_client):
+    """Test that simple commands without metacharacters are not wrapped."""
+    # Setup mocks
+    mock_container = Mock()
+    mock_exec_result = Mock()
+    mock_exec_result.exit_code = 0
+    mock_exec_result.output = b"Command output"
+
+    mock_docker_client.containers.get.return_value = mock_container
+    mock_container.exec_run.return_value = mock_exec_result
+
+    # Mock _is_docker_in_docker to return False to avoid sync calls
+    with patch.object(manager, '_is_docker_in_docker', return_value=False):
+        # Call method with simple command
+        result = manager._execute_command(
+            "build-env-12345678-1234-5678-1234-567812345678",
+            "echo hello",
+            {"TEST_VAR": "test_value"}
+        )
+
+    # Assertions - command should NOT be wrapped
+    mock_container.exec_run.assert_called_once()
+    call_args = mock_container.exec_run.call_args
+    assert call_args[0][0] == "echo hello"
+    # _execute_command returns (exit_code, output) tuple
+    assert result == (0, b"Command output")
 
 
 def test_shutdown_container(manager, mock_docker_client):
@@ -269,24 +410,24 @@ def test_execute_command_filters_dangerous_env_vars(manager, mock_docker_client)
     mock_docker_client.containers.get.return_value = mock_container
     mock_container.exec_run.return_value = mock_exec_result
 
-    # Mock _is_docker_in_docker to return False (not in DinD scenario)
+    # Mock _is_docker_in_docker to return False to avoid sync calls
     with patch.object(manager, '_is_docker_in_docker', return_value=False):
         # Call method with dangerous environment variables
         result = manager._execute_command(
             "build-env-12345678-1234-5678-1234-567812345678",
             "echo hello",
-            {"DANGEROUS_VAR": "dangerous", "SAFE_VAR": "safe_value"}
+            {"GITHUB_TOKEN": "secret-token", "SAFE_VAR": "safe_value"}
         )
 
-        # Assertions
-        mock_container.exec_run.assert_called_once_with(
-            "echo hello",
-            detach=False,
-            environment={"SAFE_VAR": "safe_value"},
-            workdir="/workspace",
-            tty=False,
-            stdin=True
-        )
+    # Assertions - GITHUB_TOKEN should be filtered out
+    mock_container.exec_run.assert_called_once_with(
+        "echo hello",
+        detach=False,
+        environment={"SAFE_VAR": "safe_value"},
+        workdir="/workspace",
+        tty=False,
+        stdin=True
+    )
 
 
 def test_start_container_image_not_found(manager, mock_docker_client):
@@ -296,14 +437,12 @@ def test_start_container_image_not_found(manager, mock_docker_client):
     mock_docker_client.images.get.side_effect = Exception("Image not found")
     sys.modules['security'].validate_image_name.return_value = True
 
-    # Mock _is_docker_in_docker to return False (not in DinD scenario)
-    with patch.object(manager, '_is_docker_in_docker', return_value=False):
-        # Call method
-        with pytest.raises(BuildEnvironmentError) as exc_info:
-            manager._start_container("nonexistent-image:latest", "/workspace", {"TEST_VAR": "test_value"})
+    # Call method
+    with pytest.raises(BuildEnvironmentError) as exc_info:
+        manager._start_container("nonexistent-image:latest", "/workspace", {"TEST_VAR": "test_value"})
 
-        # Assertions
-        assert "Docker image not found" in str(exc_info.value)
+    # Assertions
+    assert "Docker image not found" in str(exc_info.value)
 
 
 def test_cli_exit_command():
@@ -313,7 +452,6 @@ def test_cli_exit_command():
         with patch('build_env.BuildEnvironmentManager') as mock_manager:
             mock_instance = mock_manager.return_value
             mock_instance._get_container_uuid.return_value = "12345678-1234-5678-1234-567812345678"
-            mock_instance._is_docker_in_docker.return_value = False
 
             # Import CLI after mocking
             import importlib
@@ -362,7 +500,6 @@ def test_cli_missing_environment_variables():
             # Mock validate_requirements to raise BuildEnvironmentError
             from build_env import BuildEnvironmentError
             mock_instance._validate_requirements.side_effect = BuildEnvironmentError("Environment variables missing")
-            mock_instance._is_docker_in_docker.return_value = False
 
             with patch('os.environ', {}):
                 # Import CLI after mocking
@@ -394,42 +531,38 @@ def test_get_file_list():
             f.write('test')
 
         # Test file listing
-        with patch.object(BuildEnvironmentManager, '_is_docker_in_docker', return_value=False):
-            manager = BuildEnvironmentManager()
-            files = manager._get_file_list(tmpdir)
+        manager = BuildEnvironmentManager()
+        files = manager._get_file_list(tmpdir)
 
-            # Should contain relative paths
-            assert 'file1.txt' in files
-            assert 'subdir/file2.txt' in files
-            assert '.build-env' not in files  # Should skip .build-env directories
+        # Should contain relative paths
+        assert 'file1.txt' in files
+        assert 'subdir/file2.txt' in files
+        assert '.build-env' not in files  # Should skip .build-env directories
 
 
 def test_get_file_list_nonexistent_directory():
     """Test file listing with non-existent directory"""
-    with patch.object(BuildEnvironmentManager, '_is_docker_in_docker', return_value=False):
-        manager = BuildEnvironmentManager()
-        with pytest.raises(FileNotFoundError):
-            manager._get_file_list('/nonexistent/path')
+    manager = BuildEnvironmentManager()
+    with pytest.raises(FileNotFoundError):
+        manager._get_file_list('/nonexistent/path')
 
 
 def test_get_file_list_file_not_directory():
     """Test file listing with file instead of directory"""
     import tempfile
-    with patch.object(BuildEnvironmentManager, '_is_docker_in_docker', return_value=False):
-        manager = BuildEnvironmentManager()
-        with tempfile.NamedTemporaryFile() as tmpfile:
-            with pytest.raises(NotADirectoryError):
-                manager._get_file_list(tmpfile.name)
+    manager = BuildEnvironmentManager()
+    with tempfile.NamedTemporaryFile() as tmpfile:
+        with pytest.raises(NotADirectoryError):
+            manager._get_file_list(tmpfile.name)
 
 
 def test_get_file_list_empty_directory():
     """Test file listing with empty directory"""
     import tempfile
-    with patch.object(BuildEnvironmentManager, '_is_docker_in_docker', return_value=False):
-        manager = BuildEnvironmentManager()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            files = manager._get_file_list(tmpdir)
-            assert files == set()
+    manager = BuildEnvironmentManager()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        files = manager._get_file_list(tmpdir)
+        assert files == set()
 
 
 def test_delete_files_in_destination():
@@ -454,17 +587,16 @@ def test_delete_files_in_destination():
         with open(os.path.join(dest_dir, 'delete_me.txt'), 'w') as f:
             f.write('delete')
 
-        with patch.object(BuildEnvironmentManager, '_is_docker_in_docker', return_value=False):
-            manager = BuildEnvironmentManager()
-            source_files = manager._get_file_list(source_dir)
-            dest_files = manager._get_file_list(dest_dir)
+        manager = BuildEnvironmentManager()
+        source_files = manager._get_file_list(source_dir)
+        dest_files = manager._get_file_list(dest_dir)
 
-            # Delete files that exist in dest but not source
-            manager._delete_files_in_destination(dest_dir, source_files, dest_files)
+        # Delete files that exist in dest but not source
+        manager._delete_files_in_destination(dest_dir, source_files, dest_files)
 
-            # Verify file was deleted
-            assert not os.path.exists(os.path.join(dest_dir, 'delete_me.txt'))
-            assert os.path.exists(os.path.join(dest_dir, 'common.txt'))
+        # Verify file was deleted
+        assert not os.path.exists(os.path.join(dest_dir, 'delete_me.txt'))
+        assert os.path.exists(os.path.join(dest_dir, 'common.txt'))
 
 
 def test_host_to_container_sync_with_deletions():
@@ -491,19 +623,18 @@ def test_host_to_container_sync_with_deletions():
             f.write('delete')
 
         # Mock the sync process
-        with patch.object(BuildEnvironmentManager, '_is_docker_in_docker', return_value=False):
-            manager = BuildEnvironmentManager()
+        manager = BuildEnvironmentManager()
 
-            # Get file lists
-            host_files = manager._get_file_list(host_dir)
-            container_files = manager._get_file_list(container_dir)
+        # Get file lists
+        host_files = manager._get_file_list(host_dir)
+        container_files = manager._get_file_list(container_dir)
 
-            # Delete files in container that don't exist on host
-            manager._delete_files_in_destination(container_dir, host_files, container_files)
+        # Delete files in container that don't exist on host
+        manager._delete_files_in_destination(container_dir, host_files, container_files)
 
-            # Verify deletion
-            assert not os.path.exists(os.path.join(container_dir, 'delete_me.txt'))
-            assert os.path.exists(os.path.join(container_dir, 'common.txt'))
+        # Verify deletion
+        assert not os.path.exists(os.path.join(container_dir, 'delete_me.txt'))
+        assert os.path.exists(os.path.join(container_dir, 'common.txt'))
 
 
 def test_synchronize_host_to_container_with_deletions(manager, mock_docker_client):

@@ -227,27 +227,18 @@ case "$ROLE" in
       fi
     fi
 
-    # Clear old happier cache that may have been persisted from a previous
-# container version. The build-time pre-download logic caches server and
-# ui-web at the same version; clearing here ensures those pre-cached
-# components are used (no live download required).
-log "Clearing older happier cache at container start..."
-rm -rf /config/.cache/happier/server
-rm -rf /config/.cache/happier/ui-web
-rm -rf /config/.happier/servers
-
-# PID file to prevent duplicate server starts
-SERVER_PID_FILE="/var/run/happier-server.pid"
-if [ -f "$SERVER_PID_FILE" ] && kill -0 "$(cat "$SERVER_PID_FILE")" 2>/dev/null; then
-  log "Happier relay server is already running (PID $(cat "$SERVER_PID_FILE"))"
-else
-  log "Starting Happier relay server on port 3006..."
-  if [[ "${LOGGING:-}" == "verbose" ]]; then
-    happier-server --ui &
-  else
-    happier-server --ui >/dev/null 2>&1 &
-  fi
-  echo $! > "$SERVER_PID_FILE"
+    # PID file to prevent duplicate server starts
+    SERVER_PID_FILE="/var/run/happier-server.pid"
+    if [ -f "$SERVER_PID_FILE" ] && kill -0 "$(cat "$SERVER_PID_FILE")" 2>/dev/null; then
+      log "Happier relay server is already running (PID $(cat "$SERVER_PID_FILE"))"
+    else
+      log "Starting Happier relay server on port 3006..."
+      if [[ "${LOGGING:-}" == "verbose" ]]; then
+        happier-server --ui &
+      else
+        happier-server --ui >/dev/null 2>&1 &
+      fi
+      echo $! > "$SERVER_PID_FILE"
 
       # Wait for the server to actually start listening on port 3006
       log "Waiting for Happier relay server to be ready..."
