@@ -189,8 +189,18 @@ RUN set -eux; \
         echo "ERROR: could not resolve versioned release tags (server='$SERVER_TAG' ui-web='$UI_WEB_TAG')"; \
         exit 1; \
       fi; \
-      echo "Pinned download: server=$SERVER_TAG ui-web=$UI_WEB_TAG"; \
-      download_payload --tag "$SERVER_TAG" --ui-tag "$UI_WEB_TAG"; \
+      # Synchronize: use the newer of the two tags for both server and ui-web
+      # so that the server binary and UI bundle are always at the same version.
+      SORTED=$(printf '%s\n%s' "$SERVER_TAG" "$UI_WEB_TAG" | sort -V | tail -1); \
+      if [ "$SORTED" = "$UI_WEB_TAG" ]; then \
+        UI_ALIGNED_TAG="$UI_WEB_TAG"; \
+        SERVER_ALIGNED_TAG="$SERVER_TAG"; \
+      else \
+        UI_ALIGNED_TAG="$UI_WEB_TAG"; \
+        SERVER_ALIGNED_TAG="$UI_WEB_TAG"; \
+      fi; \
+      echo "Pinned download: server=$SERVER_ALIGNED_TAG ui-web=$UI_ALIGNED_TAG (aligned to newer tag)"; \
+      download_payload --tag "$SERVER_ALIGNED_TAG" --ui-tag "$UI_ALIGNED_TAG"; \
     fi; \
     SERVER_BIN=$(cached_bin); \
     if [ -z "$SERVER_BIN" ] || [ ! -d "$(dirname "$SERVER_BIN")/prisma" ]; then \
