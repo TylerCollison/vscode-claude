@@ -99,10 +99,16 @@ RUN npm install -g @anthropic-ai/claude-code claude-threads
 #RUN mkdir -p /config/.npm /config/.cache /config/.happy
 
 # Install the happier-server runner (provides happier-server on PATH)
-RUN npm install -g @happier-dev/relay-server@dev
+ENV ONNXRUNTIME_NODE_INSTALL_CUDA=skip
+RUN npm install -g @happier-dev/relay-server@latest
 
 # Install the Happier CLI (provides happier, happier daemon, auth, etc.)
-RUN npm install -g @happier-dev/cli@dev
+RUN npm install -g @happier-dev/cli@latest
+
+# Install Beads — distributed graph issue tracker for AI agents
+# Uses the official install script which handles checksum verification,
+# platform detection, and places the binary in /usr/local/bin.
+RUN curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh | bash
 
 # Install Beads — distributed graph issue tracker for AI agents
 # Uses the official install script which handles checksum verification,
@@ -154,6 +160,7 @@ RUN rm -rf \
 RUN set -eux; \
     rm -rf /config/.cache/happier/server /config/.cache/happier/ui-web; \
     cached_bin() { find /config/.cache/happier/server -type f -name happier-server -print -quit 2>/dev/null || true; }; \
+    cached_ui() { find /config/.cache/happier/ui-web -type f -name index.html -print -quit 2>/dev/null || true; }; \
     # Run a download attempt via the runner in the background and stop it as
     # soon as the payload is fully cached — the spawned server process
     # (extraction completed) is the success signal, so no artificial wait on
@@ -172,8 +179,9 @@ RUN set -eux; \
       wait "$RUNNER_PID" 2>/dev/null || true; \
     }; \
     download_payload --ui; \
-    if [ -z "$(cached_bin)" ]; then \
-      echo "Rolling channel download failed — falling back to the latest versioned release tags"; \
+    # Fall back to versioned tags if EITHER server binary OR ui-web is missing
+    if [ -z "$(cached_bin)" ] || [ -z "$(cached_ui)" ]; then \
+      echo "Rolling channel download incomplete (server='$(cached_bin)' ui='$(cached_ui)') — falling back to the latest versioned release tags"; \
       # git/matching-refs returns plain refs (no release descriptions), so the
       # extraction cannot trip over control characters in release notes.
       SERVER_TAG=$(curl -fsSL "https://api.github.com/repos/happier-dev/happier/git/matching-refs/tags/server-v" \
@@ -186,8 +194,18 @@ RUN set -eux; \
         echo "ERROR: could not resolve versioned release tags (server='$SERVER_TAG' ui-web='$UI_WEB_TAG')"; \
         exit 1; \
       fi; \
-      echo "Pinned download: server=$SERVER_TAG ui-web=$UI_WEB_TAG"; \
-      download_payload --tag "$SERVER_TAG" --ui-tag "$UI_WEB_TAG"; \
+      # Synchronize: use the newer of the two tags for both server and ui-web
+      # so that the server binary and UI bundle are always at the same version.
+      SORTED=$(printf '%s\n%s' "$SERVER_TAG" "$UI_WEB_TAG" | sort -V | tail -1); \
+      if [ "$SORTED" = "$UI_WEB_TAG" ]; then \
+        UI_ALIGNED_TAG="$UI_WEB_TAG"; \
+        SERVER_ALIGNED_TAG="$SERVER_TAG"; \
+      else \
+        UI_ALIGNED_TAG="$UI_WEB_TAG"; \
+        SERVER_ALIGNED_TAG="$UI_WEB_TAG"; \
+      fi; \
+      echo "Pinned download: server=$SERVER_ALIGNED_TAG ui-web=$UI_ALIGNED_TAG (aligned to newer tag)"; \
+      download_payload --tag "$SERVER_ALIGNED_TAG" --ui-tag "$UI_ALIGNED_TAG"; \
     fi; \
     SERVER_BIN=$(cached_bin); \
     if [ -z "$SERVER_BIN" ] || [ ! -d "$(dirname "$SERVER_BIN")/prisma" ]; then \

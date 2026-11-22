@@ -416,13 +416,16 @@ class BuildEnvironmentManager:
         # Synchronize workspace files for Docker-in-Docker scenarios
         if self._is_docker_in_docker():
             # Sync host → container initially
-            self._synchronize_host_to_container(container_name, workspace_path)
+            if not self._synchronize_host_to_container(container_name, workspace_path):
+                raise BuildEnvironmentError(
+                    f"Failed to synchronize workspace from host to container '{container_name}'"
+                )
 
-        # Synchronize workspace files after container startup
-        # This ensures any initial container setup is reflected back to host
-        if self._is_docker_in_docker():
             # Sync container → host after startup
-            self._synchronize_container_to_host(container_name, workspace_path)
+            if not self._synchronize_container_to_host(container_name, workspace_path):
+                raise BuildEnvironmentError(
+                    f"Failed to synchronize workspace from container '{container_name}' to host"
+                )
 
         # Store container UUID in file for later shutdown
         self._store_container_uuid(container_name, workspace_path)
@@ -451,7 +454,10 @@ class BuildEnvironmentManager:
         if docker_in_docker:
             workspace_path = env_vars.get('DEFAULT_WORKSPACE', '/workspace')
             # Sync host → container before command execution
-            self._synchronize_host_to_container(container_name, workspace_path)
+            if not self._synchronize_host_to_container(container_name, workspace_path):
+                raise BuildEnvironmentError(
+                    f"Failed to synchronize workspace from host to container '{container_name}' before command execution"
+                )
 
         # Get timeout from environment variable (default: 300 seconds / 5 minutes)
         # Set to 0 or negative to disable timeout
@@ -501,7 +507,10 @@ class BuildEnvironmentManager:
         if docker_in_docker:
             workspace_path = env_vars.get('DEFAULT_WORKSPACE', '/workspace')
             # Sync container → host after command execution
-            self._synchronize_container_to_host(container_name, workspace_path)
+            if not self._synchronize_container_to_host(container_name, workspace_path):
+                raise BuildEnvironmentError(
+                    f"Failed to synchronize workspace from container '{container_name}' to host after command execution"
+                )
 
         # Return exit code and output (combine stdout and stderr)
         output = result.stdout + result.stderr
