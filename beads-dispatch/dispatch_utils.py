@@ -503,6 +503,87 @@ def dispatch_local(worker, image, env, port, worker_port, issue_id, net=None, la
     return run(cmd)
 
 
+def _parse_node_list(value):
+    """Parse a comma-separated hostname list: strip, drop empties, dedupe."""
+    seen = set()
+    out = []
+    for name in (value or "").split(","):
+        name = name.strip()
+        if name and name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out
+
+
+def _swarm_node_hostnames():
+    """List Swarm node hostnames, or None if the listing fails."""
+    rc, out, _ = run(["docker", "node", "ls", "--format", "{{.Hostname}}"])
+    if rc != 0:
+        return None
+    return _parse_node_list(out.replace("\n", ","))
+
+
+def swarm_resource_args():
+    """`docker service create` resource flags for a worker.
+
+    Reservations (what the scheduler accounts for): WORKER_RESERVE_MEMORY
+    (default "1g") and WORKER_RESERVE_CPU (default "0.5"). Limits (the hard
+    cap on what a worker may actually use): WORKER_LIMIT_MEMORY (default
+    "2g") and WORKER_LIMIT_CPU (default "2"). Set any of them to "0" to
+    disable it. A limit must be >= its reservation or `docker service
+    create` rejects the service.
+
+    The defaults come from the 2026-11-18 dockerblade incident: a worker
+    runs ~0.5-1GB of RAM, and the node was evicting workers once its 8GB
+    was exhausted — with no reservation Swarm's scheduler counted each
+    worker as costing nothing, so it kept piling them on. The 2g memory
+    limit leaves headroom for spikes while capping a runaway worker; the
+    2-CPU limit lets a worker burst (builds, agent work) without hogging
+    the node.
+    """
+    memory = (env("WORKER_RESERVE_MEMORY") or "1g").strip() or "1g"
+    cpu = (env("WORKER_RESERVE_CPU") or "0.5").strip() or "0.5"
+    limit_memory = (env("WORKER_LIMIT_MEMORY") or "2g").strip() or "2g"
+    limit_cpu = (env("WORKER_LIMIT_CPU") or "2").strip() or "2"
+    return ["--reserve-memory", memory, "--reserve-cpu", cpu,
+            "--limit-memory", limit_memory, "--limit-cpu", limit_cpu]
+
+
+def swarm_placement_constraints():
+    """Placement constraints restricting which nodes a worker may land on.
+
+    WORKER_NODE_ALLOWLIST (comma-separated hostnames): only these nodes are
+    eligible. WORKER_NODE_DENYLIST: these nodes are excluded. If both are
+    set, the denylist is subtracted from the allowlist.
+
+    Swarm constraints are ANDed, so a multi-node allowlist cannot be written
+    as several `node.hostname==` constraints (no node could satisfy them
+    all). A single-node allowlist uses `==`; a multi-node allowlist is
+    enforced by listing the swarm's nodes and adding `!=` for every node
+    outside the allowlist. A denylist is always `!=` per node.
+
+    Returns (constraints, error): on error, constraints is [] and error
+    explains why placement cannot be enforced — the caller must fail closed
+    (no unconstrained dispatch) rather than silently ignore the filter.
+    """
+    allow = _parse_node_list(env("WORKER_NODE_ALLOWLIST"))
+    deny = _parse_node_list(env("WORKER_NODE_DENYLIST"))
+    if allow:
+        allow = [n for n in allow if n not in deny]
+        if not allow:
+            return [], "WORKER_NODE_ALLOWLIST is empty after applying WORKER_NODE_DENYLIST: no eligible nodes"
+        if len(allow) == 1:
+            return ["node.hostname==%s" % allow[0]], None
+        nodes = _swarm_node_hostnames()
+        if nodes is None:
+            return [], "could not list Swarm nodes to enforce WORKER_NODE_ALLOWLIST"
+        excluded = [n for n in nodes if n not in allow]
+        return ["node.hostname!=%s" % n for n in excluded], None
+    if deny:
+        return ["node.hostname!=%s" % n for n in deny], None
+    return [], None
+
+
 def dispatch_swarm(worker, image, env, port, worker_port, issue_id, net=None, labels=None):
     cmd = [
         "docker", "service", "create",
@@ -521,6 +602,17 @@ def dispatch_swarm(worker, image, env, port, worker_port, issue_id, net=None, la
         # config on pull.
         "--with-registry-auth",
     ]
+    # Resource reservations so Swarm's scheduler accounts for what a worker
+    # actually costs instead of treating it as free (see swarm_resource_args).
+    cmd += swarm_resource_args()
+    # Node allow/deny filtering. Fail closed: if the filter cannot be
+    # enforced, do not dispatch the worker unconstrained.
+    constraints, err = swarm_placement_constraints()
+    if err is not None:
+        log("ERROR: cannot dispatch %s: %s" % (worker, err))
+        return 1, "", err
+    for c in constraints:
+        cmd += ["--constraint", c]
     if labels:
         for k, v in labels.items():
             cmd += ["--label", f"{k}={v}"]
