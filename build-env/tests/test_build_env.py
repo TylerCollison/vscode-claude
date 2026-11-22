@@ -289,11 +289,13 @@ def test_execute_command_filters_dangerous_env_vars(manager, mock_docker_client)
         )
 
 
-def test_start_container_image_not_found(manager, mock_docker_client):
-    """Test handling of image not found error."""
+def test_start_container_image_not_found_pull_fails(manager, mock_docker_client):
+    """Test handling of image not found - pull fails with helpful error."""
     # Setup mocks
-    mock_docker_client.containers.get.side_effect = Exception("Not found")
-    mock_docker_client.images.get.side_effect = Exception("Image not found")
+    from docker.errors import NotFound
+    mock_docker_client.containers.get.side_effect = NotFound("Not found")
+    mock_docker_client.images.get.side_effect = NotFound("Image not found")
+    mock_docker_client.images.pull.side_effect = Exception("pull failed: no such image")
     sys.modules['security'].validate_image_name.return_value = True
 
     # Mock _is_docker_in_docker to return False (not in DinD scenario)
@@ -302,8 +304,38 @@ def test_start_container_image_not_found(manager, mock_docker_client):
         with pytest.raises(BuildEnvironmentError) as exc_info:
             manager._start_container("nonexistent-image:latest", "/workspace", {"TEST_VAR": "test_value"})
 
+# Assertions - should contain helpful remediation hint
+    error_msg = str(exc_info.value)
+    assert "Docker image not found" in error_msg
+    assert "Attempted to pull but failed" in error_msg
+    assert "docker pull nonexistent-image:latest" in error_msg
+    mock_docker_client.images.get.assert_called_once_with("nonexistent-image:latest")
+    mock_docker_client.images.pull.assert_called_once_with("nonexistent-image:latest")
+
+
+def test_start_container_image_pull_succeeds(manager, mock_docker_client):
+    """Test successful pull when image not found locally."""
+    from docker.errors import NotFound
+    mock_docker_client.containers.get.side_effect = NotFound("Not found")
+    mock_docker_client.images.get.side_effect = NotFound("Image not found")
+    mock_docker_client.images.pull.return_value = Mock()  # Successful pull
+    mock_docker_client.containers.create.return_value = Mock(start=Mock())
+    sys.modules['security'].validate_image_name.return_value = True
+
+    # Mock container name generation
+    with patch.object(manager, '_generate_container_name') as mock_name:
+        mock_name.return_value = "build-env-12345678-1234-5678-1234-567812345678"
+        result = manager._start_container("new-image:latest", "/workspace", {"TEST_VAR": "test_value"})
+
+    # Assertions
+    mock_docker_client.images.get.assert_called_once_with("new-image:latest")
+    mock_docker_client.images.pull.assert_called_once_with("new-image:latest")
+    mock_docker_client.containers.create.assert_called_once()
+    assert result == "build-env-12345678-1234-5678-1234-567812345678"
+=======
         # Assertions
         assert "Docker image not found" in str(exc_info.value)
+>>>>>>> origin/main
 
 
 def test_cli_exit_command():
