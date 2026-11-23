@@ -256,18 +256,70 @@ if [[ -z "$CRED_ENV_TOKEN" && -n "${GITLAB_TOKEN:-}" ]]; then
 fi
 
 if [[ -n "$CRED_ENV_TOKEN" ]]; then
-    # Configure credential helper that reads username/password from env vars at call time.
-    # We export the vars so they're available when git invokes the helper.
-    export GIT_REPO_SETUP_USER="$CRED_ENV_NAME"
-    export GIT_REPO_SETUP_PASS="$CRED_ENV_TOKEN"
-    git config --local credential.helper '!f() { echo "username=$GIT_REPO_SETUP_USER"; echo "password=$GIT_REPO_SETUP_PASS"; }; f'
+    # Write a self-contained credential helper script to .git/credential-helper.
+    # It reads the git credential protocol from stdin at call time,
+    # determines the host, and resolves credentials from persistent container
+    # env vars (GIT_TOKEN+GIT_USER, GH_TOKEN/GITHUB_TOKEN, GITLAB_TOKEN).
+    # No token is written to disk; the helper re-derives credentials at push time.
+    cat > .git/credential-helper <<'EOF'
+#!/usr/bin/env bash
+# Git credential helper — resolves credentials at call time from container env.
+# Reads protocol from stdin (protocol=... host=... lines), outputs username/password.
 
-    # Rewrite https remote URLs to embed the token for push.
-    # This avoids storing the token in .git/config; instead the credential helper
-    # reads the env vars at request time.
-    git config --local --replace-all url."https://$CRED_ENV_NAME:@git.example.com/".insteadOf "git@git.example.com:" 2>/dev/null || true
+set -euo pipefail
 
-    log "Credentials configured for push"
+# Parse credential protocol from stdin: lines of "key=value", blank line terminates.
+PROTOCOL=""
+HOST=""
+while IFS= read -r line; do
+    [[ -z "$line" ]] && break
+    case "$line" in
+        protocol=*) PROTOCOL="${line#protocol=}" ;;
+        host=*)     HOST="${line#host=}" ;;
+    esac
+done
+
+# Only support https
+[[ "$PROTOCOL" != "https" ]] && exit 0
+
+# Resolve credentials using same precedence as git-repo-setup.sh:
+# 1. GIT_TOKEN + GIT_USER (explicit override, any host)
+# 2. Explicit GITLAB_HOST / GH_HOST for self-hosted
+# 3. Auto-detect from HOST (github.com / gitlab.com)
+USER=""
+TOKEN=""
+
+if [[ -n "${GIT_TOKEN:-}" && -n "${GIT_USER:-}" ]]; then
+    USER="${GIT_USER}"
+    TOKEN="${GIT_TOKEN}"
+elif [[ -n "${GITLAB_HOST:-}" && -n "${GITLAB_TOKEN:-}" && "$HOST" == "$GITLAB_HOST" ]]; then
+    USER="${GITLAB_USER:-gitlab-token}"
+    TOKEN="${GITLAB_TOKEN}"
+elif [[ -n "${GH_HOST:-}" && -n "${GH_TOKEN:-}" && "$HOST" == "$GH_HOST" ]]; then
+    USER="${GIT_USER:-oauth2}"
+    TOKEN="${GH_TOKEN}"
+elif [[ "$HOST" == "gitlab.com" && -n "${GITLAB_TOKEN:-}" ]]; then
+    USER="${GITLAB_USER:-gitlab-token}"
+    TOKEN="${GITLAB_TOKEN}"
+elif [[ "$HOST" == "github.com" ]]; then
+    if [[ -n "${GH_TOKEN:-}" ]]; then
+        USER="${GIT_USER:-oauth2}"
+        TOKEN="${GH_TOKEN}"
+    elif [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        USER="${GIT_USER:-oauth2}"
+        TOKEN="${GITHUB_TOKEN}"
+    fi
+fi
+
+if [[ -n "$TOKEN" ]]; then
+    echo "username=$USER"
+    echo "password=$TOKEN"
+fi
+EOF
+    chmod +x .git/credential-helper
+    git config --local credential.helper .git/credential-helper
+
+    log "Credentials configured for push (call-time resolution from container env)"
 else
     log "No token env vars found (GITLAB_TOKEN, GIT_TOKEN, GH_TOKEN, GITHUB_TOKEN); "
     log "push will fail until credentials are provided (e.g. embed in GIT_REPO_URL: https://user:token@host/repo.git)"
