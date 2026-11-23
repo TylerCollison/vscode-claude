@@ -586,6 +586,36 @@ environment:
 
 When the provider is forced on a non-`gitlab.com`/non-`github.com` host, the sync daemon exports `GITLAB_HOST`/`GH_HOST` from `GIT_REPO_URL` for the provider CLI (an explicitly set `GITLAB_HOST`/`GH_HOST` wins).
 
+### Git Credential Environment Variables
+
+The container can automatically configure git push credentials using environment variables. Set one of the following token variables so that `git push` works without embedding credentials in `GIT_REPO_URL`:
+
+| Variable | Description | Example |
+|---|---|---|
+| `GITLAB_TOKEN` | GitLab personal access token (requires `api` or `write_repo` scope). Set `GITLAB_USER` if the username differs from the default. | `GITLAB_TOKEN=glpat-xyz123` <br> `GITLAB_USER=mygitlabuser` |
+| `GIT_TOKEN` | Generic git token. The username is taken from `GIT_USER` (or falls back to `GIT_USER_NAME`/`GIT_USER_EMAIL`). | `GIT_TOKEN=ghp_xyz123` <br> `GIT_USER=mygithubuser` |
+| `GH_TOKEN` / `GITHUB_TOKEN` | GitHub personal access token (classic) or fine-grained token. The username defaults to `oauth2` unless `GIT_USER` is set. | `GH_TOKEN=ghp_xyz123` <br> `GIT_USER=mygithubuser` |
+
+If using `GITLAB_TOKEN`, the credential helper will also rewrite https remote URLs so that push works via the `git@` protocol alternative.
+
+**Host-based preference (automatic):** The script prefers matching token variables based on host detection, with explicit host env vars taking priority:
+
+1. **Explicit host env vars (always win):** If `GITLAB_HOST` is set, the script uses it for GitLab hosts (including self-hosted instances). If `GH_HOST` is set, the script uses it for GitHub hosts (including self-hosted instances). These override all auto-detection.
+
+2. **Auto-detection from GIT_REPO_URL (fallback):** If no explicit host vars are set, the script detects the host from `GIT_REPO_URL` and prefers the matching token variable:
+   - `github.com` → looks for `GH_TOKEN` / `GITHUB_TOKEN` first
+   - `gitlab.com` (or any host matching `GITLAB_HOST`) → looks for `GITLAB_TOKEN` first
+
+If `GIT_TOKEN` + `GIT_USER` are explicitly set, they **override** host-based detection and are used regardless of the repository host.
+
+If none of these token variables are set, push will fail unless `GIT_REPO_URL` already embeds credentials (e.g. `https://user:token@host/repo.git`). In that case, no additional environment variables are needed.
+
+**Identity** (committer name/email) is configured from `GIT_USER_NAME`/`GIT_USER_EMAIL`, falling back through `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`/`GIT_COMMITTER_EMAIL`, `SCOTTY_GIT_USER_NAME`/`SCOTTY_GIT_USER_EMAIL`, and finally the legacy `GIT_USER`/`GIT_EMAIL`. If none are provided, the script uses a container-local fallback (`workspace-user` / `user@container.local`).
+
+**Embedding credentials in the URL** is an alternative approach: if `GIT_REPO_URL` contains `user:token@` (e.g. `https://user:token@github.com/owner/repo.git`), the embedded credentials will be used directly by git, and no token environment variables are needed. The URL stripper in `git-repo-setup.sh` redacts credentials from logs, but they remain on the remote origin.
+
+For more details, see the [git-repo-setup.sh script](/workspace/git-repo-setup.sh).
+
 **How it works:**
 1. The sync daemon (configured via `MR_PR_SYNC_INTERVAL`) polls GitHub (`gh pr list --assignee`) or GitLab (`glab mr list --assignee`) for open MRs/PRs assigned to `MR_PR_USER`.
 2. For each new MR/PR not in the seen-set, it sends a trigger to the dispatcher's unix socket (`/run/mr-pr-dispatch.sock`).

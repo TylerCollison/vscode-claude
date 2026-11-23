@@ -167,6 +167,164 @@ if ! git submodule update --init --recursive; then
     error_exit "Failed to initialize submodules recursively (private or unreachable submodule?): $(strip_userinfo "$GIT_REPO_URL")"
 fi
 
+# ---------------------------------------------------------------------------
+# Configure git credentials from environment variables
+# ---------------------------------------------------------------------------
+log "Configuring git credentials from environment variables..."
+
+# Initialize credential variables to empty strings to avoid "unbound variable"
+# errors with 'set -u' when they are referenced before being set in conditional blocks.
+CRED_ENV_NAME=""
+CRED_ENV_TOKEN=""
+
+# ---------------------------------------------------------------------------
+# Step 1: If GIT_TOKEN + GIT_USER are explicitly set, use those (override host)
+# ---------------------------------------------------------------------------
+if [[ -n "${GIT_TOKEN:-}" && -n "${GIT_USER:-}" ]]; then
+    CRED_ENV_NAME="${GIT_USER}"
+    CRED_ENV_TOKEN="$GIT_TOKEN"
+    log "Using GIT_TOKEN + GIT_USER (override mode)"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 2: If no override, use explicitly-set host env vars (GITLAB_HOST/GH_HOST)
+#        for self-hosted instances, then fall back to auto-detection from GIT_REPO_URL
+# ---------------------------------------------------------------------------
+if [[ -z "$CRED_ENV_TOKEN" ]]; then
+    # Check for explicitly-set GITLAB_HOST (always wins for GitLab self-hosted)
+    if [[ -n "${GITLAB_HOST:-}" ]]; then
+        log "Using explicitly-set GITLAB_HOST: $GITLAB_HOST"
+        # Determine if this is a GitLab host by checking the repo URL
+        REPO_HOST=$(echo "$GIT_REPO_URL" | cut -d'/' -f3)
+        if [[ -n "$REPO_HOST" && "$REPO_HOST" != "gitlab.com" ]]; then
+            # This is a self-hosted GitLab instance
+            if [[ -n "${GITLAB_TOKEN:-}" ]]; then
+                CRED_ENV_NAME="${GITLAB_USER:-gitlab-token}"
+                CRED_ENV_TOKEN="$GITLAB_TOKEN"
+                log "Using GITLAB_TOKEN for self-hosted GitLab instance via GITLAB_HOST"
+            fi
+        fi
+    # Check for explicitly-set GH_HOST (always wins for GitHub self-hosted)
+    elif [[ -n "${GH_HOST:-}" ]]; then
+        log "Using explicitly-set GH_HOST: $GH_HOST"
+        REPO_HOST=$(echo "$GIT_REPO_URL" | cut -d'/' -f3)
+        if [[ -n "$REPO_HOST" && "$REPO_HOST" != "github.com" ]]; then
+            # This is a self-hosted GitHub instance
+            if [[ -n "${GH_TOKEN:-}" ]]; then
+                CRED_ENV_NAME="${GIT_USER:-oauth2}"
+                CRED_ENV_TOKEN="$GH_TOKEN"
+                log "Using GH_TOKEN for self-hosted GitHub instance via GH_HOST"
+            fi
+        fi
+    # Fall back to auto-detection from GIT_REPO_URL
+    else
+        log "No explicit GITLAB_HOST/GH_HOST set; auto-detecting host from GIT_REPO_URL"
+        # Parse host from GIT_REPO_URL (strip userinfo if present)
+        # Use cut to extract the host (3rd field after /, e.g. github.com from https://github.com/...)
+        HOST_FROM_URL=$(echo "$GIT_REPO_URL" | cut -d'/' -f3)
+        log "Detected host from GIT_REPO_URL: $HOST_FROM_URL"
+
+        if [[ "$HOST_FROM_URL" == "github.com" ]]; then
+            # Prefer GH_TOKEN / GITHUB_TOKEN for GitHub hosts
+            if [[ -n "${GH_TOKEN:-}" ]]; then
+                CRED_ENV_NAME="${GIT_USER:-oauth2}"
+                CRED_ENV_TOKEN="$GH_TOKEN"
+                log "Using GH_TOKEN for GitHub host"
+            elif [[ -n "${GITHUB_TOKEN:-}" ]]; then
+                CRED_ENV_NAME="${GIT_USER:-oauth2}"
+                CRED_ENV_TOKEN="$GITHUB_TOKEN"
+                log "Using GITHUB_TOKEN for GitHub host"
+            fi
+        elif [[ "$HOST_FROM_URL" == "gitlab.com" ]]; then
+            # Prefer GITLAB_TOKEN for GitLab.com
+            if [[ -n "${GITLAB_TOKEN:-}" ]]; then
+                CRED_ENV_NAME="${GITLAB_USER:-gitlab-token}"
+                CRED_ENV_TOKEN="$GITLAB_TOKEN"
+                log "Using GITLAB_TOKEN for GitLab.com host"
+            fi
+        fi
+    fi
+fi
+
+# Fallback: if GITLAB_TOKEN was already set from the original check above,
+# the earlier block would have caught it. But if we somehow got here without it,
+# check once more as a safety net.
+if [[ -z "$CRED_ENV_TOKEN" && -n "${GITLAB_TOKEN:-}" ]]; then
+    CRED_ENV_NAME="${GITLAB_USER:-gitlab-token}"
+    CRED_ENV_TOKEN="$GITLAB_TOKEN"
+    log "Using GITLAB_TOKEN (fallback after host detection)"
+fi
+
+if [[ -n "$CRED_ENV_TOKEN" ]]; then
+    # Write a self-contained credential helper script to .git/credential-helper.
+    # It reads the git credential protocol from stdin at call time,
+    # determines the host, and resolves credentials from persistent container
+    # env vars (GIT_TOKEN+GIT_USER, GH_TOKEN/GITHUB_TOKEN, GITLAB_TOKEN).
+    # No token is written to disk; the helper re-derives credentials at push time.
+    cat > .git/credential-helper <<'EOF'
+#!/usr/bin/env bash
+# Git credential helper — resolves credentials at call time from container env.
+# Reads protocol from stdin (protocol=... host=... lines), outputs username/password.
+
+set -euo pipefail
+
+# Parse credential protocol from stdin: lines of "key=value", blank line terminates.
+PROTOCOL=""
+HOST=""
+while IFS= read -r line; do
+    [[ -z "$line" ]] && break
+    case "$line" in
+        protocol=*) PROTOCOL="${line#protocol=}" ;;
+        host=*)     HOST="${line#host=}" ;;
+    esac
+done
+
+# Only support https
+[[ "$PROTOCOL" != "https" ]] && exit 0
+
+# Resolve credentials using same precedence as git-repo-setup.sh:
+# 1. GIT_TOKEN + GIT_USER (explicit override, any host)
+# 2. Explicit GITLAB_HOST / GH_HOST for self-hosted
+# 3. Auto-detect from HOST (github.com / gitlab.com)
+USER=""
+TOKEN=""
+
+if [[ -n "${GIT_TOKEN:-}" && -n "${GIT_USER:-}" ]]; then
+    USER="${GIT_USER}"
+    TOKEN="${GIT_TOKEN}"
+elif [[ -n "${GITLAB_HOST:-}" && -n "${GITLAB_TOKEN:-}" && "$HOST" == "$GITLAB_HOST" ]]; then
+    USER="${GITLAB_USER:-gitlab-token}"
+    TOKEN="${GITLAB_TOKEN}"
+elif [[ -n "${GH_HOST:-}" && -n "${GH_TOKEN:-}" && "$HOST" == "$GH_HOST" ]]; then
+    USER="${GIT_USER:-oauth2}"
+    TOKEN="${GH_TOKEN}"
+elif [[ "$HOST" == "gitlab.com" && -n "${GITLAB_TOKEN:-}" ]]; then
+    USER="${GITLAB_USER:-gitlab-token}"
+    TOKEN="${GITLAB_TOKEN}"
+elif [[ "$HOST" == "github.com" ]]; then
+    if [[ -n "${GH_TOKEN:-}" ]]; then
+        USER="${GIT_USER:-oauth2}"
+        TOKEN="${GH_TOKEN}"
+    elif [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        USER="${GIT_USER:-oauth2}"
+        TOKEN="${GITHUB_TOKEN}"
+    fi
+fi
+
+if [[ -n "$TOKEN" ]]; then
+    echo "username=$USER"
+    echo "password=$TOKEN"
+fi
+EOF
+    chmod +x .git/credential-helper
+    git config --local credential.helper .git/credential-helper
+
+    log "Credentials configured for push (call-time resolution from container env)"
+else
+    log "No token env vars found (GITLAB_TOKEN, GIT_TOKEN, GH_TOKEN, GITHUB_TOKEN); "
+    log "push will fail until credentials are provided (e.g. embed in GIT_REPO_URL: https://user:token@host/repo.git)"
+fi
+
 # Output success information
 log_success "Git repository setup completed successfully"
 log "Repository location: $TARGET_DIR"
