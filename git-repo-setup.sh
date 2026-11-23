@@ -182,30 +182,61 @@ if [[ -n "${GIT_TOKEN:-}" && -n "${GIT_USER:-}" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Step 2: If no override, detect host from GIT_REPO_URL and prefer appropriate token
+# Step 2: If no override, use explicitly-set host env vars (GITLAB_HOST/GH_HOST)
+#        for self-hosted instances, then fall back to auto-detection from GIT_REPO_URL
 # ---------------------------------------------------------------------------
 if [[ -z "$CRED_ENV_TOKEN" ]]; then
-    # Parse host from GIT_REPO_URL (strip userinfo if present)
-    HOST_FROM_URL=$(echo "$GIT_REPO_URL" | sed -E 's#^https?://([^/:]+).*/#\1#')
-    log "Detected host from GIT_REPO_URL: $HOST_FROM_URL"
-
-    if [[ "$HOST_FROM_URL" == "github.com" ]]; then
-        # Prefer GH_TOKEN / GITHUB_TOKEN for GitHub hosts
-        if [[ -n "${GH_TOKEN:-}" ]]; then
-            CRED_ENV_NAME="${GIT_USER:-oauth2}"
-            CRED_ENV_TOKEN="$GH_TOKEN"
-            log "Using GH_TOKEN for GitHub host"
-        elif [[ -n "${GITHUB_TOKEN:-}" ]]; then
-            CRED_ENV_NAME="${GIT_USER:-oauth2}"
-            CRED_ENV_TOKEN="$GITHUB_TOKEN"
-            log "Using GITHUB_TOKEN for GitHub host"
+    # Check for explicitly-set GITLAB_HOST (always wins for GitLab self-hosted)
+    if [[ -n "${GITLAB_HOST:-}" ]]; then
+        log "Using explicitly-set GITLAB_HOST: $GITLAB_HOST"
+        # Determine if this is a GitLab host by checking the repo URL
+        REPO_HOST=$(echo "$GIT_REPO_URL" | cut -d'/' -f3)
+        if [[ -n "$REPO_HOST" && "$REPO_HOST" != "gitlab.com" ]]; then
+            # This is a self-hosted GitLab instance
+            if [[ -n "${GITLAB_TOKEN:-}" ]]; then
+                CRED_ENV_NAME="${GITLAB_USER:-gitlab-token}"
+                CRED_ENV_TOKEN="$GITLAB_TOKEN"
+                log "Using GITLAB_TOKEN for self-hosted GitLab instance via GITLAB_HOST"
+            fi
         fi
-    elif [[ "$HOST_FROM_URL" == "gitlab.com" || -n "${GITLAB_HOST:-}" ]]; then
-        # Prefer GITLAB_TOKEN for GitLab hosts (gitlab.com or self-hosted)
-        if [[ -n "${GITLAB_TOKEN:-}" ]]; then
-            CRED_ENV_NAME="${GITLAB_USER:-gitlab-token}"
-            CRED_ENV_TOKEN="$GITLAB_TOKEN"
-            log "Using GITLAB_TOKEN for GitLab host"
+    # Check for explicitly-set GH_HOST (always wins for GitHub self-hosted)
+    elif [[ -n "${GH_HOST:-}" ]]; then
+        log "Using explicitly-set GH_HOST: $GH_HOST"
+        REPO_HOST=$(echo "$GIT_REPO_URL" | cut -d'/' -f3)
+        if [[ -n "$REPO_HOST" && "$REPO_HOST" != "github.com" ]]; then
+            # This is a self-hosted GitHub instance
+            if [[ -n "${GH_TOKEN:-}" ]]; then
+                CRED_ENV_NAME="${GIT_USER:-oauth2}"
+                CRED_ENV_TOKEN="$GH_TOKEN"
+                log "Using GH_TOKEN for self-hosted GitHub instance via GH_HOST"
+            fi
+        fi
+    # Fall back to auto-detection from GIT_REPO_URL
+    else
+        log "No explicit GITLAB_HOST/GH_HOST set; auto-detecting host from GIT_REPO_URL"
+        # Parse host from GIT_REPO_URL (strip userinfo if present)
+        # Use cut to extract the host (3rd field after /, e.g. github.com from https://github.com/...)
+        HOST_FROM_URL=$(echo "$GIT_REPO_URL" | cut -d'/' -f3)
+        log "Detected host from GIT_REPO_URL: $HOST_FROM_URL"
+
+        if [[ "$HOST_FROM_URL" == "github.com" ]]; then
+            # Prefer GH_TOKEN / GITHUB_TOKEN for GitHub hosts
+            if [[ -n "${GH_TOKEN:-}" ]]; then
+                CRED_ENV_NAME="${GIT_USER:-oauth2}"
+                CRED_ENV_TOKEN="$GH_TOKEN"
+                log "Using GH_TOKEN for GitHub host"
+            elif [[ -n "${GITHUB_TOKEN:-}" ]]; then
+                CRED_ENV_NAME="${GIT_USER:-oauth2}"
+                CRED_ENV_TOKEN="$GITHUB_TOKEN"
+                log "Using GITHUB_TOKEN for GitHub host"
+            fi
+        elif [[ "$HOST_FROM_URL" == "gitlab.com" ]]; then
+            # Prefer GITLAB_TOKEN for GitLab.com
+            if [[ -n "${GITLAB_TOKEN:-}" ]]; then
+                CRED_ENV_NAME="${GITLAB_USER:-gitlab-token}"
+                CRED_ENV_TOKEN="$GITLAB_TOKEN"
+                log "Using GITLAB_TOKEN for GitLab.com host"
+            fi
         fi
     fi
 fi

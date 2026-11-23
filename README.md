@@ -598,9 +598,13 @@ The container can automatically configure git push credentials using environment
 
 If using `GITLAB_TOKEN`, the credential helper will also rewrite https remote URLs so that push works via the `git@` protocol alternative.
 
-**Host-based preference (automatic):** The script detects the host from `GIT_REPO_URL` and prefers the matching token variable:
-- `github.com` → looks for `GH_TOKEN` / `GITHUB_TOKEN` first
-- `gitlab.com` (or any host matching `GITLAB_HOST`) → looks for `GITLAB_TOKEN` first
+**Host-based preference (automatic):** The script prefers matching token variables based on host detection, with explicit host env vars taking priority:
+
+1. **Explicit host env vars (always win):** If `GITLAB_HOST` is set, the script uses it for GitLab hosts (including self-hosted instances). If `GH_HOST` is set, the script uses it for GitHub hosts (including self-hosted instances). These override all auto-detection.
+
+2. **Auto-detection from GIT_REPO_URL (fallback):** If no explicit host vars are set, the script detects the host from `GIT_REPO_URL` and prefers the matching token variable:
+   - `github.com` → looks for `GH_TOKEN` / `GITHUB_TOKEN` first
+   - `gitlab.com` (or any host matching `GITLAB_HOST`) → looks for `GITLAB_TOKEN` first
 
 If `GIT_TOKEN` + `GIT_USER` are explicitly set, they **override** host-based detection and are used regardless of the repository host.
 
