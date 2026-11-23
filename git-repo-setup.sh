@@ -172,6 +172,11 @@ fi
 # ---------------------------------------------------------------------------
 log "Configuring git credentials from environment variables..."
 
+# Initialize credential variables to empty strings to avoid "unbound variable"
+# errors with 'set -u' when they are referenced before being set in conditional blocks.
+CRED_ENV_NAME=""
+CRED_ENV_TOKEN=""
+
 # ---------------------------------------------------------------------------
 # Step 1: If GIT_TOKEN + GIT_USER are explicitly set, use those (override host)
 # ---------------------------------------------------------------------------
